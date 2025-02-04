@@ -1,0 +1,248 @@
+/// Premise ///
+A list of projects we are working on or have finished.
+
+/// General ///
+Lists projects by name - Image and status. Each entry can be expanded to display additional links and description, expanded details cover the entire page and use query strings that can be shared with the URL. The URL to this page should be "https://dexhune(.)eth(.)limo" and should act as our landing page. 
+
+! Entries !
+0. Pengs in Unusual Places 
+Description: 
+
+"A simple NFT collection, Pengs are a fundraising measure and DAO voting prerequisite." 
+
+Links: 
+
+"Mint" directs to "mint(.)dexhune(.)eth(.)limo"
+
+"Marketplace" directs to https://element.market/collections/pengs-in-unusual-places?search%5Btoggles%5D[0]=BUY_NOW
+
+"Contract" directs to https://polygonscan.com/address/0xb1a58fae5c0e952f64f9433789a350b8ab54d6d0#readContract
+
+1. Link Dollar (DOHL) 
+Description: 
+
+"A highly scalable and accurately price stable synthetic stablecoin making use of "LP Rebase".
+The token achieves a price of $1 by fetching the POL/USD price from a Chainlink oracle and rebases a target QuickSwap liquidity pool (that holds wPOL/DOHL) based on the LP Rebase formula. 
+
+$DOHL does not require collateral to remain stable, however, users may encounter slippage depending on how much they intend to trade and how much liquidity is available. 
+
+Users may profit by providing liquidity.  This is because the rebase function increases or reduces the balance of all Liquidity Providers depending on demand. 
+
+$DOHL takes a 0.05% fee on every external transfer, fees are distributed to Peng NFT holders via Marker DAO. 
+
+$DOHL is tradable on CFAMM DEXs like QuickSwap and is intended as the base asset on Dexhune-P and Shock Space."
+
+...
+
+Links : 
+"Trade" directs to Quickswap with [NATIVE] as Token-A and DOHL as Token-B, as specified by query string in the URL. 
+
+"Github" directs to DOHL's GitHub. 
+
+"Contract" directs to PolygonScan page of the contract address. 
+
+...
+
+2. Marker DAO 
+Description: 
+
+"A DAO with "routines" that execute custom transactions at intervals voted on by DAO participants. DAO participants are holders of Peng NFTs. 
+
+The DAO will be a proxy that can be upgraded by the DAO itself. 
+
+All project domain names and contracts will be owned by the DAO.  
+
+The DAO will vote on arbitrary functions to execute; such as emergency frontend updates - buying or selling assets with the DAO's balance - paying individuals, etc. 
+
+DAO voting will require both ownership of a Peng NFT and permanent deductions of DOHL token units for votes. All proposals require at least 33.3% of NFTs voting on them to pass, with at least 51% upvotes in DOHL token units." 
+
+...
+
+Links : 
+"DAO frontend" directs to "dao(.)dexhune(.)eth(.)limo"
+
+"DAO Contract" directs to PolygonScan page of the contract address. 
+
+...
+
+3. Dexhune-P (Pairing Foundry)
+Description: 
+
+"An AMM x Orderbook hybrid for creating market priced assets or assets pegged to the price of an external Liquidity pool. 
+Solves MEV, can be used to create synthetic crypto assets with exact price pegs or highly efficient markets that do not require a market maker." 
+
+Links :
+(When status is "incomplete") 
+"Design Proposal" directs to https://medium.com/@genericmage1127/design-proposal-dexhune-marker-foundry-23585152debb
+
+(When status is "complete") 
+"Trade" directs to "trade(.)dexhune(.)eth(.)limo". 
+
+"Github" directs to Dexhune-P GitHub page. 
+
+...
+
+4. Dexhune Markets
+Description: 
+
+"A decentralized token registry for Dexhune listings. Allows users to register their tokens as "safe" for Dexhune frontends to query, all requests require approval from an admin or subsequently a DAO." 
+
+Links : 
+(When status is "complete") 
+"Markets" directs to "markets(.)dexhune(.)eth(.)limo". 
+
+"Github" directs to Dexhune Markets GitHub page. 
+
+...
+
+5. Shock Space Driver 
+Description : 
+
+"A permissionless leverage trading platform based on Dexhune-P, allows any token to be listed. 
+
+Shock Space has (7) distinguishing qualities; 
+
+A. Inverse Price Impact 
+Positions create an inverse impact on price; longs decrease price, while shorts increase it. 
+This is because the user's margin is added to the listing contract when the position is created, thereby altering the balance of tokens and affecting the price. 
+Positions only have as much impact as the user's margin relative to the Listing contract's balance. 
+
+B. Paper Leverage 
+Positions are created using "Paper Leverage" that is issued by the exchange rather than borrowed from a lender. With limitations based on how much leverage is used relative to the available liquidity. 
+
+When a position closes with profit, it creates a unique order that is filled by opposing liquidity types either in the open market or from liquidity providers. 
+
+C. Customizable Isolated Margin
+Users can customize how much is used as initial margin or excess margin in isolated positions, this affects liquidation price and position health. 
+
+D. Progressive Fees 
+Fees are billed once with no funding or maintainence fees. Entry fees are billed based on leverage used, with a maximum of 99% fees at 100x leverage. 
+Fees are paid to liquidity providers of the opposing side; longs pay fees to USD or [TOKEN-0] LPs, while shorts pay fees to [TOKEN-1] LPs. 
+
+E. Cross Pairing and Cross Margin 
+Shock Space allows cross paired listings between any token while also providing a comprehensive cross margin experience on cross pairings.
+
+F. Asset Types
+Tokens are directly listed, creating markets that respond to demand and arbitrage.
+
+G. Micro-positions
+Positions can be opened with as little as $0.1e-6 or lower!" 
+
+...
+
+Links : 
+(When status is "complete") 
+"Driver" directs to "driver(.)dexhune(.)eth(.)limo". 
+
+"Github" directs to Shock Space GitHub page.
+
+...
+
+6. Auto-deployer
+Description :
+"A platform for deploying yield bearing stable-meme-coins and auto-lotto tokens pegged to USD or XAU. Leverages Dexhune's unique architecture to trade without an initial investment of Liquidity. Also allows one-click deployment of market priced assets." 
+
+Links : 
+(When status is "complete") 
+"Auto" directs to "auto(.)dexhune(.)eth(.)limo". 
+
+"Github" directs to Auto-Deployer GitHub page.
+
+...
+
+7. Dexhune-P (Oracle Foundry) 
+Description :
+"An AMM x Orderbook hybrid for creating oracle priced assets." 
+
+
+Links : 
+Same as "Dexhune-P (Pairing Foundry). 
+
+...
+
+8. Dexhune-P (Fixed Foundry)
+Description :
+"An AMM x Orderbook hybrid for creating assets with fixed price against an LP Rebase stablecoin in USD."
+
+Links : 
+Same as "Dexhune-P (Pairing Foundry). 
+
+...
+
+9. Hekaton DEX 
+Description : 
+"A concentrated "mono-pair" DEX protocol, based on Dexhune-P, that pairs all assets to a singular asset while providing specific allocations of Liquidity that can be deposited to or withdrawn from." 
+
+Links : 
+(When status is "complete") 
+"Hekaton" directs to "hekaton(.)dexhune(.)eth(.)limo". 
+
+"Github" directs to Hekaton DEX GitHub page.
+
+...
+
+10. Non-Fun Storage 
+Description : 
+"An on-chain NFT metadata and image storage system for ERC-721 based on ETHscriptions." 
+
+Links : 
+(When status is "complete")  
+
+"Github" directs to Non-Fun Storage GitHub page.
+
+...
+
+11. NFT Hotswap 
+Description :
+"An NFT AMM platform making use of synthetic NFTs and "real" NFTs for Liquidity with fungible tokens. Integrates "Non-Fun Storage"."
+
+Links : 
+(When status is "incomplete") 
+"Demo v1" directs to IPFS hash of v1 frontend. 
+
+"Github" directs to NFT Hotswap GitHub page.
+
+(When status is "complete") 
+"Hotswap" directs to "hotswap(.)dexhune(.)eth(.)limo"
+
+...
+
+12. NFT Coldswap 
+Description :
+"An NFT fractionalization platform that introduces "ratios" and "ranges" in fractionalization. Has a decentralized NFT marketplace. Integrates "Non-Fun Storage"." 
+
+Links : 
+(When status is "incomplete") 
+"Github" directs to NFT Coldswap GitHub page.
+
+(When status is "complete") 
+"Coldswap" directs to "Coldswap(.)dexhune(.)eth(.)limo". 
+
+"Github" directs to NFT Coldswap GitHub page.
+
+...
+
+
+13.  NFT Gallery 
+Description :
+"A decentralized token registry for NFT Hotswap and Coldswap." 
+
+Links : 
+(When status is "complete") 
+"Gallery" directs to "gallery(.)dexhune(.)eth(.)limo". 
+
+"Github" directs to NFT Gallery GitHub page.
+
+...
+
+- Further Info 
+Appears at the bottom of the page, reads; 
+"All our dApps strive for utmost decentralization, all frontends will be deployed via IPFS and Blockchain domain names, with the ownership being given to our team multi-sig. All ownership will be subsequently relinquished to our DAO once the properties are fully audited and stress tested. Any ownable contracts will be treated in the same manner.
+For assets outside Polygon POS, a "proxy DAO" will be created on the respective chain, these will use Axelar or similar cross-Chain messaging systems to fetch the addresses of our DAO participants and their respective stake."
+
+- Additional Links 
+These are text links to; "Telegram", "X" and "DAO". 
+
+/// Notes ///
+- Projects are sorted in order of deployment and serves as a roadmap of what we are to build.
+

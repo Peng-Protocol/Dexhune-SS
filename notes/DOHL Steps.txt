@@ -1,0 +1,82 @@
+/// Step 1 ///
+
+Chainlink testnet contracts, use AVAX Fuji
+
+https://docs.chain.link/data-feeds/price-feeds/addresses?network=avalanche&page=1
+
+Use snowscan if you want fewer headaches 
+
+https://testnet.snowscan.xyz/address/0x5498BB86BC934c8D34FDA08E81D444153d0D06aD#readContract
+
+...
+
+Consuming data feeds 
+A sample contract that shows how to fetch data from a Chainlink aggregator, ideally the below contract should work with the above aggregator. 
+All you need to do is change the aggregator address to the above,  
+
+https://docs.chain.link/data-feeds/getting-started
+
+Instruction: 
+Create a contract that fetches and stores data from the above aggregator, data should be queryable or at least public.
+
+Price data is named "Latest Price". 
+
+Contract should be deployed to AVAX Fuji testnet, you can add the network at the bottom of the snowscan explorer page.
+
+/// Step 2 ///
+Integrate ERC-20 with these details; 
+
+Name; Link Dollars 
+Ticker; DOHL 
+Decimals; 18 
+Supply; 4 
+
+Create a function that fetches the balances of a set "LP Address", targeting (2) tokens, the first is a "Token-0" while the second is "Token-1". 
+"Token-1" is DOHL (self)
+
+Ensure that you send 1 unit of DOHL to the LP address, and 1000 units of Token-0. 
+
+Use ERC-20 function "balanceOf" on the contracts of Token-0 and Token-1 to get the balances of the LP Address. 
+
+The LP address can be any arbitrary address. 
+The Token-1 contract can be any token you control, deploy a new token as needed. Ideally copy the WMATIC token contract code. 
+
+Once the balances are acquired they are stored as data called "Balances" in the format; "(Token-0 Balance, Token-1 Balance)", example; "(11.89, 1)".
+
+/// Step 3 ///
+Calculate how much DOHL should be in the LP and store the result under data named "Last Rebase".
+
+Last Rebase is gotten using the formula; 
+
+Token-0 balance * Latest Price = Last Rebase 
+
+/// Step 4 ///
+Create an ERC-20 mint/erasure function which adds or removes units of DOHL from the LP address.
+The balance of the LP address must be made to match the "Last Rebase".
+
+Use this formula; 
+
+Last Rebase - Token-1 Balance = Rebase Factor 
+
+If "Rebase Factor" is a positive number this implies minting the Rebase Factor number in DOHL and sending it to the LP address. 
+
+If Rebase Factor is a negative number, this implies erasing the Rebase Factor number from the LP address. 
+
+Grok explains burning;
+
+https://x.com/i/grok/share/IhPUOetCnInnRN2ezAQfYs0LJ
+
+Grok explains erasing token balances; 
+
+https://x.com/i/grok/share/312ZAF6o38Hzzuv810uHO6Phl
+
+/// Step 5 ///
+Chain the functions from Step 1 - 4 to be triggered in sequence whenever transferFrom is called, ensure that this does not interfere with swap functionality. 
+
+/// Step 6 ///
+Implement a 0.05% fee on transferFrom 
+
+Grok explains implementing fees; 
+
+https://x.com/i/grok/share/dvebOw1G3yTp5xH7ypWuURsZT
+
