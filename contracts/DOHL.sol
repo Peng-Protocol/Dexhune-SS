@@ -14,48 +14,77 @@ import "./Ownable.sol";
 import "./interfaces/AggregatorInterface.sol";
 
 contract DOHL is ERC20, Ownable {
-    uint256 public price;
-    uint256 public lastRebase;
-    address public lp;
     address public tokenZero;
+    address public taxCollector;
+    address public liquidityAddress;
+    address public oracleAddress;
 
     AggregatorInterface public aggregator;
 
     uint256 private constant INITIAL_SUPPLY = 4e18;
+    uint256 private constant FEE_PERC = 500; // 0.5 fee * 10k
 
     constructor() ERC20("Link Dollar", "DOHL") {
         _mint(_owner, INITIAL_SUPPLY);
     }
 
     function initialize(
-        address lpAddr,
-        address aggregatorAddr,
-        address tokenZeroAddr 
+        address liquidityAddr,
+        address oracleAddr,
+        address tokenZeroAddr,
+        address taxAddr
     ) external onlyOwner {
-        require(lp == address(0));
+        require(liquidityAddress == address(0));
         require(tokenZero == address(0));
+        require(taxCollector == address(0));
 
-        lp = lpAddr;
+        liquidityAddress = liquidityAddr;
         tokenZero = tokenZeroAddr;
-        aggregator = AggregatorInterface(aggregatorAddr);
+        taxCollector = taxAddr;
+        oracleAddress = oracleAddr;
+        aggregator = AggregatorInterface(oracleAddress);
 
-        _mint(lp, 1e18);
+        _mint(liquidityAddress, 1e18);
+        rebase();
     }
 
-    function getBalances() external view returns(uint256 balanceZero, uint256 balanceOne) {
-        balanceZero = IERC20(tokenZero).balanceOf(lp);
-        balanceOne = balanceOf(lp);
+    function getBalances()
+        external
+        view
+        returns (uint256 balanceZero, uint256 balanceOne)
+    {
+        balanceZero = IERC20(tokenZero).balanceOf(liquidityAddress);
+        balanceOne = balanceOf(liquidityAddress);
     }
 
-    function transferFrom(address from, address to, uint256 value) public override returns (bool) {
+    function transferFrom(
+        address from,
+        address to,
+        uint256 value
+    ) public override returns (bool) {
         address spender = _msgSender();
+        _spendAllowance(from, spender, value);
 
-        // _spendAllowance(from, spender, value);
-        // _transfer(from, to, value);
+        rebase();
+
+        uint256 transferAmount = value;
+        uint256 fee = (value * FEE_PERC) / 10_000;
+        (uint256 amount, bool negative) = _absDiff(value, fee);
+
+        if (!negative && fee > 0) {
+            transferAmount = amount;
+            _transfer(from, taxCollector, fee);
+        }
+
+        _transfer(from, to, transferAmount);
+        rebase();
         return true;
     }
 
-    function _absDiff(uint256 v1, uint256 v2) private returns(uint256 diff, bool negative) {
+    function _absDiff(
+        uint256 v1,
+        uint256 v2
+    ) private pure returns (uint256 diff, bool negative) {
         if (v2 > v1) {
             uint256 tmp = v1;
             v1 = v2;
@@ -66,15 +95,26 @@ contract DOHL is ERC20, Ownable {
         diff = v1 - v2;
     }
 
-    function _rebase() private {
+    function getPrice() public view returns (int256) {
+        return aggregator.latestAnswer();
+    }
+
+    function rebase() public {
+        uint256 price = uint256(getPrice());
+        uint256 balanceZero = balanceOf(address(liquidityAddress));
         uint256 balanceOne = balanceOf(address(this));
-        
-        (uint256 diff, bool negative) = _absDiff(lastRebase, balanceOne);
+
+        uint256 lastRebase = balanceZero * price;
+
+        (uint256 rebaseFactor, bool negative) = _absDiff(
+            lastRebase,
+            balanceOne
+        );
 
         if (!negative) {
-
+            _mint(liquidityAddress, rebaseFactor);
         } else {
-
+            _burn(liquidityAddress, rebaseFactor);
         }
     }
 }
