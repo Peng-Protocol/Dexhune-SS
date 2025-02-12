@@ -12,9 +12,9 @@ Decimals: 18
 /// General /// 
 The token is an ERC-20 with a few custom functions, the token achieves a price change by adding or subtracting token units to or from a target liquidity address. 
 
-Because price on CFAMM liquidity pairs is calculated by dividing the sum of Token0 in a pair by the sum of Token1, and Token1 (DOHL) would be programmed with rebasing properties, it should be possible to alter the price by changing how much of Token1 is present. 
+Because price on CFAMM liquidity pairs is calculated by dividing the sum of Token0 in a pair by the sum of Token1, and Token1 (LUSD) would be programmed with rebasing properties, it should be possible to alter the price by changing how much of Token1 is present. 
 
-When a swap is triggered; the token fetches the correct price from the target oracle contract, parses it then fetches the balances of [TOKEN0] and [TOKEN1] (in this case WMATIC and DOHL). Then determines how much should be in the LP to achieve the target price and alters the DOHL amount towards that purpose. 
+When a swap is triggered; the token fetches the correct price from the target oracle contract, parses it then fetches the balances of [TOKEN0] and [TOKEN1] (in this case WPOL and LUSD). Then determines how much should be in the LP to achieve the target price and alters the LUSD amount towards that purpose. 
 
 The initial supply is (4.0e9), all of which is issued to the deployer at deployment. 
  
@@ -23,13 +23,13 @@ The initial supply is (4.0e9), all of which is issued to the deployer at deploym
 This is a standard ERC-20 function that allows an external smart contract to move funds from an address if prompted to do so. This function however is adjusted to trigger 'rebase' and 'collectorFee'. 
 
 ! rebase ! 
-This checks how much WMATIC and DOHL is present in the target LP address, then checks the MATIC/USD price from a target chainlink oracle, normalizes it and makes a decision based on the data acquired.
+This checks how much WPOL and LUSD is present in the target LP address, then checks the POL/USD price from a target chainlink oracle, normalizes it and makes a decision based on the data acquired.
 
 The formula is; 
-LP WMATIC balance * MATIC/USD price = expected DOHL amount in LP
+LP WPOL balance * POL/USD price = expected LUSD amount in LP
 
 Example;
-If price is 0.80 ($0.80 to 1 MATIC) while there is 500 WMATIC in the LP, the contract calculates 500 * 0.80 = 400, therefore there should be 400 DOHL in the LP. 
+If price is 0.80 ($0.80 to 1 POL) while there is 500 WPOL in the LP, the contract calculates 500 * 0.80 = 400, therefore there should be 400 LUSD in the LP. 
 
 ***
 
@@ -48,7 +48,7 @@ If the swap amount is too low to take a fee then no fee is taken.
 Defines the current oracle address
 
 ! oracleAddress !
-Returns the current Chainlink oracle address where "latestAnser" is queried to get the price of MATIC/USD. 
+Returns the current Chainlink oracle address where "latestAnser" is queried to get the price of POL/USD. 
 
 ! setLiquidityAddress !
 Determines the address where token pairs are fetched (ownerOnly).
@@ -56,8 +56,8 @@ Determines the address where token pairs are fetched (ownerOnly).
 ! liquidityAddress !
 Returns liquidity address.
 
-! setWMATICAddress !
-Determines the address where WMATIC "balanceOf" is checked in relation to the LP pair address (ownerOnly).
+! setWPOLAddress !
+Determines the address where WPOL "balanceOf" is checked in relation to the LP pair address (ownerOnly).
 
 ! taxCollector ! 
 Returns tax collector address
@@ -69,4 +69,4 @@ Defines tax collector address (ownerOnly)
 /// Notes ///
 - No constructor arguments, causes headaches during verification. 
 
-- Contract is ownable. 
+- Contract is ownable.  
