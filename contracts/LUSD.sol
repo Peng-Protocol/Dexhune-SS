@@ -1,12 +1,12 @@
 // SPDX-License-Identifier: BSD-3-Clause
 /// @title Dexhune ERC20 Root Implementation
 
-/*
- *    ||_ __  __
- *   (|| |  \/  \|__||
- *   _||)|__/\__/|  ||__
- *    ||
- */
+    __    __  _______ ____ 
+   / /   / / / / ___// __ \
+  / /   / / / /\__ \/ / / /
+ / /___/ /_/ /___/ / /_/ / 
+/_____/\____//____/_____/  
+                           
 
 pragma solidity ^0.8.28;
 import "@openzeppelin/contracts/token/ERC20/ERC20.sol";
@@ -21,10 +21,10 @@ contract DOHL is ERC20, Ownable {
 
     AggregatorInterface public aggregator;
 
-    uint256 private constant INITIAL_SUPPLY = 4e18;
+    uint256 private constant INITIAL_SUPPLY = 4e27;
     uint256 private constant FEE_PERC = 500; // 0.5 fee * 10k
 
-    constructor() ERC20("Link Dollar", "DOHL") {
+    constructor() ERC20("Link Dollar", "LUSD") {
         _mint(_owner, INITIAL_SUPPLY);
     }
 
