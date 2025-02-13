@@ -1,0 +1,87 @@
+/// Premise /// 
+A DAO for collecting fees on MF-Dx. 
+
+/// General /// 
+All fees from listing tokens on MF-Dx are sent to MarkerDAO, any holder of a target NFT collection can create a "distribution", this distributes the target token proportionally to all holders of the NFT collection. 
+
+How much each address gets depends on how many NFT items they own in relation to the total number of NFTs. The burn address is not considered a valid address, any NFT items burnt forfeit their allocation.
+
+Tokens are distributed as;
+
+Distribution Amount / NFT Supply * Address NFT Balance. 
+
+Addresses are gotten by querying "ownerOf" at the target NFT contract, starting with "1" until a query returns no address. 
+
+! Functions !
+
+- distributeToken
+Distributes an ERC-20 token, first by querying how much of the token the contract owns, then dividing the amount by NFT Supply and querying the owners of each available item of the receiving NFT collection. Each item's owner gets n/supply of the distributed amount, owning multiple NFTs stacks the amount an address gets. 
+
+- distributeNATIVE 
+Similar to 'distributeToken' but for [NATIVE]. 
+
+- setNFTCollection (ownerOnly)
+Determines which NFT collection is distributed to. 
+
+- transferOwnership (ownerOnly)
+Transfers ownership of the contract to a specified address. Contract is Ownable. 
+
+! Data !
+- NFTCollection 
+Returns the address of the current NFT collection whose holders receive distributed tokens. 
+
+...
+
+/// Distribution Frontend ///
+A simple frontend for visualizing and interacting with MarkerDAO 2b. 
+
+! General ! 
+- Deployed on IPFS via dappling network (each subdirectory is a separate IPFS object under the same "directory tree", see "Grok-1" "Grok-2" and "Grok-3" in "links").
+- Ensure all images are compressed 
+- No animations
+- No sandwich buttons or drop-down menus
+- Wallet does not automatically connect, must be reconnected each time the page is loaded.
+- Unless explicitly stated, the app will not perform any automated or re-occuring functions. 
+- Every pushed transaction (signed or not) triggers the app to refresh all blockchain data for the page in question. 
+- No external dependencies, all code is stored on the app. 
+
+! Page 1 ! 
+1a. Marker DAO Logo 
+Is Marker DAO Logo 
+
+1b. Connect Wallet Button 
+Initiates wallet connect when clicked, does not automatically connect. 
+
+1c. Header 
+A panel that reads; "Marker DAO" 
+
+1d. Header Subtitle 
+A panel that reads; "A simple distribution mechanism for Peng holders, all fees from $DOHL are distributed to Peng holders. All listing fees from fixed foundry and oracle foundry as well.". 
+
+1e. DAO Balance 
+Returns the amounts currently in the DAO.
+Returns for $DOHL, $POL and $WPOL.
+
+1f. Distribute $DOHL Button 
+Pushes a transaction to distribute all $DOHL in the contract. Uses 'distributeToken' on the contract using the $DOHL address.
+
+1g. Distrubute TOKEN Button 
+Presents a pop-up with an "address" field, user can specify a token to distribute. However if they state "0" or "1" or "POL" or "Polygon" or "MATIC". The frontend will push a transaction for 'distributeNATIVE'. 
+
+1h. Links 
+Text links for "Telegram", "GitHub", "X" and "Contract". 
+
+...
+
+/// Notes ///
+- The NFT collection is PolyPeng. 
+
+- Contract is ownable
+
+- Contract is a proxy
+
+- (To self) Retain ownership of the proxy in team multi-sig, update the implementation in the future to refill the gas balance of oracle contracts on X-Call registry.
+
+- Post Production; the contract should be renounced once the NFT collection is set. 
+
+- (To Self) future update should turn the distribution contract into a proper DAO, transfer admin property to the DAO. Create buyback plan for PENG fractions on Coldswap and PENG synths on Hotswap v2. Buybacks go to DAO members (PENG holders) - would use ERC-20 sells via Dexhune-P. Although thanks to the programmability; any type of function could be effected in the future. 
