@@ -2,10 +2,11 @@
 /// @title Dexhune ERC20 Root Implementation
 
 /*
- *    ||_ __  __
- *   (|| |  \/  \|__||
- *   _||)|__/\__/|  ||__
- *    ||
+ *     __    __  _______ ____
+ *    / /   / / / / ___// __ \
+ *   / /   / / / /\__ \/ / / /
+ *  / /___/ /_/ /___/ / /_/ /
+ * /_____/\____//____/_____/
  */
 
 pragma solidity ^0.8.28;
@@ -13,7 +14,7 @@ import "@openzeppelin/contracts/token/ERC20/ERC20.sol";
 import "./Ownable.sol";
 import "./interfaces/AggregatorInterface.sol";
 
-contract DOHL is ERC20, Ownable {
+contract LUSD is ERC20, Ownable {
     address public tokenZero;
     address public taxCollector;
     address public liquidityAddress;
@@ -21,7 +22,7 @@ contract DOHL is ERC20, Ownable {
 
     AggregatorInterface public aggregator;
 
-    uint256 private constant INITIAL_SUPPLY = 4e18;
+    uint256 private constant INITIAL_SUPPLY = 4_000_000_000e18;
     uint256 private constant FEE_PERC = 500; // 0.5 fee * 10k
 
     constructor() ERC20("Link Dollar", "DOHL") {
@@ -43,8 +44,6 @@ contract DOHL is ERC20, Ownable {
         taxCollector = taxAddr;
         oracleAddress = oracleAddr;
         aggregator = AggregatorInterface(oracleAddress);
-
-        _mint(liquidityAddress, 1e18);
         rebase();
     }
 

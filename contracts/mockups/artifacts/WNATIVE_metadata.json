@@ -127,38 +127,6 @@
 					{
 						"indexed": true,
 						"internalType": "address",
-						"name": "previousOwner",
-						"type": "address"
-					}
-				],
-				"name": "OwnershipRenounced",
-				"type": "event"
-			},
-			{
-				"anonymous": false,
-				"inputs": [
-					{
-						"indexed": true,
-						"internalType": "address",
-						"name": "previousOwner",
-						"type": "address"
-					},
-					{
-						"indexed": true,
-						"internalType": "address",
-						"name": "newOwner",
-						"type": "address"
-					}
-				],
-				"name": "OwnershipTransferred",
-				"type": "event"
-			},
-			{
-				"anonymous": false,
-				"inputs": [
-					{
-						"indexed": true,
-						"internalType": "address",
 						"name": "from",
 						"type": "address"
 					},
@@ -177,19 +145,6 @@
 				],
 				"name": "Transfer",
 				"type": "event"
-			},
-			{
-				"inputs": [],
-				"name": "aggregator",
-				"outputs": [
-					{
-						"internalType": "contract AggregatorInterface",
-						"name": "",
-						"type": "address"
-					}
-				],
-				"stateMutability": "view",
-				"type": "function"
 			},
 			{
 				"inputs": [
@@ -273,91 +228,6 @@
 			},
 			{
 				"inputs": [],
-				"name": "getBalances",
-				"outputs": [
-					{
-						"internalType": "uint256",
-						"name": "balanceZero",
-						"type": "uint256"
-					},
-					{
-						"internalType": "uint256",
-						"name": "balanceOne",
-						"type": "uint256"
-					}
-				],
-				"stateMutability": "view",
-				"type": "function"
-			},
-			{
-				"inputs": [],
-				"name": "getPrice",
-				"outputs": [
-					{
-						"internalType": "int256",
-						"name": "",
-						"type": "int256"
-					}
-				],
-				"stateMutability": "view",
-				"type": "function"
-			},
-			{
-				"inputs": [
-					{
-						"internalType": "address",
-						"name": "liquidityAddr",
-						"type": "address"
-					},
-					{
-						"internalType": "address",
-						"name": "oracleAddr",
-						"type": "address"
-					},
-					{
-						"internalType": "address",
-						"name": "tokenZeroAddr",
-						"type": "address"
-					},
-					{
-						"internalType": "address",
-						"name": "taxAddr",
-						"type": "address"
-					}
-				],
-				"name": "initialize",
-				"outputs": [],
-				"stateMutability": "nonpayable",
-				"type": "function"
-			},
-			{
-				"inputs": [],
-				"name": "isOwner",
-				"outputs": [
-					{
-						"internalType": "bool",
-						"name": "",
-						"type": "bool"
-					}
-				],
-				"stateMutability": "view",
-				"type": "function"
-			},
-			{
-				"inputs": [],
-				"name": "liquidityAddress",
-				"outputs": [
-					{
-						"internalType": "address",
-						"name": "",
-						"type": "address"
-					}
-				],
-				"stateMutability": "view",
-				"type": "function"
-			},
-			{
-				"inputs": [],
 				"name": "name",
 				"outputs": [
 					{
@@ -371,78 +241,12 @@
 			},
 			{
 				"inputs": [],
-				"name": "oracleAddress",
-				"outputs": [
-					{
-						"internalType": "address",
-						"name": "",
-						"type": "address"
-					}
-				],
-				"stateMutability": "view",
-				"type": "function"
-			},
-			{
-				"inputs": [],
-				"name": "owner",
-				"outputs": [
-					{
-						"internalType": "address",
-						"name": "",
-						"type": "address"
-					}
-				],
-				"stateMutability": "view",
-				"type": "function"
-			},
-			{
-				"inputs": [],
-				"name": "rebase",
-				"outputs": [],
-				"stateMutability": "nonpayable",
-				"type": "function"
-			},
-			{
-				"inputs": [],
-				"name": "renounceOwnership",
-				"outputs": [],
-				"stateMutability": "nonpayable",
-				"type": "function"
-			},
-			{
-				"inputs": [],
 				"name": "symbol",
 				"outputs": [
 					{
 						"internalType": "string",
 						"name": "",
 						"type": "string"
-					}
-				],
-				"stateMutability": "view",
-				"type": "function"
-			},
-			{
-				"inputs": [],
-				"name": "taxCollector",
-				"outputs": [
-					{
-						"internalType": "address",
-						"name": "",
-						"type": "address"
-					}
-				],
-				"stateMutability": "view",
-				"type": "function"
-			},
-			{
-				"inputs": [],
-				"name": "tokenZero",
-				"outputs": [
-					{
-						"internalType": "address",
-						"name": "",
-						"type": "address"
 					}
 				],
 				"stateMutability": "view",
@@ -511,19 +315,6 @@
 						"type": "bool"
 					}
 				],
-				"stateMutability": "nonpayable",
-				"type": "function"
-			},
-			{
-				"inputs": [
-					{
-						"internalType": "address",
-						"name": "newOwner",
-						"type": "address"
-					}
-				],
-				"name": "transferOwnership",
-				"outputs": [],
 				"stateMutability": "nonpayable",
 				"type": "function"
 			}
@@ -631,7 +422,7 @@
 	},
 	"settings": {
 		"compilationTarget": {
-			"contracts/DOHL.sol": "DOHL"
+			"contracts/mockups/WNATIVE.sol": "WNATIVE"
 		},
 		"evmVersion": "cancun",
 		"libraries": {},
@@ -685,28 +476,12 @@
 				"dweb:/ipfs/Qmax9WHBnVsZP46ZxEMNRQpLQnrdE4dK8LehML1Py8FowF"
 			]
 		},
-		"contracts/DOHL.sol": {
-			"keccak256": "0x6eb20f6459d7b780aa29b87f42a724050c32314d818ee816c5818af44fa59a5f",
+		"contracts/mockups/WNATIVE.sol": {
+			"keccak256": "0x0b1e69fb7323a86b126dcd97b6bc8e85c554c839fc4853a14fbb07cde0ae2ec0",
 			"license": "BSD-3-Clause",
 			"urls": [
-				"bzz-raw://866d8ca794c9393a5715f92f053d1ef5fa731202a30b54978951cd2f9e7b44f5",
-				"dweb:/ipfs/QmSexMAeVzXFvXjb98JvLBMP8oPVQ171vkW9eLM17CcyTZ"
-			]
-		},
-		"contracts/Ownable.sol": {
-			"keccak256": "0xc837e67ecae78ca3af1b197cf396afb77a1c71da98ecfaf8f444ca85611e32b2",
-			"license": "BSD-3-Clause",
-			"urls": [
-				"bzz-raw://36f2302f8009468deab627b61088ec6d035e8d0aac85ac7fc76490031704f86f",
-				"dweb:/ipfs/Qmc3Sf7733uZgUHRz555P8SBCsuWim9eUJjpvXxgD7c1iT"
-			]
-		},
-		"contracts/interfaces/AggregatorInterface.sol": {
-			"keccak256": "0x089dfd9e1bde0e83e8b39e47619893b9bdf968954e2dc420d4f1ee4dff2a7d95",
-			"license": "BSD-3-Clause",
-			"urls": [
-				"bzz-raw://ea454a31115c5a75eff1b334c2b1169c30adf0558905499fdfa9d36c5c773764",
-				"dweb:/ipfs/QmfFY4Ki31wNVjHAtUp8UoK3TLnHSNcXQjgm4iMQno3i56"
+				"bzz-raw://66061017c873374c741468814b5d2551bc5bbaac674559c24ba5aa978877330d",
+				"dweb:/ipfs/QmTZu4jhRuRjgUmB1TjtsLGFEwezKRkLZFNDtkyuFtwH48"
 			]
 		}
 	},

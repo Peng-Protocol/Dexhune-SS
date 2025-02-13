@@ -6,10 +6,11 @@
 // https://github.com/OpenZeppelin/openzeppelin-contracts/blob/master/contracts/token/ERC20/IERC20.sol
 
 /*
- *    ||_ __  __
- *   (|| |  \/  \|__||
- *   _||)|__/\__/|  ||__
- *    ||
+ *     __    __  _______ ____
+ *    / /   / / / / ___// __ \
+ *   / /   / / / /\__ \/ / / /
+ *  / /___/ /_/ /___/ / /_/ /
+ * /_____/\____//____/_____/
  */
 
 pragma solidity ^0.8.28;
