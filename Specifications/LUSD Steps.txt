@@ -71,7 +71,7 @@ Grok explains erasing token balances;
 https://x.com/i/grok/share/312ZAF6o38Hzzuv810uHO6Phl
 
 /// Step 5 ///
-Chain the functions from Step 1 - 4 to be triggered in sequence whenever transferFrom is called, ensure that this does not interfere with swap functionality. 
+Chain the functions from Step 1 - 4 to be triggered in sequence whenever transfer and transferFrom are called, ensure that this does not interfere with swap functionality. 
 
 /// Step 6 ///
 Implement a 0.05% fee on transferFrom 
