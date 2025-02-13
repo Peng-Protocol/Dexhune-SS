@@ -1,8 +1,6 @@
 /// Premise ///
 A CFAMM stablecoin using Liquidity rebase and Chainlink price oracles to maintain a price of $1. No collateralization. 
 
-/// Add LP record system, and rebase each withdrawal to match the amount originally deposited
-
 /// Parameters ///
 Name: Link Dollar
 Ticker: LUSD 
