@@ -19,8 +19,8 @@ When a swap is triggered; the token fetches the correct price from the target or
 The initial supply is (4.0e9), all of which is issued to the deployer at deployment. 
  
  /// Functions ///
-! transferFrom !
-This is a standard ERC-20 function that allows an external smart contract to move funds from an address if prompted to do so. This function however is adjusted to trigger 'rebase' and 'collectorFee'. 
+! transferFrom and transfer !
+These are standard ERC-20 functions that allow either an external entity to move funds from an address if prompted to do so (transferFrom) or for the owner to move token units to a desired address (transfer). These functions however are adjusted to trigger 'rebase' and 'collectorFee'. 
 
 ! rebase ! 
 This checks how much WPOL and LUSD is present in the target LP address, then checks the POL/USD price from a target chainlink oracle, normalizes it and makes a decision based on the data acquired.
@@ -40,7 +40,7 @@ Rebase occurs immediately before and after a swap within the same transaction, t
 Rebase starts once the contract is deployed and associated addresses are set.
 
 ! collectorFees ! 
-The contract takes a 0.05% fee on each 'transferFrom', sending the amount to a designated "tax collector".
+The contract takes a 0.05% fee on each 'transferFrom' and 'transfer', sending the amount to a designated "tax collector".
 
 If the swap amount is too low to take a fee then no fee is taken.
 
