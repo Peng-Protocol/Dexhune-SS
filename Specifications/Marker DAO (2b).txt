@@ -60,10 +60,10 @@ A panel that reads; "A simple distribution mechanism for Peng holders, all fees 
 
 1e. DAO Balance 
 Returns the amounts currently in the DAO.
-Returns for $DOHL, $POL and $WPOL.
+Returns for $LUSD, $POL and $WPOL.
 
-1f. Distribute $DOHL Button 
-Pushes a transaction to distribute all $DOHL in the contract. Uses 'distributeToken' on the contract using the $DOHL address.
+1f. Distribute $LUSD Button 
+Pushes a transaction to distribute all $LUSD in the contract. Uses 'distributeToken' on the contract using the $LUSD address.
 
 1g. Distrubute TOKEN Button 
 Presents a pop-up with an "address" field, user can specify a token to distribute. However if they state "0" or "1" or "POL" or "Polygon" or "MATIC". The frontend will push a transaction for 'distributeNATIVE'. 
