@@ -8,14 +8,6 @@
  *  / /___/ /_/ /___/ / /_/ /
  * /_____/\____//____/_____/
  */
-=======
-*     __    __  _______ ____ 
-*    / /   / / / / ___// __ \
-*   / /   / / / /\__ \/ / / /
-*  / /___/ /_/ /___/ / /_/ / 
-* /_____/\____//____/_____/  
-*/                           
->>>>>>> c70a9776228cfa3fca9126b73183359a2f7aef45
 
 pragma solidity ^0.8.28;
 import "@openzeppelin/contracts/token/ERC20/ERC20.sol";
@@ -30,11 +22,7 @@ contract LUSD is ERC20, Ownable {
 
     AggregatorInterface public aggregator;
 
-<<<<<<< HEAD
     uint256 private constant INITIAL_SUPPLY = 4_000_000_000e18;
-=======
-    uint256 private constant INITIAL_SUPPLY = 4e27;
->>>>>>> c70a9776228cfa3fca9126b73183359a2f7aef45
     uint256 private constant FEE_PERC = 500; // 0.5 fee * 10k
 
     constructor() ERC20("Link Dollar", "LUSD") {
