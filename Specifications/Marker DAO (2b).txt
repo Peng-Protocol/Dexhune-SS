@@ -82,6 +82,4 @@ Text links for "Telegram", "GitHub", "X" and "Contract".
 
 - (To self) Retain ownership of the proxy in team multi-sig, update the implementation in the future to refill the gas balance of oracle contracts on X-Call registry.
 
-- Post Production; the contract should be renounced once the NFT collection is set. 
-
 - (To Self) future update should turn the distribution contract into a proper DAO, transfer admin property to the DAO. Create buyback plan for PENG fractions on Coldswap and PENG synths on Hotswap v2. Buybacks go to DAO members (PENG holders) - would use ERC-20 sells via Dexhune-P. Although thanks to the programmability; any type of function could be effected in the future. 
