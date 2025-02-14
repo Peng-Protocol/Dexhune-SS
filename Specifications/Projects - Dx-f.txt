@@ -18,26 +18,26 @@ Links:
 
 "Contract" directs to https://polygonscan.com/address/0xb1a58fae5c0e952f64f9433789a350b8ab54d6d0#readContract
 
-1. Link Dollar (DOHL) 
+1. Link Dollar (LUSD) 
 Description: 
 
 "A highly scalable and accurately price stable synthetic stablecoin making use of "LP Rebase".
-The token achieves a price of $1 by fetching the POL/USD price from a Chainlink oracle and rebases a target QuickSwap liquidity pool (that holds wPOL/DOHL) based on the LP Rebase formula. 
+The token achieves a price of $1 by fetching the POL/USD price from a Chainlink oracle and rebases a target QuickSwap liquidity pool (that holds wPOL/LUSD) based on the LP Rebase formula. 
 
-$DOHL does not require collateral to remain stable, however, users may encounter slippage depending on how much they intend to trade and how much liquidity is available. 
+$LUSD does not require collateral to remain stable, however, users may encounter slippage depending on how much they intend to trade and how much liquidity is available. 
 
 Users may profit by providing liquidity.  This is because the rebase function increases or reduces the balance of all Liquidity Providers depending on demand. 
 
-$DOHL takes a 0.05% fee on every external transfer, fees are distributed to Peng NFT holders via Marker DAO. 
+$LUSD takes a 0.05% fee on every external transfer, fees are distributed to Peng NFT holders via Marker DAO. 
 
-$DOHL is tradable on CFAMM DEXs like QuickSwap and is intended as the base asset on Dexhune-P and Shock Space."
+$LUSD is tradable on CFAMM DEXs like QuickSwap and is intended as the base asset on Dexhune-P and Shock Space."
 
 ...
 
 Links : 
-"Trade" directs to Quickswap with [NATIVE] as Token-A and DOHL as Token-B, as specified by query string in the URL. 
+"Trade" directs to Quickswap with [NATIVE] as Token-A and LUSD as Token-B, as specified by query string in the URL. 
 
-"Github" directs to DOHL's GitHub. 
+"Github" directs to LUSD's GitHub. 
 
 "Contract" directs to PolygonScan page of the contract address. 
 
@@ -54,7 +54,7 @@ All project domain names and contracts will be owned by the DAO.
 
 The DAO will vote on arbitrary functions to execute; such as emergency frontend updates - buying or selling assets with the DAO's balance - paying individuals, etc. 
 
-DAO voting will require both ownership of a Peng NFT and permanent deductions of DOHL token units for votes. All proposals require at least 33.3% of NFTs voting on them to pass, with at least 51% upvotes in DOHL token units." 
+DAO voting will require both ownership of a Peng NFT and permanent deductions of LUSD token units for votes. All proposals require at least 33.3% of NFTs voting on them to pass, with at least 51% upvotes in LUSD token units." 
 
 ...
 
