@@ -17,12 +17,21 @@ Calls 'Rebase' at the LUSD contract address.
 - setOracle
 Determines the oracle address. 
 
+- setLUSD 
+Determines the LUSD contract address. 
+
 - setLP 
 Determines the POL/LUSD liquidity pool address. 
 
 ! Data ! 
 - Oracle 
 Stores the oracle address. 
+
+- LP
+Stores the WPOL/LUSD address. 
+
+- LUSD 
+Stores the LUSD address. 
 
 /// Dispenser Frontend /// 
 A simple frontend for LUSD Dispenser contract. 
