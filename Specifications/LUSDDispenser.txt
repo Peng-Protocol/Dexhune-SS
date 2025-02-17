@@ -26,7 +26,7 @@ Determines the LUSD contract address.
 Determines the WPOL contract address. 
 
 - setLP 
-Determines the POL/LUSD liquidity pool address. 
+Determines the WPOL/LUSD liquidity pool address. 
 
 ! Data ! 
 - Oracle 
@@ -82,10 +82,10 @@ $LUSD is tradable on CFAMM DEXs like QuickSwap and is intended as the base asset
 A link to QuickSwap with [NATIVE] as Token-A and LUSD as Token-B. 
 
 1f. Mint Button 
-Opens a pop-up with an amount field and "proceed" button. Button is grayed out if no amount is set, or if the set amount exceeds the user's POL balance or if the set amount exceeds the dispenser's balance. 
+Opens a pop-up with an amount field and "proceed" button. Button is grayed out if no amount is set, or if the set amount exceeds the user's WPOL balance or if the set amount exceeds the dispenser's balance. 
 
 - Amount Field 
-A field for setting how much POL to spend, titled "Polygon Amount" in gray.
+A field for setting how much WPOL to spend, titled "Wrapped Polygon Amount" in gray.
 
 - Output 
 Appears at the top right of the pop-up, displays how much LUSD the user will receive, displayed as; "[Amount] USD"
@@ -93,6 +93,8 @@ Appears at the top right of the pop-up, displays how much LUSD the user will rec
 - Proceed Button 
 Executes the 'convert' function at the LUSD Dispenser contract. 
 Ensure that the contract and frontend account for differences in number of decimals between the Chainlink oracle and the actual tokens. 
+
+If the amount is not approved then the button instead reads "approve", and pushes a transaction to approve the stated amount. 
 
 1g. Links 
 Text links to "Telegram" "GitHub" "Contract" and "X". 
