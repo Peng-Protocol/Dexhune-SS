@@ -5,12 +5,12 @@ A simple contract for acquiring LUSD without slippage.
 - Convert 
 Fetches the current POL/USD price from the set Chainlink oracle and calculates; 
 
-POL Amount * POL/USD price = LUSD Output 
+WPOL Amount * POL/USD price = LUSD Output 
 
-The "POL Amount" is an amount of POL which must be deducted from the user's address to perform the conversion. 
-This function takes the user's stated POL and pays out LUSD at the acquired rate. 
+The "WPOL Amount" is an amount of WPOL which must be deducted from the user's address to perform the conversion. 
+This function takes the user's stated WPOL and pays out LUSD at the acquired rate. 
 
-The acquired POL is then sent to the LP address. 
+The acquired WPOL is then sent to the LP address. 
 
 Calls 'Rebase' at the LUSD contract address. 
 
@@ -21,6 +21,9 @@ Determines the oracle address.
 
 - setLUSD 
 Determines the LUSD contract address. 
+
+- setWPOL
+Determines the WPOL contract address. 
 
 - setLP 
 Determines the POL/LUSD liquidity pool address. 
@@ -34,6 +37,9 @@ Stores the WPOL/LUSD address.
 
 - LUSD 
 Stores the LUSD address. 
+
+- WPOL 
+Stores the WPOL address. 
 
 /// Dispenser Frontend /// 
 A simple frontend for LUSD Dispenser contract. 
