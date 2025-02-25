@@ -11,7 +11,7 @@ DEX Integration: Ensure the DEX interacts with your token via standard ERC-20 ca
 Here’s a simplified example in Solidity:
 solidity
 
-```solidity
+```
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.0;
 
@@ -100,7 +100,7 @@ This approach shifts the rebase timing to a pre-transaction step (approve), avoi
 Example Implementation
 Here’s a simplified Solidity sketch:
 
-```solidity
+```
 solidity
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.0;
