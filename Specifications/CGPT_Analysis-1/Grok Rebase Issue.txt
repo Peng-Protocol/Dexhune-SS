@@ -10,6 +10,8 @@ Manual Rebase Call: Provide a public function (e.g., rebase()) that adjusts bala
 DEX Integration: Ensure the DEX interacts with your token via standard ERC-20 calls, then trigger the rebase afterward.
 Here’s a simplified example in Solidity:
 solidity
+
+```solidity
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.0;
 
@@ -64,6 +66,9 @@ contract RebaseToken is ERC20 {
 
     // Similar override for transferFrom (omitted for brevity)
 }
+
+```
+
 How It Works
 Raw Balances: _rawBalances stores unscaled balances, while balanceOf applies the scalingFactor dynamically. This ensures the DEX sees consistent amounts during the swap.
 Rebase Trigger: The rebase() function updates the scalingFactor based on the oracle price, but it’s only called explicitly after the swap.
@@ -94,6 +99,8 @@ Force Frequent Approvals: Since approvals reset after use, users (or DEXes) must
 This approach shifts the rebase timing to a pre-transaction step (approve), avoiding mid-swap interference since the DEX would see updated, post-rebase balances before executing transferFrom.
 Example Implementation
 Here’s a simplified Solidity sketch:
+
+```solidity
 solidity
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.0;
@@ -166,6 +173,9 @@ contract RebaseTokenWithResetApprove is ERC20 {
         // Could use a mapping of spenders per owner for precision
     }
 }
+
+```
+
 How It Works
 Approve with Rebase: When a user calls approve, the _rebase function updates the scalingFactor (e.g., via an oracle price), adjusting all balances before setting the allowance.
 Allowance Reset: After transfer or transferFrom, the allowance for the relevant spender resets to zero. (Note: The example resets all approvals for simplicity; a real implementation might track and reset only the involved spender.)
