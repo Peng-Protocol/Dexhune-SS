@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: BSD-3-Clause
-/// @title Dexhune ERC20 Root Implementation
+/// @title LUSD ERC20 Root Implementation
 
 /*
  *     __    __  _______ ____
@@ -10,23 +10,60 @@
  */
 
 pragma solidity ^0.8.28;
-import "@openzeppelin/contracts/token/ERC20/ERC20.sol";
+import "@openzeppelin-contracts-5.2.0/token/ERC20/ERC20.sol";
 import "./Ownable.sol";
-import "./interfaces/AggregatorInterface.sol";
+import "./Normalizer.sol";
+import "./interfaces/IAggregator.sol";
+import "./interfaces/ILiquidity.sol";
+import "./interfaces/IERC20.sol";
+import "./libraries/PengMath.sol";
 
-contract LUSD is ERC20, Ownable {
-    address public tokenZero;
+contract LUSD is ERC20, Normalizer, Ownable {
     address public taxCollector;
-    address public liquidityAddress;
-    address public oracleAddress;
 
-    AggregatorInterface public aggregator;
+    ERC20Interface public tokenZero;
+    IAggregator public oracle;
+    ILiquidity public liquidity;
+
+    uint8 internal _tokenZeroDec;
+    uint8 internal _oracleDec;
 
     uint256 private constant INITIAL_SUPPLY = 4_000_000_000e18;
-    uint256 private constant FEE_PERC = 500; // 0.5 fee * 10k
+    uint256 private constant FEE_PERC = 5; // 0.05% fee
+
+    event Taxed(address addr, uint256 amount);
 
     constructor() ERC20("Link Dollar", "LUSD") {
         _mint(_owner, INITIAL_SUPPLY);
+    }
+
+    function setLiquidity(address liquidityAddr) public onlyOwner {
+        liquidity = ILiquidity(liquidityAddr);
+        rebase();
+    }
+
+    function setTaxCollector(address taxAddr) public onlyOwner {
+        taxCollector = taxAddr;
+    }
+
+    function setOracle(address oracleAddr) public onlyOwner {
+        oracle = IAggregator(oracleAddr);
+
+        try oracle.decimals() returns (uint8 dec) {
+            _oracleDec = dec;
+        } catch {
+            _oracleDec = 8;
+        }
+    }
+
+    function setTokenZero(address tokenZeroAddr) public onlyOwner {
+        tokenZero = ERC20Interface(tokenZeroAddr);
+
+        try tokenZero.decimals() returns (uint8 dec) {
+            _tokenZeroDec = dec;
+        } catch {
+            _tokenZeroDec = 18;
+        }
     }
 
     function initialize(
@@ -35,16 +72,15 @@ contract LUSD is ERC20, Ownable {
         address tokenZeroAddr,
         address taxAddr
     ) external onlyOwner {
-        require(liquidityAddress == address(0));
-        require(tokenZero == address(0));
+        require(address(liquidity) == address(0));
+        require(address(tokenZero) == address(0));
+        require(address(oracle) == address(0));
         require(taxCollector == address(0));
 
-        liquidityAddress = liquidityAddr;
-        tokenZero = tokenZeroAddr;
-        taxCollector = taxAddr;
-        oracleAddress = oracleAddr;
-        aggregator = AggregatorInterface(oracleAddress);
-        rebase();
+        setTaxCollector(taxAddr);
+        setTokenZero(tokenZeroAddr);
+        setOracle(oracleAddr);
+        setLiquidity(liquidityAddr);
     }
 
     function getBalances()
@@ -52,32 +88,64 @@ contract LUSD is ERC20, Ownable {
         view
         returns (uint256 balanceZero, uint256 balanceOne)
     {
-        balanceZero = IERC20(tokenZero).balanceOf(liquidityAddress);
-        balanceOne = balanceOf(liquidityAddress);
+        balanceZero = tokenZero.balanceOf(address(liquidity));
+        balanceOne = balanceOf(address(liquidity));
+    }
+
+    function transfer(
+        address to,
+        uint256 value
+    ) public virtual override returns (bool) {
+        address from = _msgSender();
+
+        value = _tax(from, value);
+        _transfer(from, to, value);
+        rebase();
+
+        return true;
     }
 
     function transferFrom(
         address from,
         address to,
         uint256 value
-    ) public override returns (bool) {
+    ) public virtual override returns (bool) {
         address spender = _msgSender();
         _spendAllowance(from, spender, value);
 
+        value = _tax(from, value);
+        _transfer(from, to, value);
         rebase();
 
+        return true;
+    }
+
+    function _tax(address from, uint256 value) private returns (uint256) {
+        address taxAcc = taxCollector;
         uint256 transferAmount = value;
+
+        if (taxAcc == address(0)) {
+            taxAcc = _owner;
+        }
+
+        if (taxAcc == address(0)) {
+            return transferAmount;
+        }
+
         uint256 fee = (value * FEE_PERC) / 10_000;
         (uint256 amount, bool negative) = _absDiff(value, fee);
 
         if (!negative && fee > 0) {
             transferAmount = amount;
-            _transfer(from, taxCollector, fee);
+
+            if (taxAcc != from) {
+                _transfer(from, taxAcc, fee);
+            }
+
+            emit Taxed(from, fee);
         }
 
-        _transfer(from, to, transferAmount);
-        rebase();
-        return true;
+        return transferAmount;
     }
 
     function _absDiff(
@@ -95,25 +163,45 @@ contract LUSD is ERC20, Ownable {
     }
 
     function getPrice() public view returns (int256) {
-        return aggregator.latestAnswer();
+        return oracle.latestAnswer();
+    }
+
+    function _trySync() private {
+        try liquidity.sync() {} catch {}
     }
 
     function rebase() public {
+        address liquidityAddress = address(liquidity);
+
+        if (
+            liquidityAddress == address(0) || address(tokenZero) == address(0)
+        ) {
+            return;
+        }
+
         uint256 price = uint256(getPrice());
-        uint256 balanceZero = balanceOf(address(liquidityAddress));
-        uint256 balanceOne = balanceOf(address(this));
+        uint256 balanceZero = tokenZero.balanceOf(liquidityAddress);
+        uint256 balanceOne = balanceOf(liquidityAddress);
 
-        uint256 lastRebase = balanceZero * price;
+        uint256 nbalanceZero = _normalize(balanceZero, _tokenZeroDec);
+        uint256 nprice = _normalize(price, _oracleDec);
 
-        (uint256 rebaseFactor, bool negative) = _absDiff(
-            lastRebase,
-            balanceOne
+        uint256 nlastRebase = PengMath.mul(nbalanceZero, nprice);
+        uint256 nBalanceOne = _normalize(balanceOne, decimals());
+
+        (uint256 nrebaseFactor, bool negative) = _absDiff(
+            nlastRebase,
+            nBalanceOne
         );
 
-        if (!negative) {
-            _mint(liquidityAddress, rebaseFactor);
-        } else {
+        uint256 rebaseFactor = _denormalize(nrebaseFactor, decimals());
+
+        if (negative) {
             _burn(liquidityAddress, rebaseFactor);
+            _trySync();
+        } else if (rebaseFactor > 0) {
+            _mint(liquidityAddress, rebaseFactor);
+            _trySync();
         }
     }
 }
