@@ -11,13 +11,17 @@
 
 pragma solidity ^0.8.28;
 import "../Ownable.sol";
-import "../interfaces/AggregatorInterface.sol";
+import "../interfaces/IAggregator.sol";
 
-contract MockAggregator is AggregatorInterface, Ownable {
+contract MockAggregator is IAggregator, Ownable {
     uint256 _nextRound;
 
     mapping(uint256 => int256) private _answers;
     mapping(uint256 => uint256) private _timestamps;
+
+    function decimals() external pure returns (uint8) {
+        return 8;
+    }
 
     function latestAnswer() external view override returns (int256) {
         uint256 round = _nextRound;
