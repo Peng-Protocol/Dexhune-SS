@@ -1,14 +1,6 @@
 // SPDX-License-Identifier: BSD-3-Clause
 /// @title LUSD Dispenser
 
-/*
- *     __    __  _______ ____
- *    / /   / / / / ___// __ \
- *   / /   / / / /\__ \/ / / /
- *  / /___/ /_/ /___/ / /_/ /
- * /_____/\____//____/_____/
- */
-
 pragma solidity ^0.8.28;
 import "./Ownable.sol";
 import "./Normalizer.sol";
@@ -16,6 +8,7 @@ import "./Normalizer.sol";
 import "./interfaces/IERC20.sol";
 import "./interfaces/IAggregator.sol";
 import "./interfaces/ILUSD.sol";
+import "./interfaces/ILiquidity.sol";
 import "./libraries/PengMath.sol";
 
 contract LUSDDispenser is Normalizer, Ownable {
@@ -59,7 +52,9 @@ contract LUSDDispenser is Normalizer, Ownable {
         }
 
         ERC20Interface tokenZero = ERC20Interface(lusd.tokenZero());
-        tokenZero.transferFrom(msg.sender, lusd.liquidity(), amount);
+        address liquidityAddress = address(lusd.liquidity()); // Fetch liquidity address
+
+        tokenZero.transferFrom(msg.sender, liquidityAddress, amount);
 
         uint256 nprice = _queryPrice();
         uint256 namount = _normalize(amount, getTokenZeroDec());
@@ -72,6 +67,11 @@ contract LUSDDispenser is Normalizer, Ownable {
         }
 
         lusd.transfer(msg.sender, dohlAmount);
+
+        // Ensure liquidity contract is valid before calling sync()
+        if (liquidityAddress != address(0)) {
+            try ILiquidity(liquidityAddress).sync() {} catch {}
+        }
     }
 
     error RejectedZeroAmount();
