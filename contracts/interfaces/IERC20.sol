@@ -15,7 +15,7 @@
 
 pragma solidity ^0.8.28;
 
-interface IERC20 {
+interface ERC20Interface {
     /**
      * @dev Emitted when `value` tokens are moved from one account (`from`) to
      * another (`to`).
