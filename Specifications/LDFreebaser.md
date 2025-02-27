@@ -10,9 +10,7 @@ The Freebaser contract holds a large sum of LUSD which it pays out to whoever ca
 **Functions**
 - **freebase**:
 Calls `rebase` at the LUSD contract address, caller must hold at least (1) item of a target `NFT`. 
-Caller is sent 0.10 LUSD from the contract's balance. 
-
-Function has a cooldown of 30 seconds. 
+Caller is sent 0.10 LUSD from the contract's balance. Function has a cooldown of 30 seconds. 
 
 - **setLUSD (ownerOnly)**:
 Determines the `LUSD` contract address. 
