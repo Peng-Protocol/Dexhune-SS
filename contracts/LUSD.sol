@@ -1,14 +1,6 @@
 // SPDX-License-Identifier: BSD-3-Clause
 /// @title LUSD ERC20 Root Implementation
 
-/*
- *     __    __  _______ ____
- *    / /   / / / / ___// __ \
- *   / /   / / / /\__ \/ / / /
- *  / /___/ /_/ /___/ / /_/ /
- * /_____/\____//____/_____/
- */
-
 pragma solidity ^0.8.28;
 import "@openzeppelin-contracts-5.2.0/token/ERC20/ERC20.sol";
 import "./Ownable.sol";
@@ -100,9 +92,8 @@ contract LUSD is ERC20, Normalizer, Ownable {
 
         value = _tax(from, value);
         _transfer(from, to, value);
-        rebase();
 
-        return true;
+        return true; // Removed `rebase();`
     }
 
     function transferFrom(
@@ -115,8 +106,17 @@ contract LUSD is ERC20, Normalizer, Ownable {
 
         value = _tax(from, value);
         _transfer(from, to, value);
-        rebase();
 
+        return true; // Removed `rebase();`
+    }
+
+    function approve(
+        address spender,
+        uint256 amount
+    ) public virtual override returns (bool) {
+        address owner = _msgSender();
+        _approve(owner, spender, amount);
+        rebase(); // Now triggers rebase when approve is called
         return true;
     }
 
