@@ -2,7 +2,7 @@
 /// @title LUSD ERC20 Root Implementation
 
 pragma solidity ^0.8.28;
-import "@openzeppelin-contracts-5.2.0/token/ERC20/ERC20.sol";
+import "https://github.com/OpenZeppelin/openzeppelin-contracts/blob/v5.0.1/contracts/token/ERC20/ERC20.sol";
 import "./Ownable.sol";
 import "./Normalizer.sol";
 import "./interfaces/IAggregator.sol";
