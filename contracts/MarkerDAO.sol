@@ -11,8 +11,8 @@
 
 pragma solidity ^0.8.28;
 import "./Ownable.sol";
-import "@openzeppelin-contracts-5.2.0/interfaces/IERC721Enumerable.sol";
-import "@openzeppelin-contracts-5.2.0/token/ERC20/extensions/IERC20Metadata.sol";
+import "https://github.com/OpenZeppelin/openzeppelin-contracts/blob/v5.0.1/contracts/token/ERC721/extensions/IERC721Enumerable.sol";
+import "https://github.com/OpenZeppelin/openzeppelin-contracts/blob/v5.0.1/contracts/token/ERC20/extensions/IERC20Metadata.sol";
 
 contract MarkerDAO is Ownable {
     IERC721Enumerable public nftCollection;
