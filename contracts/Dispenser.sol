@@ -4,7 +4,6 @@
 pragma solidity ^0.8.28;
 import "./Ownable.sol";
 import "./Normalizer.sol";
-
 import "./interfaces/IERC20.sol";
 import "./interfaces/IAggregator.sol";
 import "./interfaces/ILUSD.sol";
@@ -45,12 +44,6 @@ contract LUSDDispenser is Normalizer, Ownable {
         return _normalize(price, decimals);
     }
 
-    // New function to ensure sync succeeds or reverts
-    function mustSync(address liquidityAddress) private {
-        require(liquidityAddress != address(0), "Invalid liquidity address");
-        ILiquidity(liquidityAddress).sync();
-    }
-
     function convert(uint256 amount) external {
         if (amount <= 0) {
             revert RejectedZeroAmount();
@@ -73,8 +66,8 @@ contract LUSDDispenser is Normalizer, Ownable {
 
         lusd.transfer(msg.sender, dohlAmount);
 
-        // Replace try/catch with mustSync
-        mustSync(liquidityAddress);
+        // Moved rebase to the end
+        lusd.rebase();
     }
 
     error RejectedZeroAmount();
