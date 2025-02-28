@@ -42,8 +42,13 @@ contract LUSDDispenser is Normalizer, Ownable {
         }
 
         uint256 price = uint256(oracle.latestAnswer());
-
         return _normalize(price, decimals);
+    }
+
+    // New function to ensure sync succeeds or reverts
+    function mustSync(address liquidityAddress) private {
+        require(liquidityAddress != address(0), "Invalid liquidity address");
+        ILiquidity(liquidityAddress).sync();
     }
 
     function convert(uint256 amount) external {
@@ -68,10 +73,8 @@ contract LUSDDispenser is Normalizer, Ownable {
 
         lusd.transfer(msg.sender, dohlAmount);
 
-        // Ensure liquidity contract is valid before calling sync()
-        if (liquidityAddress != address(0)) {
-            try ILiquidity(liquidityAddress).sync() {} catch {}
-        }
+        // Replace try/catch with mustSync
+        mustSync(liquidityAddress);
     }
 
     error RejectedZeroAmount();
