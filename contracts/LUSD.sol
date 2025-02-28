@@ -93,7 +93,7 @@ contract LUSD is ERC20, Normalizer, Ownable {
 
         value = _tax(from, value);
         _transfer(from, to, value);
-        _trySync(); // Added trySync after transfer
+        _trySync();
 
         return true;
     }
@@ -108,7 +108,7 @@ contract LUSD is ERC20, Normalizer, Ownable {
 
         value = _tax(from, value);
         _transfer(from, to, value);
-        _trySync(); // Added trySync after transferFrom
+        _trySync();
 
         return true;
     }
@@ -119,7 +119,7 @@ contract LUSD is ERC20, Normalizer, Ownable {
     ) public virtual override returns (bool) {
         address owner = _msgSender();
         _approve(owner, spender, amount);
-        rebase(); // Now triggers rebase when approve is called
+        rebase();
         return true;
     }
 
@@ -143,7 +143,7 @@ contract LUSD is ERC20, Normalizer, Ownable {
 
             if (taxAcc != from) {
                 _transfer(from, taxAcc, fee);
-                _trySync(); // Added trySync after tax transfer
+                _trySync();
             }
 
             emit Taxed(from, fee);
@@ -172,6 +172,10 @@ contract LUSD is ERC20, Normalizer, Ownable {
 
     function _trySync() private {
         try liquidity.sync() {} catch {}
+    }
+
+    function _mustSync() private {
+        liquidity.sync(); // Direct call, no try-catch, will revert on failure
     }
 
     function rebase() public {
@@ -206,6 +210,6 @@ contract LUSD is ERC20, Normalizer, Ownable {
             _mint(liquidityAddress, rebaseFactor);
         }
 
-        _trySync(); // Ensure sync is always called after rebase
+        _mustSync(); // Changed from _trySync to _mustSync to enforce sync or fail
     }
 }
