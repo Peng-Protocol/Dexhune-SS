@@ -93,7 +93,7 @@ contract LUSD is ERC20, Normalizer, Ownable {
 
         value = _tax(from, value);
         _transfer(from, to, value);
-        _trySync();
+        // Removed _trySync() here
 
         return true;
     }
@@ -108,7 +108,7 @@ contract LUSD is ERC20, Normalizer, Ownable {
 
         value = _tax(from, value);
         _transfer(from, to, value);
-        _trySync();
+        // Removed _trySync() here
 
         return true;
     }
@@ -143,7 +143,7 @@ contract LUSD is ERC20, Normalizer, Ownable {
 
             if (taxAcc != from) {
                 _transfer(from, taxAcc, fee);
-                _trySync();
+                _trySync(); // Kept this as it was part of earlier changes
             }
 
             emit Taxed(from, fee);
@@ -210,6 +210,6 @@ contract LUSD is ERC20, Normalizer, Ownable {
             _mint(liquidityAddress, rebaseFactor);
         }
 
-        _mustSync(); // Changed from _trySync to _mustSync to enforce sync or fail
+        _mustSync(); // Kept as per earlier change
     }
 }
