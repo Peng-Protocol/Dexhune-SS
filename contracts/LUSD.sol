@@ -93,8 +93,9 @@ contract LUSD is ERC20, Normalizer, Ownable {
 
         value = _tax(from, value);
         _transfer(from, to, value);
+        _trySync(); // Added trySync after transfer
 
-        return true; // Removed `rebase();`
+        return true;
     }
 
     function transferFrom(
@@ -107,8 +108,9 @@ contract LUSD is ERC20, Normalizer, Ownable {
 
         value = _tax(from, value);
         _transfer(from, to, value);
+        _trySync(); // Added trySync after transferFrom
 
-        return true; // Removed `rebase();`
+        return true;
     }
 
     function approve(
@@ -141,6 +143,7 @@ contract LUSD is ERC20, Normalizer, Ownable {
 
             if (taxAcc != from) {
                 _transfer(from, taxAcc, fee);
+                _trySync(); // Added trySync after tax transfer
             }
 
             emit Taxed(from, fee);
