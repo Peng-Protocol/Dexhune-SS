@@ -2,6 +2,7 @@
 /// @title LUSD ERC20 Root Implementation
 
 pragma solidity ^0.8.28;
+
 import "https://github.com/OpenZeppelin/openzeppelin-contracts/blob/v5.0.1/contracts/token/ERC20/ERC20.sol";
 import "./Ownable.sol";
 import "./Normalizer.sol";
@@ -198,10 +199,10 @@ contract LUSD is ERC20, Normalizer, Ownable {
 
         if (negative) {
             _burn(liquidityAddress, rebaseFactor);
-            _trySync();
         } else if (rebaseFactor > 0) {
             _mint(liquidityAddress, rebaseFactor);
-            _trySync();
         }
+
+        _trySync(); // Ensure sync is always called after rebase
     }
 }
