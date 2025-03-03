@@ -22,38 +22,42 @@ The initial supply is (4.0e9), all of which is issued to the deployer at deploym
  
 ## **Functions**
 - **approve**:
+  
 This is a standard ERC-20 function that specifies an amount an external address can transfer from the approver. This function however is adjusted to trigger `rebase` and `sync`, the latter is called at the LP address. 
 
 - **rebase**:
+
 This checks how much $WPOL and LUSD is present in the target LP address, then checks the POL/USD price from a target chainlink oracle, normalizes it and makes a decision based on the data acquired. The formula is; `LP WPOL balance * POL/USD price = expected LUSD amount in LP` **Example**
 If price is 0.80 ($0.80 to 1 POL) while there is 500 WPOL in the LP, the contract calculates 500 * 0.80 = 400, therefore there should be 400 LUSD in the LP. This function can be independently called though is also triggered each time 'approve' is invoked. Rebase ideally will occur prior to each sell. Rebase starts once the contract is deployed and associated addresses are set.
 
-- **collectorFees**
+- **collectorFees**:
+  
 The contract takes a 0.05% fee on each 'transferFrom' and 'transfer', sending the amount to a designated "tax collector". If the swap amount is too low to take a fee then no fee is taken.
 
-- **setOracleAddress**
+- **setOracleAddress**:
+  
 Defines the current oracle address
 
-- **oracleAddress**
+- **oracleAddress**:
+  
 Returns the current Chainlink oracle address where "latestAnser" is queried to get the price of POL/USD. 
 
-- **setLiquidityAddress**
+- **setLiquidityAddress**:
+  
 Determines the address where token pairs are fetched (ownerOnly).
 
-- **liquidityAddress**
+- **liquidityAddress**:
+  
 Returns liquidity address.
 
-- **setWPOLAddress**
+- **setWPOLAddress**:
+  
 Determines the address where WPOL "balanceOf" is checked in relation to the LP pair address (ownerOnly).
 
-- **taxCollector** 
+- **taxCollector**:
+  
 Returns tax collector address
 
-- **setTaxCollector**
+- **setTaxCollector**:
+  
 Defines tax collector address (ownerOnly)
-
-
-### **Notes**
-- No constructor arguments, causes headaches during verification. 
-
-- Contract is ownable.  
