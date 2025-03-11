@@ -3,11 +3,11 @@ When designing an ERC-20 token with a rebase mechanism tied to an oracle price�
 The core challenge is that a rebase changes token balances globally (or for specific accounts), which can interfere with a DEX’s assumptions during a swap. Most DEXes (like Uniswap or SushiSwap) rely on the token’s `transfer` and `balanceOf` functions behaving predictably within a single transaction. If a rebase happens mid-swap, the amounts calculated by the DEX (e.g., via the constant product formula `x * y = k`) could become invalid, potentially causing failed transactions or unexpected outcomes.
 To ensure the rebase occurs after the swap, you’ll need to carefully control when the rebase logic is triggered. Here’s one practical approach:
 
-# **Delayed Rebase with Post-Swap Trigger**
+## **Delayed Rebase with Post-Swap Trigger**
 
 Instead of rebasing immediately when the oracle price updates or during token transfers, you can defer the rebase until after the swap completes. Since Solidity doesn’t natively allow you to "schedule" logic to run at the end of a transaction, you can use a pattern where the rebase is executed in a separate step, triggered explicitly after the swap.
 
-## Implementation Outline
+### Implementation Outline
 
 **1. Track Oracle Price Updates**: Store the latest oracle price and a flag indicating whether a rebase is pending.
 
@@ -77,7 +77,7 @@ contract RebaseToken is ERC20 {
 
 ```
 
-## **How It Works**
+### **How It Works**
 
 - **Raw Balances**: `_rawBalances` stores unscaled balances, while `balanceOf` applies the `scalingFactor` dynamically. This ensures the DEX sees consistent amounts during the swap.
 
@@ -88,14 +88,14 @@ User initiates a swap on the DEX.
 DEX calls `transfer`/`transferFrom`, which uses raw balances and doesn’t trigger a rebase.
 After the swap transaction succeeds, someone (e.g., a bot or user) calls `updatePrice()` and `rebase()` to adjust balances.
 
-## **Ensuring Post-Swap Rebase**
+### **Ensuring Post-Swap Rebase**
 To enforce this sequence:
 
 - **Separate Transactions**: The DEX swap and rebase must occur in separate transactions. Since a single transaction can’t guarantee “end-of-swap” timing within itself, you rely on external coordination (e.g., a keeper bot monitoring the DEX and calling `rebase()` after swaps).
 
 - **Event Emission**: Emit an event in `transfer` when a swap-like operation occurs (e.g., detect large transfers to a DEX pair), signaling keepers to call `rebase()`.
   
-## **Potential Issues and Mitigations**
+### **Potential Issues and Mitigations**
 
 - **Front-Running**: If `rebase()` adjusts balances favorably, someone could front-run it. Consider access control (e.g., `onlyOwner`) or a time delay mechanism.
   
@@ -103,7 +103,7 @@ To enforce this sequence:
   
 - **Gas Costs**: Frequent rebasing could get expensive—optimize by batching or limiting rebase frequency.
   
-## **Alternative: Mid-Swap Rebase with Hooks**
+### **Alternative: Mid-Swap Rebase with Hooks**
 If you must rebase within the same transaction as the swap, you’d need a custom DEX or a token with hooks (e.g., Uniswap V3’s `afterSwap` callback, if supported). However, this is trickier and less portable across DEXes, so the delayed approach is generally safer and more compatible.
 
 Does this align with your goals? If you’ve got a specific DEX or oracle in mind (e.g., Chainlink), I can refine the example further!
@@ -114,7 +114,7 @@ Yes, the DEX typically checks `balanceOf` before and after the swap to verify am
 
 Modifying the ERC-20 approve function to reset approvals after each `transfer` or `transferFrom` operation for a specific address, while triggering a rebase during `approve`, is an interesting twist to enforce frequent rebasing without disrupting swap operations. Let’s break this down and design it conceptually, keeping in mind your goal of rebasing during `approve` and requiring more frequent approvals.
 
-## **Concept Overview**
+### **Concept Overview**
 Normally, `approve` sets a static allowance for a spender, which persists until modified or fully used. Your modification would:
 
 **1. Reset Approvals**: After a `transfer` or `transferFrom` involving a spender’s allowance for a given address, the allowance resets to zero.
@@ -203,19 +203,19 @@ contract RebaseTokenWithResetApprove is ERC20 {
 
 ```
 
-## **How It Works**
+### **How It Works**
 **1. `Approve` with `Rebase`**: When a user calls approve, the `_rebase` function updates the `scalingFactor` (e.g., via an oracle price), adjusting all balances before setting the allowance.
 
 **2. Allowance Reset**: After `transfer` or `transferFrom`, the allowance for the relevant spender resets to zero. (Note: The example resets all approvals for simplicity; a real implementation might track and reset only the involved spender.)
 
 **3. DEX Interaction**: A DEX calling `transferFrom` (e.g., during a swap) uses the pre-rebased balances from the latest `approve`. Since the rebase happens before the swap (during `approve`), the DEX sees consistent `balanceOf` values throughout the transaction.
 
-## **Avoiding Swap Interference**
+### **Avoiding Swap Interference**
 - **Pre-Swap Rebase** : By tying the rebase to `approve`, it occurs before the DEX initiates the swap. The DEX’s `balanceOf` checks reflect the updated, post-rebase state, avoiding mid-swap disruptions.
 
 - **Forced Re-Approval**: Since `transferFrom` resets the allowance, the DEX (or user) must call `approve` again for the next operation, ensuring the rebase is fresh and frequent.
   
-## **Challenges and Considerations**
+### **Challenges and Considerations**
 **1. User Experience**: Requiring repeated `approve` calls increases gas costs and complexity for users and DEX integrations. You’d need clear documentation or frontend support.
 
 **2. Spender Tracking**: The example broadly resets approvals, but you might need a `mapping(address => mapping(address => bool))` to track active spenders per owner and reset only the relevant one.
@@ -328,7 +328,7 @@ function isSpenderApproved(address owner, address spender) external view returns
 
 ```
 
-## **Key Features**
+### **Key Features**
 **1. Approval Reset**:
 
 - `transfer`: Resets all approvals for `msg.sender`’s spenders (broad reset for simplicity).
@@ -346,7 +346,7 @@ function isSpenderApproved(address owner, address spender) external view returns
   
 - **Next Swap**: DEX checks `allowance`, sees it’s zero, and prompts the user to approve again, triggering another `rebase`.
 
-## **Notes and Improvements**
+### **Notes and Improvements**
 
 **1. Gas Efficiency**: The `_resetApprovals` function in `transfer` is incomplete due to Solidity’s lack of dynamic iteration over mappings. For production, use OpenZeppelin’s `EnumerableSet` to track spenders dynamically:
 
