@@ -1,13 +1,13 @@
-### **Premise** 
+# **Premise** 
 An incentivized smart contract and automated script for calling `rebase` on LUSD. 
 
-### **General** 
+# **General** 
 The system is made up of a "Freebaser" Contract deployed to whichever chain LUSD is present, and an automated script built on Gellato. 
 
 ## **Contract** 
 The Freebaser contract holds a large sum of LUSD which it pays out to whoever calls `freebase`. `freebase` triggers `rebase` at the LUSD contract. 
 
-**Functions**
+### **Functions**
 - **freebase**:
 Calls `rebase` at the LUSD contract address, caller must hold at least (1) item of a target `NFT`. 
 Caller is sent 0.10 LUSD from the contract's balance. Function has a cooldown of 30 seconds. 
@@ -18,7 +18,7 @@ Determines the `LUSD` contract address.
 - **setNFT (ownerOnly)**:
 Determines the `NFT` contract address. 
 
-**Data**
+### **Data**
 - **LUSD**
 Stores the `LUSD` contract address.
 
@@ -30,7 +30,7 @@ The Freebaser Auto-Script (bot) is deployed via Gellato to scan the liquidity po
 The bot is given (1) Peng NFT. 
 Bot remains funded by selling rewards. 
 
-**Functions** 
+### **Functions** 
 - **Scan** 
 A basic routine that scans each block for swap transactions in relation to a set LP address. Prompts `doFreebase` if a swap is detected. 
 
