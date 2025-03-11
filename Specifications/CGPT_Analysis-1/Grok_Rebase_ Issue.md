@@ -1,9 +1,9 @@
-### **Section 1**
+# **Section 1**
 When designing an ERC-20 token with a rebase mechanism tied to an oracle price—especially one adjusting liquidity provider (LP) balances—you’re dealing with a complex interaction between token logic and decentralized exchange (DEX) behavior. Ensuring the rebase occurs at the end of a swap operation is a solid idea to avoid discrepancies between the DEX’s expected token amounts and the actual post-rebase balances. Let’s break this down and explore how to achieve it.
 The core challenge is that a rebase changes token balances globally (or for specific accounts), which can interfere with a DEX’s assumptions during a swap. Most DEXes (like Uniswap or SushiSwap) rely on the token’s `transfer` and `balanceOf` functions behaving predictably within a single transaction. If a rebase happens mid-swap, the amounts calculated by the DEX (e.g., via the constant product formula `x * y = k`) could become invalid, potentially causing failed transactions or unexpected outcomes.
 To ensure the rebase occurs after the swap, you’ll need to carefully control when the rebase logic is triggered. Here’s one practical approach:
 
-### **Delayed Rebase with Post-Swap Trigger**
+# **Delayed Rebase with Post-Swap Trigger**
 
 Instead of rebasing immediately when the oracle price updates or during token transfers, you can defer the rebase until after the swap completes. Since Solidity doesn’t natively allow you to "schedule" logic to run at the end of a transaction, you can use a pattern where the rebase is executed in a separate step, triggered explicitly after the swap.
 
@@ -108,7 +108,7 @@ If you must rebase within the same transaction as the swap, you’d need a custo
 
 Does this align with your goals? If you’ve got a specific DEX or oracle in mind (e.g., Chainlink), I can refine the example further!
 
-### **Section 2**
+# **Section 2**
 
 Yes, the DEX typically checks `balanceOf` before and after the swap to verify amounts, but you can’t guarantee a rebase occurs before the first check within the same transaction unless you integrate a custom pre-swap hook or trigger the rebase in a prior transaction via an external call.
 
