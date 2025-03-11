@@ -1,4 +1,4 @@
-### **Premise**
+# **Premise**
 A CFAMM stablecoin using Liquidity rebase and Chainlink price oracles to maintain a price of $1. No collateralization. 
 
 ## **Parameters** 
@@ -9,7 +9,7 @@ A CFAMM stablecoin using Liquidity rebase and Chainlink price oracles to maintai
 | Price    | $1          |
 | Decimals | 18          |
 
-### **General**
+# **General**
 The token is an ERC-20 with a few custom functions, the token achieves a price change by adding or subtracting token units to or from a target liquidity address. 
 
 Because price on CFAMM liquidity pairs is calculated by dividing the sum of `Token0` in a pair by the sum of `Token1`, and `Token1` (LUSD) would be programmed with rebasing properties, it should be possible to alter the price by changing how much of `Token1` is present. 
@@ -20,7 +20,7 @@ Because rebase offsets the LP's reserves, `sync` must be called after each rebas
 
 The initial supply is (4.0e9), all of which is issued to the deployer at deployment. 
  
-## **Functions**
+### **Functions**
 - **approve**:
   
 This is a standard ERC-20 function that specifies an amount an external address can transfer from the approver. This function however is adjusted to trigger `rebase` and `sync`, the latter is called at the LP address. 
