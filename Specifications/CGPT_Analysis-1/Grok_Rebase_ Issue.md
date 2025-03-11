@@ -339,7 +339,7 @@ function isSpenderApproved(address owner, address spender) external view returns
 
 **3. Spender Tracking**: `_isSpenderApproved` maps owners to their approved spenders, allowing precise resets in `transferFrom`.
 
-## **How It Works with DEXes**
+# **How It Works with DEXes**
 - **User Approves DEX**: User calls `approve(dexAddress, amount)`, triggering a rebase. The DEX gets an allowance based on post-rebase balances.
   
 - **DEX Swap**: DEX calls `transferFrom(user, dexPool, amount)`. The transfer succeeds, then resets the DEX’s `allowance` to zero.
