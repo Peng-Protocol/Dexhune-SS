@@ -670,7 +670,7 @@ The `Excess Margin` in the `CloseLongPosition` formula is replaced by `Deducted 
 Therefore all `STABLE Cross` positions share a common total margin unit. 
 
 
-# **Functions**
+### **Functions**
 Most functions are identical to SSD with a few exceptions; 
 
 - enterLong 
@@ -735,7 +735,7 @@ Is limited to (50) entries per call.
 Similar to SSD but takes a 10% fee on withdrawal and sends it to the `collector`. 
 
 
-# **Data**
+### **Data**
 Stores the same data as the SSD with some exceptions; 
 
 - taxCollector 
@@ -961,7 +961,7 @@ Stores the Shock Space Agent address.
 
 
 
-# **Examples*
+# **Examples**
 E1 : Adding excess margin to total margin can strengthen an order and push liquidation price further away. 
 
 E2 : Single liquidation or close on CSD can cause a cascade of liquidations if not managed properly. 
