@@ -4,9 +4,6 @@ A leverage trading platform for any token on the EVM, based on Dexhune-P.
 # **General**
 The system is made up of (6) contracts; `Shock Space Agent` (SSA) - `Shock Space Drive` (SSD) - `Shock Space Liquidity` (SSL) - `Cross Space Drive` (CSD) - `Cross Space Coordinator` (CSC) and `Shockhopper`. 
 
-# **General**
-The system is made up of (6) contracts; `Shock Space Agent` (SSA) - `Shock Space Drive` (SSD) - `Shock Space Liquidity` (SSL) - `Cross Space Drive` (CSD) - `Cross Space Coordinator` (CSC) and `Shockhopper`. 
-
 ## **Paper Tokens**
 Paper tokens are standard ERC-20s built into each SSD with some custom functions. 
 Each SSD creates a pair of `STABLE` and `Token-1` Papers. 
