@@ -771,7 +771,7 @@ Set by the SSA.
 
 
 ## **Cross Space Coordinator**
-The CSC stores the data of various user`s `total margin` across all CSDs. 
+The CSC stores the data of various user's `total margin` across all CSDs. 
 
 When a user enters a long position; their excess margin is recorded in a total margin storage for `TOKEN-1` in the CSC. 
 
