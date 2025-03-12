@@ -2,8 +2,7 @@
 A leverage trading platform for any token on the EVM, based on Dexhune-P. 
 
 # **General**
-The system is made up of (6) contracts; `Shock Space Agent` (SSA) - `Shock Space Drive` (SSD) - `Shock Space Liquidity` (SSL) - `Cross Space Drive` (CSD) - `Cross Space Coordinator` (CSC) and `Shockhopper`# **Premise**
-A leverage trading platform for any token on the EVM, based on Dexhune-P. 
+The system is made up of (6) contracts; `Shock Space Agent` (SSA) - `Shock Space Drive` (SSD) - `Shock Space Liquidity` (SSL) - `Cross Space Drive` (CSD) - `Cross Space Coordinator` (CSC) and `Shockhopper`. 
 
 # **General**
 The system is made up of (6) contracts; `Shock Space Agent` (SSA) - `Shock Space Drive` (SSD) - `Shock Space Liquidity` (SSL) - `Cross Space Drive` (CSD) - `Cross Space Coordinator` (CSC) and `Shockhopper`. 
