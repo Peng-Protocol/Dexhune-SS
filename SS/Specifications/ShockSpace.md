@@ -486,6 +486,18 @@ Same as on `PairingFoundry`.
 
 Same as on `PairingFoundry`.
 
+- queryHistoricalSellVolume 
+
+Same as on `PairingFoundry`.
+
+- queryHistoricalBuyVolume 
+
+Same as on `PairingFoundry`.
+
+- queryHistoricalMarketCap 
+
+Same as on `PairingFoundry`.
+
 - queryInterest 
 
 Returns up to (1000) older IO (open interest) entries + their time/date stamp.  
