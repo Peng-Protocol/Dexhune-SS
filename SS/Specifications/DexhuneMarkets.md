@@ -1,4 +1,4 @@
-# **Premise ///
+# **Premise**
 A decentralized listing platform for Dexhune.
 
 # **General**
