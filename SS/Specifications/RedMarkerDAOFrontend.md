@@ -4,8 +4,10 @@ A frontend application for interacting with Red Marker DAO contracts.
 # **General**
 
 
-## **Page**
-- **1a ; Wallet connect button, initiates wallet connect. 
+## **Page 1**
+- **1a ; Wallet connect button**
+
+Initiates wallet connect. 
 
 - **1b ; DXH logo**
 
