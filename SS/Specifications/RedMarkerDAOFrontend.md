@@ -18,7 +18,7 @@ Is DXH logo.
 
 - **Balances**
 
-If the wallet is connected; queries and presents the address's FFT balance. Displays the numbers with ticker symbols. 
+If the wallet is connected; queries and presents the address's NFT and FFT balances. Displays the numbers with ticker symbols. 
 
 - **Recent Proposals**
 
