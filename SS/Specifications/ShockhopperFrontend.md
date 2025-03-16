@@ -40,7 +40,7 @@ The frontend searches the shock space agent for listings to route through.
 
 For the transacted amount of the token in "Token-A Ticker or selected position". Defaults to the position output if a position is selected. 
 
-Calculates margin limit for position entry, position cannot be created if the expected leverage amount exceeds the limit. 
+Calculates initial and excess margin limit for position entry, position cannot be created if the expected leverage amount and excess margin exceed the limit(s). 
 
 
 **1f ; Switch Button**
