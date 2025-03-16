@@ -48,10 +48,14 @@ Is an image link of a Dexhune logo, indicates if the token has a shock space lis
  
 Has a button at the end that says "trade", sends the user to "trade(.)dexhune" with a query string for the token selected to be put in Token-A selection. 
 
+Queries and displays yield rate. 
+
 - **1e ; Cross Space Button**
 
 Titled; "Cross Margin Leveraged Market Price Listing".
 Is an image link with a purple(red minus 40) Dexhune logo, similar to "Shock Space Button" but queries the Shock Space Agent for CSD listings. 
+
+Queries and displays yield rate. 
 
 - **1f ; Chart Button**
 
