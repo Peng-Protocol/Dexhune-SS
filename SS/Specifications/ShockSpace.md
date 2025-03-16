@@ -87,6 +87,14 @@ Stores all older IO (open interest) entries + time/date stamp,  is added-to afte
  
 `IO` is just all margin in shorts vs longs at any particular point in time. Stored as; `uint256, uint256`. (Short IO, Long IO). 
 
+- historicalXFees 
+
+Stores all xFees collected and never decreases the stored data, only adds to it as fees are collected. Stores prior total fee height along with index and timestamp. 
+
+- historicalYFees 
+
+Stores all yFees collected and never decreases the stored data, only adds to it as fees are collected. Stores prior total fee height along with index and timestamp. 
+
 - positionDetails 
 
 Each position has the following details; 
@@ -502,6 +510,28 @@ Same as on `PairingFoundry`.
 
 Returns up to (1000) older IO (open interest) entries + their time/date stamp.  
 Requires `step` to return the prior (1000) indexes. 
+
+- queryHistoricalXFees 
+
+Returns up to (1000) older xFees entries + their index and time/date stamp.  
+Requires `step` to return the prior (1000) indexes. 
+
+- queryHistoricalYFees 
+
+Returns up to (1000) older yFees entries + their index and time/date stamp.  
+Requires `step` to return the prior (1000) indexes. 
+
+queryYield 
+
+Calculates and presents the "real yield" rate for the listing. First gets the latest historical (x or y)fees entry and attempts to find a fee entry from 24 hours ago or the latest fee after a 24 hour cutoff point. Then calculates; 
+
+```
+Latest (x or y)fee height - oldest 24hr (x or y)fee height = total 24hr (x or y)fees 
+
+Total 24hr fees / total (x or y)Liquid * 100 = daily (x or y)Yield
+
+Daily (x or y)Yield * 365 = (x or y)APY
+```
 
 
 ## **Shock Space Liquidity**
