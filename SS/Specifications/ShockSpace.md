@@ -145,7 +145,7 @@ This is calculated as;
 
 
 `Excess Margin` is any additional amount added to a position which acts as a buffer on the position. 
-
+`Excess Margin` cannot exceed `Leverage Amount` else the position will not be created. 
 
 
 `Leverage` is a multiple of Paper assets that the user has borrowed. The number stored here represents how much the Initial margin is multiplied by to achieve the `leverage amount`. 
