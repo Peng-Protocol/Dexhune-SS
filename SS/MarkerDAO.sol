@@ -33,8 +33,8 @@ contract MarkerDAO is Ownable {
         uint256 index;
         string detail;
         bytes transactionData;
-        ProposalType type;       // New field for proposal type
-        ProposalStatus status;   // Updated to only track state
+        ProposalType proposalType;  // Renamed from "type" to "proposalType"
+        ProposalStatus status;
         address proposer;
         uint256 fftSpent;
         uint256 votesFor;
@@ -130,8 +130,8 @@ contract MarkerDAO is Ownable {
         newProposal.index = index;
         newProposal.detail = detail;
         newProposal.transactionData = transactionData;
-        newProposal.type = ProposalType.Regular;    // Set type
-        newProposal.status = ProposalStatus.Pending; // Set status
+        newProposal.proposalType = ProposalType.Regular;
+        newProposal.status = ProposalStatus.Pending;
         newProposal.proposer = msg.sender;
         newProposal.fftSpent = fftFee;
         newProposal.deadline = block.timestamp + 604800; // 1 week
@@ -143,7 +143,7 @@ contract MarkerDAO is Ownable {
     function upvoteProposal(uint256 index, uint256 fftAmount, uint256 tokenId) external {
         require(index < proposalCount, "Proposal does not exist");
         Proposal storage proposal = proposals[index];
-        require(proposal.type == ProposalType.Regular || proposal.type == ProposalType.RoutineRemoval, "Invalid proposal type");
+        require(proposal.proposalType == ProposalType.Regular || proposal.proposalType == ProposalType.RoutineRemoval, "Invalid proposal type");
         require(proposal.status != ProposalStatus.Rejected, "Proposal rejected");
         require(proposal.status == ProposalStatus.Pending, "Proposal not pending");
 
@@ -167,7 +167,7 @@ contract MarkerDAO is Ownable {
     function downvoteProposal(uint256 index, uint256 fftAmount, uint256 tokenId) external {
         require(index < proposalCount, "Proposal does not exist");
         Proposal storage proposal = proposals[index];
-        require(proposal.type == ProposalType.Regular || proposal.type == ProposalType.RoutineRemoval, "Invalid proposal type");
+        require(proposal.proposalType == ProposalType.Regular || proposal.proposalType == ProposalType.RoutineRemoval, "Invalid proposal type");
         require(proposal.status != ProposalStatus.Rejected, "Proposal rejected");
         require(proposal.status == ProposalStatus.Pending, "Proposal not pending");
 
@@ -223,7 +223,7 @@ contract MarkerDAO is Ownable {
                 proposal.executed = true;
                 emit ProposalExecuted(index);
 
-                if (proposal.type == ProposalType.Routine) { // Check type instead of status
+                if (proposal.proposalType == ProposalType.Routine) {
                     uint256 routineId = routineCount++;
                     Routine storage routine = routines[routineId];
                     routine.index = index;
@@ -261,8 +261,8 @@ contract MarkerDAO is Ownable {
         newProposal.index = index;
         newProposal.detail = detail;
         newProposal.transactionData = transactionData;
-        newProposal.type = ProposalType.Routine;     // Set type
-        newProposal.status = ProposalStatus.Pending; // Set status
+        newProposal.proposalType = ProposalType.Routine;
+        newProposal.status = ProposalStatus.Pending;
         newProposal.proposer = msg.sender;
         newProposal.fftSpent = fftFee;
         newProposal.deadline = block.timestamp + 604800;
@@ -276,7 +276,7 @@ contract MarkerDAO is Ownable {
     function upvoteRoutineProposal(uint256 index, uint256 fftAmount, uint256 tokenId) external {
         require(index < proposalCount, "Proposal does not exist");
         Proposal storage proposal = proposals[index];
-        require(proposal.type == ProposalType.Routine || proposal.type == ProposalType.RoutineRemoval, "Invalid proposal type");
+        require(proposal.proposalType == ProposalType.Routine || proposal.proposalType == ProposalType.RoutineRemoval, "Invalid proposal type");
         require(proposal.status != ProposalStatus.Rejected, "Proposal rejected");
         require(proposal.status == ProposalStatus.Pending, "Proposal not pending");
 
@@ -300,7 +300,7 @@ contract MarkerDAO is Ownable {
     function downvoteRoutineProposal(uint256 index, uint256 fftAmount, uint256 tokenId) external {
         require(index < proposalCount, "Proposal does not exist");
         Proposal storage proposal = proposals[index];
-        require(proposal.type == ProposalType.Routine || proposal.type == ProposalType.RoutineRemoval, "Invalid proposal type");
+        require(proposal.proposalType == ProposalType.Routine || proposal.proposalType == ProposalType.RoutineRemoval, "Invalid proposal type");
         require(proposal.status != ProposalStatus.Rejected, "Proposal rejected");
         require(proposal.status == ProposalStatus.Pending, "Proposal not pending");
 
@@ -336,8 +336,8 @@ contract MarkerDAO is Ownable {
         newProposal.index = index;
         newProposal.detail = detail;
         newProposal.transactionData = abi.encodeWithSignature("removeRoutine(uint256)", routineIndex);
-        newProposal.type = ProposalType.RoutineRemoval; // Set type
-        newProposal.status = ProposalStatus.Pending;    // Set status
+        newProposal.proposalType = ProposalType.RoutineRemoval;
+        newProposal.status = ProposalStatus.Pending;
         newProposal.proposer = msg.sender;
         newProposal.fftSpent = fftFee;
         newProposal.deadline = block.timestamp + 604800;
@@ -386,7 +386,7 @@ contract MarkerDAO is Ownable {
             proposal.index,
             proposal.detail,
             proposal.transactionData,
-            proposal.type,
+            proposal.proposalType,
             proposal.status,
             proposal.proposer,
             proposal.fftSpent,
@@ -409,7 +409,7 @@ contract MarkerDAO is Ownable {
             proposal.index,
             proposal.detail,
             proposal.transactionData,
-            proposal.type,
+            proposal.proposalType,
             proposal.status,
             proposal.proposer,
             proposal.fftSpent,
@@ -432,7 +432,7 @@ contract MarkerDAO is Ownable {
             proposal.index,
             proposal.detail,
             proposal.transactionData,
-            proposal.type,
+            proposal.proposalType,
             proposal.status,
             proposal.proposer,
             proposal.fftSpent,
@@ -454,7 +454,7 @@ contract MarkerDAO is Ownable {
             proposal.index,
             proposal.detail,
             proposal.transactionData,
-            proposal.type,
+            proposal.proposalType,
             proposal.status,
             proposal.proposer,
             proposal.fftSpent,
@@ -476,7 +476,7 @@ contract MarkerDAO is Ownable {
             proposal.index,
             proposal.detail,
             proposal.transactionData,
-            proposal.type,
+            proposal.proposalType,
             proposal.status,
             proposal.proposer,
             proposal.fftSpent,
@@ -513,13 +513,13 @@ contract MarkerDAO is Ownable {
     ) {
         require(index < proposalCount, "Proposal does not exist");
         Proposal storage proposal = proposals[index];
-        require(proposal.type == ProposalType.Routine, "Not a routine proposal");
+        require(proposal.proposalType == ProposalType.Routine, "Not a routine proposal");
         require(proposal.status == ProposalStatus.Rejected, "Routine not rejected");
         return (
             proposal.index,
             proposal.detail,
             proposal.transactionData,
-            proposal.type,
+            proposal.proposalType,
             proposal.status,
             proposal.proposer,
             proposal.fftSpent,
