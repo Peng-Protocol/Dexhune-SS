@@ -372,7 +372,7 @@ contract MarkerDAO is Ownable {
 
     // Query Functions for Proposals
     function queryActiveProposalByIndex(uint256 index) external view returns (uint256, string memory, bytes memory) {
-    function someFunction() external view returns (
+    function fixedFunction1() external view returns (
         uint256, string memory, bytes memory, ProposalStatus, address, uint256, uint256, uint256, bool, uint256, uint256
     );
     ) {
