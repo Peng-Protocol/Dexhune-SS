@@ -25,7 +25,7 @@ contract MarkerDAO is Ownable {
     uint256 approvalThreshold = 510; // 51% scaled as 510/1000
     uint256 finalizeTimeLimit = 24 * 3600; // Default to 24 hours (in seconds)
 
-    // Proposal and Routine structs with separate type and status
+    // Proposal and Routine enums and structs
     enum ProposalType { Regular, Routine, RoutineRemoval }
     enum ProposalStatus { Pending, Rejected, Passed }
 
@@ -59,6 +59,34 @@ contract MarkerDAO is Ownable {
     struct RoutineParams {
         uint256 interval;
         uint256 runwayEnd;
+    }
+
+    // New memory structs for querying
+    struct ProposalData {
+        uint256 index;
+        string detail;
+        bytes transactionData;
+        ProposalType proposalType;
+        ProposalStatus status;
+        address proposer;
+        uint256 fftSpent;
+        uint256 votesFor;
+        uint256 votesAgainst;
+        uint256 turnout;
+        bool executed;
+        uint256 deadline;
+        uint256 createdAt;
+    }
+
+    struct RoutineData {
+        uint256 index;
+        string detail;
+        bytes transactionData;
+        address proposer;
+        uint256 interval;
+        uint256 runwayEnd;
+        uint256 lastExecution;
+        bool active;
     }
 
     // Storage
@@ -376,13 +404,11 @@ contract MarkerDAO is Ownable {
     }
 
     // Query Functions for Proposals
-    function queryActiveProposalByIndex(uint256 index) external view returns (
-        uint256, string memory, bytes memory, ProposalType, ProposalStatus, address, uint256, uint256, uint256, bool, uint256, uint256, uint256
-    ) {
+    function queryActiveProposalByIndex(uint256 index) external view returns (ProposalData memory) {
         require(index < proposalCount, "Proposal does not exist");
         Proposal storage proposal = proposals[index];
         require(proposal.status == ProposalStatus.Pending, "Proposal not active");
-        return (
+        return ProposalData(
             proposal.index,
             proposal.detail,
             proposal.transactionData,
@@ -399,13 +425,11 @@ contract MarkerDAO is Ownable {
         );
     }
 
-    function queryRejectedProposalByIndex(uint256 index) external view returns (
-        uint256, string memory, bytes memory, ProposalType, ProposalStatus, address, uint256, uint256, uint256, bool, uint256, uint256, uint256
-    ) {
+    function queryRejectedProposalByIndex(uint256 index) external view returns (ProposalData memory) {
         require(index < proposalCount, "Proposal does not exist");
         Proposal storage proposal = proposals[index];
         require(proposal.status == ProposalStatus.Rejected, "Proposal not rejected");
-        return (
+        return ProposalData(
             proposal.index,
             proposal.detail,
             proposal.transactionData,
@@ -422,13 +446,11 @@ contract MarkerDAO is Ownable {
         );
     }
 
-    function queryPassedProposalByIndex(uint256 index) external view returns (
-        uint256, string memory, bytes memory, ProposalType, ProposalStatus, address, uint256, uint256, uint256, bool, uint256, uint256, uint256
-    ) {
+    function queryPassedProposalByIndex(uint256 index) external view returns (ProposalData memory) {
         require(index < proposalCount, "Proposal does not exist");
         Proposal storage proposal = proposals[index];
         require(proposal.status == ProposalStatus.Passed, "Proposal not passed");
-        return (
+        return ProposalData(
             proposal.index,
             proposal.detail,
             proposal.transactionData,
@@ -445,12 +467,10 @@ contract MarkerDAO is Ownable {
         );
     }
 
-    function queryProposalByIndex(uint256 index) external view returns (
-        uint256, string memory, bytes memory, ProposalType, ProposalStatus, address, uint256, uint256, uint256, bool, uint256, uint256, uint256
-    ) {
+    function queryProposalByIndex(uint256 index) external view returns (ProposalData memory) {
         require(index < proposalCount, "Proposal does not exist");
         Proposal storage proposal = proposals[index];
-        return (
+        return ProposalData(
             proposal.index,
             proposal.detail,
             proposal.transactionData,
@@ -467,12 +487,10 @@ contract MarkerDAO is Ownable {
         );
     }
 
-    function queryLatestProposal() external view returns (
-        uint256, string memory, bytes memory, ProposalType, ProposalStatus, address, uint256, uint256, uint256, bool, uint256, uint256, uint256
-    ) {
+    function queryLatestProposal() external view returns (ProposalData memory) {
         require(proposalCount > 0, "No proposals exist");
         Proposal storage proposal = proposals[proposalCount - 1];
-        return (
+        return ProposalData(
             proposal.index,
             proposal.detail,
             proposal.transactionData,
@@ -490,13 +508,11 @@ contract MarkerDAO is Ownable {
     }
 
     // Query Functions for Routines
-    function queryActiveRoutineByIndex(uint256 index) external view returns (
-        uint256, string memory, bytes memory, address, uint256, uint256, uint256, bool
-    ) {
+    function queryActiveRoutineByIndex(uint256 index) external view returns (RoutineData memory) {
         require(index < routineCount, "Routine does not exist");
         Routine storage routine = routines[index];
         require(routine.active && block.timestamp < routine.runwayEnd, "Routine not active");
-        return (
+        return RoutineData(
             routine.index,
             routine.detail,
             routine.transactionData,
@@ -508,14 +524,12 @@ contract MarkerDAO is Ownable {
         );
     }
 
-    function queryRejectedRoutineByIndex(uint256 index) external view returns (
-        uint256, string memory, bytes memory, ProposalType, ProposalStatus, address, uint256, uint256, uint256, bool, uint256, uint256, uint256
-    ) {
+    function queryRejectedRoutineByIndex(uint256 index) external view returns (ProposalData memory) {
         require(index < proposalCount, "Proposal does not exist");
         Proposal storage proposal = proposals[index];
         require(proposal.proposalType == ProposalType.Routine, "Not a routine proposal");
         require(proposal.status == ProposalStatus.Rejected, "Routine not rejected");
-        return (
+        return ProposalData(
             proposal.index,
             proposal.detail,
             proposal.transactionData,
@@ -532,12 +546,10 @@ contract MarkerDAO is Ownable {
         );
     }
 
-    function queryPassedRoutineByIndex(uint256 index) external view returns (
-        uint256, string memory, bytes memory, address, uint256, uint256, uint256, bool
-    ) {
+    function queryPassedRoutineByIndex(uint256 index) external view returns (RoutineData memory) {
         require(index < routineCount, "Routine does not exist");
         Routine storage routine = routines[index];
-        return (
+        return RoutineData(
             routine.index,
             routine.detail,
             routine.transactionData,
@@ -549,13 +561,11 @@ contract MarkerDAO is Ownable {
         );
     }
 
-    function queryRemovedRoutineByIndex(uint256 index) external view returns (
-        uint256, string memory, bytes memory, address, uint256, uint256, uint256, bool
-    ) {
+    function queryRemovedRoutineByIndex(uint256 index) external view returns (RoutineData memory) {
         require(index < routineCount, "Routine does not exist");
         Routine storage routine = routines[index];
         require(!routine.active, "Routine not removed");
-        return (
+        return RoutineData(
             routine.index,
             routine.detail,
             routine.transactionData,
@@ -567,12 +577,10 @@ contract MarkerDAO is Ownable {
         );
     }
 
-    function queryRoutineByIndex(uint256 index) external view returns (
-        uint256, string memory, bytes memory, address, uint256, uint256, uint256, bool
-    ) {
+    function queryRoutineByIndex(uint256 index) external view returns (RoutineData memory) {
         require(index < routineCount, "Routine does not exist");
         Routine storage routine = routines[index];
-        return (
+        return RoutineData(
             routine.index,
             routine.detail,
             routine.transactionData,
@@ -584,12 +592,10 @@ contract MarkerDAO is Ownable {
         );
     }
 
-    function queryLatestRoutine() external view returns (
-        uint256, string memory, bytes memory, address, uint256, uint256, uint256, bool
-    ) {
+    function queryLatestRoutine() external view returns (RoutineData memory) {
         require(routineCount > 0, "No routines exist");
         Routine storage routine = routines[routineCount - 1];
-        return (
+        return RoutineData(
             routine.index,
             routine.detail,
             routine.transactionData,
