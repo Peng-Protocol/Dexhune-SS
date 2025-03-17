@@ -33,7 +33,7 @@ contract MarkerDAO is Ownable {
         uint256 index;
         string detail;
         bytes transactionData;
-        ProposalType proposalType;  // Renamed from "type" to "proposalType"
+        ProposalType proposalType;
         ProposalStatus status;
         address proposer;
         uint256 fftSpent;
@@ -377,7 +377,7 @@ contract MarkerDAO is Ownable {
 
     // Query Functions for Proposals
     function queryActiveProposalByIndex(uint256 index) external view returns (
-        uint256, string memory, bytes memory, ProposalType, ProposalStatus, address, uint256, uint256, uint256, bool, uint256, uint256
+        uint256, string memory, bytes memory, ProposalType, ProposalStatus, address, uint256, uint256, uint256, bool, uint256, uint256, uint256
     ) {
         require(index < proposalCount, "Proposal does not exist");
         Proposal storage proposal = proposals[index];
@@ -400,7 +400,7 @@ contract MarkerDAO is Ownable {
     }
 
     function queryRejectedProposalByIndex(uint256 index) external view returns (
-        uint256, string memory, bytes memory, ProposalType, ProposalStatus, address, uint256, uint256, uint256, bool, uint256, uint256
+        uint256, string memory, bytes memory, ProposalType, ProposalStatus, address, uint256, uint256, uint256, bool, uint256, uint256, uint256
     ) {
         require(index < proposalCount, "Proposal does not exist");
         Proposal storage proposal = proposals[index];
@@ -423,7 +423,7 @@ contract MarkerDAO is Ownable {
     }
 
     function queryPassedProposalByIndex(uint256 index) external view returns (
-        uint256, string memory, bytes memory, ProposalType, ProposalStatus, address, uint256, uint256, uint256, bool, uint256, uint256
+        uint256, string memory, bytes memory, ProposalType, ProposalStatus, address, uint256, uint256, uint256, bool, uint256, uint256, uint256
     ) {
         require(index < proposalCount, "Proposal does not exist");
         Proposal storage proposal = proposals[index];
@@ -446,7 +446,7 @@ contract MarkerDAO is Ownable {
     }
 
     function queryProposalByIndex(uint256 index) external view returns (
-        uint256, string memory, bytes memory, ProposalType, ProposalStatus, address, uint256, uint256, uint256, bool, uint256, uint256
+        uint256, string memory, bytes memory, ProposalType, ProposalStatus, address, uint256, uint256, uint256, bool, uint256, uint256, uint256
     ) {
         require(index < proposalCount, "Proposal does not exist");
         Proposal storage proposal = proposals[index];
@@ -468,7 +468,7 @@ contract MarkerDAO is Ownable {
     }
 
     function queryLatestProposal() external view returns (
-        uint256, string memory, bytes memory, ProposalType, ProposalStatus, address, uint256, uint256, uint256, bool, uint256, uint256
+        uint256, string memory, bytes memory, ProposalType, ProposalStatus, address, uint256, uint256, uint256, bool, uint256, uint256, uint256
     ) {
         require(proposalCount > 0, "No proposals exist");
         Proposal storage proposal = proposals[proposalCount - 1];
@@ -509,7 +509,7 @@ contract MarkerDAO is Ownable {
     }
 
     function queryRejectedRoutineByIndex(uint256 index) external view returns (
-        uint256, string memory, bytes memory, ProposalType, ProposalStatus, address, uint256, uint256, uint256, bool, uint256, uint256
+        uint256, string memory, bytes memory, ProposalType, ProposalStatus, address, uint256, uint256, uint256, bool, uint256, uint256, uint256
     ) {
         require(index < proposalCount, "Proposal does not exist");
         Proposal storage proposal = proposals[index];
