@@ -20,7 +20,7 @@ contract MarkerDAO is Ownable {
     using SafeMath for uint256;
 
     // Core Parameters
-    address public nftCollection; // Address of the NFT collection
+    address public nftCollection; // Address of the NFT collection;
     address public fftToken;     // Address of the FFT token
     uint256 public turnoutThreshold = 333; // 33.3% scaled as 333/1000
     uint256 public approvalThreshold = 510; // 51% scaled as 510/1000
