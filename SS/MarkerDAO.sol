@@ -86,8 +86,8 @@ contract MarkerDAO is Ownable {
     }
 
     // Helper to fetch decimals with fallback
-    function tryDecimals(IERC20Metadata token) internal view returns (uint256) {
-        try token.decimals() returns (uint256 decimals) {
+    function tryDecimals(IERC20Metadata token) internal view returns (uint8) {
+        try token.decimals() returns (uint8 decimals) {
             return decimals;
         } catch {
             return 18; // Fallback to 18 decimals
@@ -371,7 +371,7 @@ contract MarkerDAO is Ownable {
     }
 
     // Query Functions for Proposals
-    function queryActiveProposalByIndex(uint256 index) external view returns (
+    function queryActiveProposalByIndex(uint256 index) external view returns (uint256, string memory, bytes memory) {
         uint256, string memory, bytes memory, ProposalStatus, address, uint256, uint256, uint256, bool, uint256, uint256
     ) {
         require(index < proposalCount, "Proposal does not exist");
@@ -393,7 +393,7 @@ contract MarkerDAO is Ownable {
         );
     }
 
-    function queryRejectedProposalByIndex(uint256 index) external view returns (
+    function queryRejectedProposalByIndex(uint256 index) external view returns (uint256, string memory, bytes memory) {
         uint256, string memory, bytes memory, ProposalStatus, address, uint256, uint256, uint256, bool, uint256, uint256
     ) {
         require(index < proposalCount, "Proposal does not exist");
@@ -415,7 +415,7 @@ contract MarkerDAO is Ownable {
         );
     }
 
-    function queryPassedProposalByIndex(uint256 index) external view returns (
+    function queryPassedProposalByIndex(uint256 index) external view returns (uint256, string memory, bytes memory) {
         uint256, string memory, bytes memory, ProposalStatus, address, uint256, uint256, uint256, bool, uint256, uint256
     ) {
         require(index < proposalCount, "Proposal does not exist");
@@ -437,7 +437,7 @@ contract MarkerDAO is Ownable {
         );
     }
 
-    function queryProposalByIndex(uint256 index) external view returns (
+    function queryProposalByIndex(uint256 index) external view returns (uint256, string memory, bytes memory) {
         uint256, string memory, bytes memory, ProposalStatus, address, uint256, uint256, uint256, bool, uint256, uint256
     ) {
         require(index < proposalCount, "Proposal does not exist");
@@ -458,7 +458,7 @@ contract MarkerDAO is Ownable {
         );
     }
 
-    function queryLatestProposal() external view returns (
+    function queryLatestProposal() external view returns (uint256, string memory, bytes memory) {
         uint256, string memory, bytes memory, ProposalStatus, address, uint256, uint256, uint256, bool, uint256, uint256
     ) {
         require(proposalCount > 0, "No proposals exist");
@@ -480,7 +480,7 @@ contract MarkerDAO is Ownable {
     }
 
     // Query Functions for Routines
-    function queryActiveRoutineByIndex(uint256 index) external view returns (
+    function queryActiveRoutineByIndex(uint256 index) external view returns (uint256, string memory, bytes memory) {
         uint256, string memory, bytes memory, address, uint256, uint256, uint256, bool
     ) {
         require(index < routineCount, "Routine does not exist");
@@ -498,7 +498,7 @@ contract MarkerDAO is Ownable {
         );
     }
 
-    function queryRejectedRoutineByIndex(uint256 index) external view returns (
+    function queryRejectedRoutineByIndex(uint256 index) external view returns (uint256, string memory, bytes memory) {
         uint256, string memory, bytes memory, ProposalStatus, address, uint256, uint256, uint256, bool, uint256, uint256
     ) {
         require(index < proposalCount, "Proposal does not exist");
@@ -521,7 +521,7 @@ contract MarkerDAO is Ownable {
         );
     }
 
-    function queryPassedRoutineByIndex(uint256 index) external view returns (
+    function queryPassedRoutineByIndex(uint256 index) external view returns (uint256, string memory, bytes memory) {
         uint256, string memory, bytes memory, address, uint256, uint256, uint256, bool
     ) {
         require(index < routineCount, "Routine does not exist");
@@ -538,7 +538,7 @@ contract MarkerDAO is Ownable {
         );
     }
 
-    function queryRemovedRoutineByIndex(uint256 index) external view returns (
+    function queryRemovedRoutineByIndex(uint256 index) external view returns (uint256, string memory, bytes memory) {
         uint256, string memory, bytes memory, address, uint256, uint256, uint256, bool
     ) {
         require(index < routineCount, "Routine does not exist");
@@ -556,7 +556,7 @@ contract MarkerDAO is Ownable {
         );
     }
 
-    function queryRoutineByIndex(uint256 index) external view returns (
+    function queryRoutineByIndex(uint256 index) external view returns (uint256, string memory, bytes memory) {
         uint256, string memory, bytes memory, address, uint256, uint256, uint256, bool
     ) {
         require(index < routineCount, "Routine does not exist");
@@ -573,7 +573,7 @@ contract MarkerDAO is Ownable {
         );
     }
 
-    function queryLatestRoutine() external view returns (
+    function queryLatestRoutine() external view returns (uint256, string memory, bytes memory) {
         uint256, string memory, bytes memory, address, uint256, uint256, uint256, bool
     ) {
         require(routineCount > 0, "No routines exist");
