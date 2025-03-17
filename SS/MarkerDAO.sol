@@ -15,16 +15,15 @@ import "https://github.com/OpenZeppelin/openzeppelin-contracts/blob/release-v4.9
 import "https://github.com/OpenZeppelin/openzeppelin-contracts/blob/release-v4.9/contracts/utils/math/SafeMath.sol";
 
 contract MarkerDAO is Ownable {
-    } // Closing bracket fix
     using SafeERC20 for IERC20;
     using SafeMath for uint256;
 
     // Core Parameters
-    address public nftCollection; // Address of the NFT collection;
-    address public fftToken;     // Address of the FFT token
-    uint256 public turnoutThreshold = 333; // 33.3% scaled as 333/1000
-    uint256 public approvalThreshold = 510; // 51% scaled as 510/1000
-    uint256 public finalizeTimeLimit = 24 * 3600; // Default to 24 hours (in seconds)
+    address nftCollection; // Address of the NFT collection;
+    address fftToken;     // Address of the FFT token
+    uint256 turnoutThreshold = 333; // 33.3% scaled as 333/1000
+    uint256 approvalThreshold = 510; // 51% scaled as 510/1000
+    uint256 finalizeTimeLimit = 24 * 3600; // Default to 24 hours (in seconds)
 
     // Proposal and Routine structs
     enum ProposalStatus { Regular, Routine, RoutineRemoval, Pending, Rejected, Passed }
@@ -61,13 +60,13 @@ contract MarkerDAO is Ownable {
     }
 
     // Storage
-    mapping(uint256 => Proposal) public proposals;
-    uint256 public proposalCount;
-    mapping(uint256 => Routine) public routines;
-    uint256 public routineCount;
-    mapping(uint256 => RoutineParams) public routineParams; // Temporary storage for routine params
-    mapping(uint256 => mapping(uint256 => bool)) public nftVoted; // proposalId => tokenId => hasVoted
-    mapping(uint256 => mapping(address => uint256[])) public voterTokens; // proposalId => voter => tokenIds
+    mapping(uint256 => Proposal) proposals;
+    uint256 proposalCount;
+    mapping(uint256 => Routine) routines;
+    uint256 routineCount;
+    mapping(uint256 => RoutineParams) routineParams; // Temporary storage for routine params
+    mapping(uint256 => mapping(uint256 => bool)) nftVoted; // proposalId => tokenId => hasVoted
+    mapping(uint256 => mapping(address => uint256[])) voterTokens; // proposalId => voter => tokenIds
 
     // Events
     event ProposalCreated(uint256 indexed index, address indexed proposer, string detail, bytes transactionData, ProposalStatus status);
@@ -373,7 +372,6 @@ contract MarkerDAO is Ownable {
 
     // Query Functions for Proposals
     function queryActiveProposalByIndex(uint256 index) external view returns (uint256, string memory, bytes memory) {
-    } // Closing bracket fix
     function someFunction() external view returns (
         uint256, string memory, bytes memory, ProposalStatus, address, uint256, uint256, uint256, bool, uint256, uint256
     );
@@ -398,7 +396,6 @@ contract MarkerDAO is Ownable {
     }
 
     function queryRejectedProposalByIndex(uint256 index) external view returns (uint256, string memory, bytes memory) {
-    } // Closing bracket fix
         uint256, string memory, bytes memory, ProposalStatus, address, uint256, uint256, uint256, bool, uint256, uint256
     ) {
         require(index < proposalCount, "Proposal does not exist");
@@ -421,7 +418,6 @@ contract MarkerDAO is Ownable {
     }
 
     function queryPassedProposalByIndex(uint256 index) external view returns (uint256, string memory, bytes memory) {
-    } // Closing bracket fix
         uint256, string memory, bytes memory, ProposalStatus, address, uint256, uint256, uint256, bool, uint256, uint256
     ) {
         require(index < proposalCount, "Proposal does not exist");
@@ -444,7 +440,6 @@ contract MarkerDAO is Ownable {
     }
 
     function queryProposalByIndex(uint256 index) external view returns (uint256, string memory, bytes memory) {
-    } // Closing bracket fix
         uint256, string memory, bytes memory, ProposalStatus, address, uint256, uint256, uint256, bool, uint256, uint256
     ) {
         require(index < proposalCount, "Proposal does not exist");
@@ -466,7 +461,6 @@ contract MarkerDAO is Ownable {
     }
 
     function queryLatestProposal() external view returns (uint256, string memory, bytes memory) {
-    } // Closing bracket fix
         uint256, string memory, bytes memory, ProposalStatus, address, uint256, uint256, uint256, bool, uint256, uint256
     ) {
         require(proposalCount > 0, "No proposals exist");
@@ -489,7 +483,6 @@ contract MarkerDAO is Ownable {
 
     // Query Functions for Routines
     function queryActiveRoutineByIndex(uint256 index) external view returns (uint256, string memory, bytes memory) {
-    } // Closing bracket fix
         uint256, string memory, bytes memory, address, uint256, uint256, uint256, bool
     ) {
         require(index < routineCount, "Routine does not exist");
@@ -508,7 +501,6 @@ contract MarkerDAO is Ownable {
     }
 
     function queryRejectedRoutineByIndex(uint256 index) external view returns (uint256, string memory, bytes memory) {
-    } // Closing bracket fix
         uint256, string memory, bytes memory, ProposalStatus, address, uint256, uint256, uint256, bool, uint256, uint256
     ) {
         require(index < proposalCount, "Proposal does not exist");
@@ -532,7 +524,6 @@ contract MarkerDAO is Ownable {
     }
 
     function queryPassedRoutineByIndex(uint256 index) external view returns (uint256, string memory, bytes memory) {
-    } // Closing bracket fix
         uint256, string memory, bytes memory, address, uint256, uint256, uint256, bool
     ) {
         require(index < routineCount, "Routine does not exist");
@@ -550,7 +541,6 @@ contract MarkerDAO is Ownable {
     }
 
     function queryRemovedRoutineByIndex(uint256 index) external view returns (uint256, string memory, bytes memory) {
-    } // Closing bracket fix
         uint256, string memory, bytes memory, address, uint256, uint256, uint256, bool
     ) {
         require(index < routineCount, "Routine does not exist");
@@ -569,7 +559,6 @@ contract MarkerDAO is Ownable {
     }
 
     function queryRoutineByIndex(uint256 index) external view returns (uint256, string memory, bytes memory) {
-    } // Closing bracket fix
         uint256, string memory, bytes memory, address, uint256, uint256, uint256, bool
     ) {
         require(index < routineCount, "Routine does not exist");
