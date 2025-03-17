@@ -372,7 +372,7 @@ contract MarkerDAO is Ownable {
 
     // Query Functions for Proposals
     function queryActiveProposalByIndex(uint256 index) external view returns (uint256, string memory, bytes memory) {
-        uint256, string memory, bytes memory, ProposalStatus, address, uint256, uint256, uint256, bool, uint256, uint256
+        (uint256, string memory, bytes memory, ProposalStatus, address, uint256, uint256, uint256, bool, uint256, uint256);
     ) {
         require(index < proposalCount, "Proposal does not exist");
         Proposal storage proposal = proposals[index];
