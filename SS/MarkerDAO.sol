@@ -5,7 +5,9 @@ pragma solidity ^0.8.0;
 // Copyright (c) 2025, Peng Protocol
 // All rights reserved.
 
-// local OpenZeppelin Imports 
+// v0.0.16
+
+// Local OpenZeppelin Imports 
 import "./imports/Ownable.sol";
 import "./imports/SafeERC20.sol";
 import "./imports/IERC20.sol";
@@ -13,40 +15,42 @@ import "./imports/IERC20Metadata.sol";
 import "./imports/IERC721.sol";
 import "./imports/IERC721Enumerable.sol";
 import "./imports/SafeMath.sol";
+import "./imports/ReentrancyGuard.sol"; // Added for nonReentrant
 
-contract MarkerDAO is Ownable {
+contract MarkerDAO is Ownable, ReentrancyGuard { // Inherited ReentrancyGuard
     using SafeERC20 for IERC20;
     using SafeMath for uint256;
 
     // Core Parameters
-    address nftCollection; // Address of the NFT collection
-    address fftToken;     // Address of the FFT token
-    uint256 turnoutThreshold = 333; // 33.3% scaled as 333/1000
-    uint256 approvalThreshold = 510; // 51% scaled as 510/1000
-    uint256 finalizeTimeLimit = 24 * 3600; // Default to 24 hours (in seconds)
+    address public nftCollection;         // Address of the NFT collection
+    address public fftToken;             // Address of the FFT token
+    uint256 public turnoutThreshold = 333; // 33.3% scaled as 333/1000
+    uint256 public approvalThreshold = 510; // 51% scaled as 510/1000
+    uint256 public finalizeTimeLimit = 24 * 60 * 60; // 24 hours (in seconds) for finalization
+    uint256 public constant MAX_VOTES_PER_CALL = 30; // Limit NFTs processed per call
 
     // Proposal and Routine enums and structs
     enum ProposalType { Regular, Routine, RoutineRemoval }
     enum ProposalStatus { Pending, Rejected, Passed }
 
     struct Proposal {
-        uint256 index;
+        uint256 index;            // Index within its specific mapping
         string detail;
         bytes transactionData;
         ProposalType proposalType;
-        ProposalStatus status;
+        ProposalStatus status;    // Retained for clarity
         address proposer;
         uint256 fftSpent;
         uint256 votesFor;
         uint256 votesAgainst;
         uint256 turnout;
         bool executed;
-        uint256 deadline;
+        uint256 deadline;         // Absolute end timestamp (1 week)
         uint256 createdAt;
     }
 
     struct Routine {
-        uint256 index;
+        uint256 index;            // Index within its specific mapping
         string detail;
         bytes transactionData;
         address proposer;
@@ -54,6 +58,7 @@ contract MarkerDAO is Ownable {
         uint256 runwayEnd;
         uint256 lastExecution;
         bool active;
+        uint256 proposalIndex;    // Links to passedProposals
     }
 
     struct RoutineParams {
@@ -74,7 +79,9 @@ contract MarkerDAO is Ownable {
         uint256 votesAgainst;
         uint256 turnout;
         bool executed;
-        uint256 deadline;
+        uint256 deadline;              // Absolute end timestamp
+        uint256 deadlineRemaining;     // Seconds until deadline
+        uint256 finalizeTimeRemaining; // Seconds until finalization eligibility
         uint256 createdAt;
     }
 
@@ -87,16 +94,25 @@ contract MarkerDAO is Ownable {
         uint256 runwayEnd;
         uint256 lastExecution;
         bool active;
+        uint256 proposalIndex;
     }
 
-    // Storage
-    mapping(uint256 => Proposal) proposals;
-    uint256 proposalCount;
-    mapping(uint256 => Routine) routines;
-    uint256 routineCount;
-    mapping(uint256 => RoutineParams) routineParams; // Temporary storage for routine params
-    mapping(uint256 => mapping(uint256 => bool)) nftVoted; // proposalId => tokenId => hasVoted
-    mapping(uint256 => mapping(address => uint256[])) voterTokens; // proposalId => voter => tokenIds
+    // Storage: Separate mappings for each status
+    mapping(uint256 => Proposal) pendingProposals;
+    mapping(uint256 => Proposal) passedProposals;
+    mapping(uint256 => Proposal) rejectedProposals;
+    uint256 public pendingProposalCount;
+    uint256 public passedProposalCount;
+    uint256 public rejectedProposalCount;
+
+    mapping(uint256 => Routine) activeRoutines;
+    mapping(uint256 => Routine) removedRoutines;
+    uint256 public activeRoutineCount;
+    uint256 public removedRoutineCount;
+
+    mapping(uint256 => RoutineParams) routineParams; // Uses pending proposal index
+    mapping(uint256 => mapping(uint256 => bool)) nftVoted; // pendingProposalId => tokenId => hasVoted
+    mapping(uint256 => mapping(address => uint256[])) voterTokens; // pendingProposalId => voter => tokenIds
 
     // Events
     event ProposalCreated(uint256 indexed index, address indexed proposer, string detail, bytes transactionData, ProposalStatus status);
@@ -144,17 +160,64 @@ contract MarkerDAO is Ownable {
         emit FFTTokenSet(_fftToken);
     }
 
+    // Helper function to check FFT allowance and guide approval
+    // Returns the current allowance and emits guidance if insufficient
+    function checkFFTApproval(uint256 amount) external view returns (uint256) {
+        uint256 allowance = IERC20(fftToken).allowance(msg.sender, address(this));
+        if (allowance < amount) {
+            revert(string(abi.encodePacked(
+                "Insufficient FFT allowance. Approve at least ",
+                uintToString(amount),
+                " FFT tokens to MarkerDAO (",
+                addressToString(address(this)),
+                ") via the FFT token contract."
+            )));
+        }
+        return allowance;
+    }
+
+    // Utility to convert uint to string for approval guidance
+    function uintToString(uint256 value) internal pure returns (string memory) {
+        if (value == 0) return "0";
+        uint256 temp = value;
+        uint256 digits;
+        while (temp != 0) {
+            digits++;
+            temp /= 10;
+        }
+        bytes memory buffer = new bytes(digits);
+        while (value != 0) {
+            digits -= 1;
+            buffer[digits] = bytes1(uint8(48 + uint256(value % 10)));
+            value /= 10;
+        }
+        return string(buffer);
+    }
+
+    // Utility to convert address to string for approval guidance
+    function addressToString(address _addr) internal pure returns (string memory) {
+        bytes memory alphabet = "0123456789abcdef";
+        bytes memory str = new bytes(42);
+        str[0] = "0";
+        str[1] = "x";
+        for (uint256 i = 0; i < 20; i++) {
+            str[2 + i * 2] = alphabet[uint8(uint160(_addr) >> (152 - i * 8)) & 0xf];
+            str[3 + i * 2] = alphabet[uint8(uint160(_addr) >> (152 - i * 8 - 4)) & 0xf];
+        }
+        return string(str);
+    }
+
     // Core Proposal Functions
     function propose(bytes calldata transactionData, string calldata detail) external {
         require(IERC721(nftCollection).balanceOf(msg.sender) > 0, "Not an NFT holder");
         require(bytes(detail).length <= 500, "Detail exceeds 500 characters");
         require(transactionData.length > 0, "Empty transaction data");
 
-        uint256 fftFee = 1 * (10 ** tryDecimals(IERC20Metadata(fftToken)));
+        uint256 fftFee = 1 * (10 ** tryDecimals(IERC20Metadata(fftToken))); // Fixed 1 FFT with dynamic decimals
         SafeERC20.safeTransferFrom(IERC20(fftToken), msg.sender, address(this), fftFee);
 
-        uint256 index = proposalCount++;
-        Proposal storage newProposal = proposals[index];
+        uint256 index = pendingProposalCount++;
+        Proposal storage newProposal = pendingProposals[index];
         newProposal.index = index;
         newProposal.detail = detail;
         newProposal.transactionData = transactionData;
@@ -168,108 +231,138 @@ contract MarkerDAO is Ownable {
         emit ProposalCreated(index, msg.sender, detail, transactionData, ProposalStatus.Pending);
     }
 
-    function upvoteProposal(uint256 index, uint256 fftAmount, uint256 tokenId) external {
-        require(index < proposalCount, "Proposal does not exist");
-        Proposal storage proposal = proposals[index];
+    function upvoteProposal(uint256 index, uint256 fftAmount) external {
+        require(index < pendingProposalCount, "Proposal does not exist");
+        Proposal storage proposal = pendingProposals[index];
         require(proposal.proposalType == ProposalType.Regular || proposal.proposalType == ProposalType.RoutineRemoval, "Invalid proposal type");
-        require(proposal.status != ProposalStatus.Rejected, "Proposal rejected");
         require(proposal.status == ProposalStatus.Pending, "Proposal not pending");
 
-        require(IERC721(nftCollection).ownerOf(tokenId) == msg.sender, "Not token owner");
-        require(!nftVoted[index][tokenId], "Token already voted");
-
+        uint256 voterBalance = IERC721Enumerable(nftCollection).balanceOf(msg.sender);
+        require(voterBalance > 0, "Not an NFT holder");
         require(fftAmount > 0, "Invalid FFT amount");
+
         SafeERC20.safeTransferFrom(IERC20(fftToken), msg.sender, address(this), fftAmount);
 
-        nftVoted[index][tokenId] = true;
-        voterTokens[index][msg.sender].push(tokenId);
-        proposal.votesFor = proposal.votesFor.add(1);
-        proposal.turnout = proposal.turnout.add(1);
+        uint256 votesCast = 0;
+        uint256 maxIterations = voterBalance > MAX_VOTES_PER_CALL ? MAX_VOTES_PER_CALL : voterBalance;
+        for (uint256 i = 0; i < maxIterations && votesCast < MAX_VOTES_PER_CALL; i++) {
+            uint256 tokenId = IERC721Enumerable(nftCollection).tokenOfOwnerByIndex(msg.sender, i);
+            if (!nftVoted[index][tokenId]) {
+                nftVoted[index][tokenId] = true;
+                voterTokens[index][msg.sender].push(tokenId);
+                proposal.votesFor = proposal.votesFor.add(1);
+                proposal.turnout = proposal.turnout.add(1);
+                votesCast++;
+                emit Voted(index, msg.sender, true, tokenId, fftAmount / maxIterations); // Approximate FFT per vote
+            }
+        }
+        require(votesCast > 0, "No new votes cast");
         proposal.fftSpent = proposal.fftSpent.add(fftAmount);
 
         updateProposalStatus(index);
-
-        emit Voted(index, msg.sender, true, tokenId, fftAmount);
     }
 
-    function downvoteProposal(uint256 index, uint256 fftAmount, uint256 tokenId) external {
-        require(index < proposalCount, "Proposal does not exist");
-        Proposal storage proposal = proposals[index];
+    function downvoteProposal(uint256 index, uint256 fftAmount) external {
+        require(index < pendingProposalCount, "Proposal does not exist");
+        Proposal storage proposal = pendingProposals[index];
         require(proposal.proposalType == ProposalType.Regular || proposal.proposalType == ProposalType.RoutineRemoval, "Invalid proposal type");
-        require(proposal.status != ProposalStatus.Rejected, "Proposal rejected");
         require(proposal.status == ProposalStatus.Pending, "Proposal not pending");
 
-        require(IERC721(nftCollection).ownerOf(tokenId) == msg.sender, "Not token owner");
-        require(!nftVoted[index][tokenId], "Token already voted");
-
+        uint256 voterBalance = IERC721Enumerable(nftCollection).balanceOf(msg.sender);
+        require(voterBalance > 0, "Not an NFT holder");
         require(fftAmount > 0, "Invalid FFT amount");
+
         SafeERC20.safeTransferFrom(IERC20(fftToken), msg.sender, address(this), fftAmount);
 
-        nftVoted[index][tokenId] = true;
-        voterTokens[index][msg.sender].push(tokenId);
-        proposal.votesAgainst = proposal.votesAgainst.add(1);
-        proposal.turnout = proposal.turnout.add(1);
+        uint256 votesCast = 0;
+        uint256 maxIterations = voterBalance > MAX_VOTES_PER_CALL ? MAX_VOTES_PER_CALL : voterBalance;
+        for (uint256 i = 0; i < maxIterations && votesCast < MAX_VOTES_PER_CALL; i++) {
+            uint256 tokenId = IERC721Enumerable(nftCollection).tokenOfOwnerByIndex(msg.sender, i);
+            if (!nftVoted[index][tokenId]) {
+                nftVoted[index][tokenId] = true;
+                voterTokens[index][msg.sender].push(tokenId);
+                proposal.votesAgainst = proposal.votesAgainst.add(1);
+                proposal.turnout = proposal.turnout.add(1);
+                votesCast++;
+                emit Voted(index, msg.sender, false, tokenId, fftAmount / maxIterations); // Approximate FFT per vote
+            }
+        }
+        require(votesCast > 0, "No new votes cast");
         proposal.fftSpent = proposal.fftSpent.add(fftAmount);
 
         updateProposalStatus(index);
-
-        emit Voted(index, msg.sender, false, tokenId, fftAmount);
     }
 
     function updateProposalStatus(uint256 index) internal {
-        Proposal storage proposal = proposals[index];
+        Proposal storage proposal = pendingProposals[index];
+        uint256 currentSupply = IERC721Enumerable(nftCollection).totalSupply();
+        // Only reject if deadline passed and turnout insufficient
+        if (block.timestamp >= proposal.deadline && proposal.turnout < (currentSupply * turnoutThreshold) / 1000) {
+            moveToRejected(index);
+        }
+        // No automatic passing here; moved to finalizeProposal
+    }
+
+    function moveToPassed(uint256 pendingIndex) internal {
+        Proposal memory proposal = pendingProposals[pendingIndex];
+        proposal.status = ProposalStatus.Passed;
+        uint256 newIndex = passedProposalCount++;
+        passedProposals[newIndex] = proposal;
+        passedProposals[newIndex].index = newIndex;
+        delete pendingProposals[pendingIndex];
+        emit ProposalStatusUpdated(newIndex, ProposalStatus.Passed);
+    }
+
+    function moveToRejected(uint256 pendingIndex) internal {
+        Proposal memory proposal = pendingProposals[pendingIndex];
+        proposal.status = ProposalStatus.Rejected;
+        uint256 newIndex = rejectedProposalCount++;
+        rejectedProposals[newIndex] = proposal;
+        rejectedProposals[newIndex].index = newIndex;
+        delete pendingProposals[pendingIndex];
+        emit ProposalStatusUpdated(newIndex, ProposalStatus.Rejected);
+    }
+
+    function finalizeProposal(uint256 index) external nonReentrant { // Added nonReentrant
+        require(index < pendingProposalCount, "Proposal does not exist");
+        Proposal storage proposal = pendingProposals[index];
+        require(proposal.status == ProposalStatus.Pending, "Proposal not pending");
+        require(block.timestamp >= proposal.createdAt + finalizeTimeLimit, "Time limit not elapsed");
+
         uint256 currentSupply = IERC721Enumerable(nftCollection).totalSupply();
         if (proposal.turnout >= (currentSupply * turnoutThreshold) / 1000) {
             uint256 totalVotes = proposal.votesFor + proposal.votesAgainst;
             if (totalVotes > 0 && (proposal.votesFor * 1000) / totalVotes >= approvalThreshold) {
                 proposal.status = ProposalStatus.Passed;
-                emit ProposalStatusUpdated(index, ProposalStatus.Passed);
-            } else if (block.timestamp >= proposal.deadline) {
-                proposal.status = ProposalStatus.Rejected;
-                emit ProposalStatusUpdated(index, ProposalStatus.Rejected);
-            }
-        } else if (block.timestamp >= proposal.deadline) {
-            proposal.status = ProposalStatus.Rejected;
-            emit ProposalStatusUpdated(index, ProposalStatus.Rejected);
-        }
-    }
-
-    function finalizeProposal(uint256 index) external {
-        require(index < proposalCount, "Proposal does not exist");
-        Proposal storage proposal = proposals[index];
-        require(proposal.status == ProposalStatus.Pending, "Proposal not pending");
-        require(block.timestamp >= proposal.createdAt + finalizeTimeLimit, "Time limit not elapsed");
-
-        if (proposal.turnout >= (IERC721Enumerable(nftCollection).totalSupply() * turnoutThreshold) / 1000) {
-            uint256 totalVotes = proposal.votesFor + proposal.votesAgainst;
-            if (totalVotes > 0 && (proposal.votesFor * 1000) / totalVotes >= approvalThreshold) {
-                proposal.status = ProposalStatus.Passed;
-                emit ProposalStatusUpdated(index, ProposalStatus.Passed);
+                uint256 newIndex = passedProposalCount++;
+                passedProposals[newIndex] = proposal;
+                passedProposals[newIndex].index = newIndex;
+                delete pendingProposals[index];
+                emit ProposalStatusUpdated(newIndex, ProposalStatus.Passed);
 
                 (bool success, ) = address(this).call(proposal.transactionData);
                 require(success, "Transaction execution failed");
-                proposal.executed = true;
-                emit ProposalExecuted(index);
+                passedProposals[newIndex].executed = true;
+                emit ProposalExecuted(newIndex);
 
                 if (proposal.proposalType == ProposalType.Routine) {
-                    uint256 routineId = routineCount++;
-                    Routine storage routine = routines[routineId];
-                    routine.index = index;
+                    uint256 routineId = activeRoutineCount++;
+                    Routine storage routine = activeRoutines[routineId];
+                    routine.index = routineId;
                     routine.detail = proposal.detail;
                     routine.transactionData = proposal.transactionData;
                     routine.proposer = proposal.proposer;
                     routine.interval = routineParams[index].interval;
                     routine.runwayEnd = routineParams[index].runwayEnd;
                     routine.active = true;
-                    emit RoutineCreated(routineId, index, proposal.transactionData, routine.interval, routine.runwayEnd);
+                    routine.proposalIndex = newIndex;
+                    emit RoutineCreated(routineId, newIndex, proposal.transactionData, routine.interval, routine.runwayEnd);
                 }
             } else {
-                proposal.status = ProposalStatus.Rejected;
-                emit ProposalStatusUpdated(index, ProposalStatus.Rejected);
+                moveToRejected(index);
             }
         } else if (block.timestamp >= proposal.deadline) {
-            proposal.status = ProposalStatus.Rejected;
-            emit ProposalStatusUpdated(index, ProposalStatus.Rejected);
+            moveToRejected(index);
         }
     }
 
@@ -281,11 +374,11 @@ contract MarkerDAO is Ownable {
         require(interval > 0, "Invalid interval");
         require(runway > block.timestamp, "Runway must be in the future");
 
-        uint256 fftFee = 1 * (10 ** tryDecimals(IERC20Metadata(fftToken)));
+        uint256 fftFee = 1 * (10 ** tryDecimals(IERC20Metadata(fftToken))); // Fixed 1 FFT with dynamic decimals
         SafeERC20.safeTransferFrom(IERC20(fftToken), msg.sender, address(this), fftFee);
 
-        uint256 index = proposalCount++;
-        Proposal storage newProposal = proposals[index];
+        uint256 index = pendingProposalCount++;
+        Proposal storage newProposal = pendingProposals[index];
         newProposal.index = index;
         newProposal.detail = detail;
         newProposal.transactionData = transactionData;
@@ -301,66 +394,80 @@ contract MarkerDAO is Ownable {
         emit ProposalCreated(index, msg.sender, detail, transactionData, ProposalStatus.Pending);
     }
 
-    function upvoteRoutineProposal(uint256 index, uint256 fftAmount, uint256 tokenId) external {
-        require(index < proposalCount, "Proposal does not exist");
-        Proposal storage proposal = proposals[index];
+    function upvoteRoutineProposal(uint256 index, uint256 fftAmount) external {
+        require(index < pendingProposalCount, "Proposal does not exist");
+        Proposal storage proposal = pendingProposals[index];
         require(proposal.proposalType == ProposalType.Routine || proposal.proposalType == ProposalType.RoutineRemoval, "Invalid proposal type");
-        require(proposal.status != ProposalStatus.Rejected, "Proposal rejected");
         require(proposal.status == ProposalStatus.Pending, "Proposal not pending");
 
-        require(IERC721(nftCollection).ownerOf(tokenId) == msg.sender, "Not token owner");
-        require(!nftVoted[index][tokenId], "Token already voted");
-
+        uint256 voterBalance = IERC721Enumerable(nftCollection).balanceOf(msg.sender);
+        require(voterBalance > 0, "Not an NFT holder");
         require(fftAmount > 0, "Invalid FFT amount");
+
         SafeERC20.safeTransferFrom(IERC20(fftToken), msg.sender, address(this), fftAmount);
 
-        nftVoted[index][tokenId] = true;
-        voterTokens[index][msg.sender].push(tokenId);
-        proposal.votesFor = proposal.votesFor.add(1);
-        proposal.turnout = proposal.turnout.add(1);
+        uint256 votesCast = 0;
+        uint256 maxIterations = voterBalance > MAX_VOTES_PER_CALL ? MAX_VOTES_PER_CALL : voterBalance;
+        for (uint256 i = 0; i < maxIterations && votesCast < MAX_VOTES_PER_CALL; i++) {
+            uint256 tokenId = IERC721Enumerable(nftCollection).tokenOfOwnerByIndex(msg.sender, i);
+            if (!nftVoted[index][tokenId]) {
+                nftVoted[index][tokenId] = true;
+                voterTokens[index][msg.sender].push(tokenId);
+                proposal.votesFor = proposal.votesFor.add(1);
+                proposal.turnout = proposal.turnout.add(1);
+                votesCast++;
+                emit Voted(index, msg.sender, true, tokenId, fftAmount / maxIterations); // Approximate FFT per vote
+            }
+        }
+        require(votesCast > 0, "No new votes cast");
         proposal.fftSpent = proposal.fftSpent.add(fftAmount);
 
         updateProposalStatus(index);
-
-        emit Voted(index, msg.sender, true, tokenId, fftAmount);
     }
 
-    function downvoteRoutineProposal(uint256 index, uint256 fftAmount, uint256 tokenId) external {
-        require(index < proposalCount, "Proposal does not exist");
-        Proposal storage proposal = proposals[index];
+    function downvoteRoutineProposal(uint256 index, uint256 fftAmount) external {
+        require(index < pendingProposalCount, "Proposal does not exist");
+        Proposal storage proposal = pendingProposals[index];
         require(proposal.proposalType == ProposalType.Routine || proposal.proposalType == ProposalType.RoutineRemoval, "Invalid proposal type");
-        require(proposal.status != ProposalStatus.Rejected, "Proposal rejected");
         require(proposal.status == ProposalStatus.Pending, "Proposal not pending");
 
-        require(IERC721(nftCollection).ownerOf(tokenId) == msg.sender, "Not token owner");
-        require(!nftVoted[index][tokenId], "Token already voted");
-
+        uint256 voterBalance = IERC721Enumerable(nftCollection).balanceOf(msg.sender);
+        require(voterBalance > 0, "Not an NFT holder");
         require(fftAmount > 0, "Invalid FFT amount");
+
         SafeERC20.safeTransferFrom(IERC20(fftToken), msg.sender, address(this), fftAmount);
 
-        nftVoted[index][tokenId] = true;
-        voterTokens[index][msg.sender].push(tokenId);
-        proposal.votesAgainst = proposal.votesAgainst.add(1);
-        proposal.turnout = proposal.turnout.add(1);
+        uint256 votesCast = 0;
+        uint256 maxIterations = voterBalance > MAX_VOTES_PER_CALL ? MAX_VOTES_PER_CALL : voterBalance;
+        for (uint256 i = 0; i < maxIterations && votesCast < MAX_VOTES_PER_CALL; i++) {
+            uint256 tokenId = IERC721Enumerable(nftCollection).tokenOfOwnerByIndex(msg.sender, i);
+            if (!nftVoted[index][tokenId]) {
+                nftVoted[index][tokenId] = true;
+                voterTokens[index][msg.sender].push(tokenId);
+                proposal.votesAgainst = proposal.votesAgainst.add(1);
+                proposal.turnout = proposal.turnout.add(1);
+                votesCast++;
+                emit Voted(index, msg.sender, false, tokenId, fftAmount / maxIterations); // Approximate FFT per vote
+            }
+        }
+        require(votesCast > 0, "No new votes cast");
         proposal.fftSpent = proposal.fftSpent.add(fftAmount);
 
         updateProposalStatus(index);
-
-        emit Voted(index, msg.sender, false, tokenId, fftAmount);
     }
 
     function proposeRoutineRemoval(uint256 routineIndex, string calldata detail) external {
         require(IERC721(nftCollection).balanceOf(msg.sender) > 0, "Not an NFT holder");
-        require(routineIndex < routineCount, "Routine does not exist");
-        Routine storage routine = routines[routineIndex];
+        require(routineIndex < activeRoutineCount, "Routine does not exist");
+        Routine storage routine = activeRoutines[routineIndex];
         require(routine.active, "Routine not active");
         require(bytes(detail).length <= 500, "Detail exceeds 500 characters");
 
-        uint256 fftFee = 1 * (10 ** tryDecimals(IERC20Metadata(fftToken)));
+        uint256 fftFee = 1 * (10 ** tryDecimals(IERC20Metadata(fftToken))); // Fixed 1 FFT with dynamic decimals
         SafeERC20.safeTransferFrom(IERC20(fftToken), msg.sender, address(this), fftFee);
 
-        uint256 index = proposalCount++;
-        Proposal storage newProposal = proposals[index];
+        uint256 index = pendingProposalCount++;
+        Proposal storage newProposal = pendingProposals[index];
         newProposal.index = index;
         newProposal.detail = detail;
         newProposal.transactionData = abi.encodeWithSignature("removeRoutine(uint256)", routineIndex);
@@ -375,21 +482,23 @@ contract MarkerDAO is Ownable {
     }
 
     function removeRoutine(uint256 routineIndex) internal {
-        require(routineIndex < routineCount, "Routine does not exist");
-        Routine storage routine = routines[routineIndex];
-        require(routine.active, "Routine not active");
+        require(routineIndex < activeRoutineCount, "Routine does not exist");
+        Routine memory routine = activeRoutines[routineIndex];
         routine.active = false;
-        emit RoutineExpired(routineIndex);
+        uint256 newIndex = removedRoutineCount++;
+        removedRoutines[newIndex] = routine;
+        removedRoutines[newIndex].index = newIndex;
+        delete activeRoutines[routineIndex];
+        emit RoutineExpired(newIndex);
     }
 
     function pushRoutine(uint256 routineIndex) external {
-        require(routineIndex < routineCount, "Routine does not exist");
-        Routine storage routine = routines[routineIndex];
+        require(routineIndex < activeRoutineCount, "Routine does not exist");
+        Routine storage routine = activeRoutines[routineIndex];
         require(routine.active, "Routine not active");
 
         if (block.timestamp >= routine.runwayEnd) {
-            routine.active = false;
-            emit RoutineExpired(routineIndex);
+            removeRoutine(routineIndex);
             revert("Runway expired");
         }
 
@@ -405,9 +514,11 @@ contract MarkerDAO is Ownable {
 
     // Query Functions for Proposals
     function queryActiveProposalByIndex(uint256 index) external view returns (ProposalData memory) {
-        require(index < proposalCount, "Proposal does not exist");
-        Proposal storage proposal = proposals[index];
-        require(proposal.status == ProposalStatus.Pending, "Proposal not active");
+        require(index < pendingProposalCount, "Proposal does not exist");
+        Proposal storage proposal = pendingProposals[index];
+        uint256 deadlineRemaining = (block.timestamp >= proposal.deadline) ? 0 : proposal.deadline - block.timestamp;
+        uint256 finalizeTimeEnd = proposal.createdAt + finalizeTimeLimit;
+        uint256 finalizeTimeRemaining = (block.timestamp >= finalizeTimeEnd) ? 0 : finalizeTimeEnd - block.timestamp;
         return ProposalData(
             proposal.index,
             proposal.detail,
@@ -421,14 +532,18 @@ contract MarkerDAO is Ownable {
             proposal.turnout,
             proposal.executed,
             proposal.deadline,
+            deadlineRemaining,
+            finalizeTimeRemaining,
             proposal.createdAt
         );
     }
 
     function queryRejectedProposalByIndex(uint256 index) external view returns (ProposalData memory) {
-        require(index < proposalCount, "Proposal does not exist");
-        Proposal storage proposal = proposals[index];
-        require(proposal.status == ProposalStatus.Rejected, "Proposal not rejected");
+        require(index < rejectedProposalCount, "Proposal does not exist");
+        Proposal storage proposal = rejectedProposals[index];
+        uint256 deadlineRemaining = (block.timestamp >= proposal.deadline) ? 0 : proposal.deadline - block.timestamp;
+        uint256 finalizeTimeEnd = proposal.createdAt + finalizeTimeLimit;
+        uint256 finalizeTimeRemaining = (block.timestamp >= finalizeTimeEnd) ? 0 : finalizeTimeEnd - block.timestamp;
         return ProposalData(
             proposal.index,
             proposal.detail,
@@ -442,14 +557,18 @@ contract MarkerDAO is Ownable {
             proposal.turnout,
             proposal.executed,
             proposal.deadline,
+            deadlineRemaining,
+            finalizeTimeRemaining,
             proposal.createdAt
         );
     }
 
     function queryPassedProposalByIndex(uint256 index) external view returns (ProposalData memory) {
-        require(index < proposalCount, "Proposal does not exist");
-        Proposal storage proposal = proposals[index];
-        require(proposal.status == ProposalStatus.Passed, "Proposal not passed");
+        require(index < passedProposalCount, "Proposal does not exist");
+        Proposal storage proposal = passedProposals[index];
+        uint256 deadlineRemaining = (block.timestamp >= proposal.deadline) ? 0 : proposal.deadline - block.timestamp;
+        uint256 finalizeTimeEnd = proposal.createdAt + finalizeTimeLimit;
+        uint256 finalizeTimeRemaining = (block.timestamp >= finalizeTimeEnd) ? 0 : finalizeTimeEnd - block.timestamp;
         return ProposalData(
             proposal.index,
             proposal.detail,
@@ -463,13 +582,18 @@ contract MarkerDAO is Ownable {
             proposal.turnout,
             proposal.executed,
             proposal.deadline,
+            deadlineRemaining,
+            finalizeTimeRemaining,
             proposal.createdAt
         );
     }
 
-    function queryProposalByIndex(uint256 index) external view returns (ProposalData memory) {
-        require(index < proposalCount, "Proposal does not exist");
-        Proposal storage proposal = proposals[index];
+    function queryLatestPendingProposal() external view returns (ProposalData memory) {
+        require(pendingProposalCount > 0, "No pending proposals exist");
+        Proposal storage proposal = pendingProposals[pendingProposalCount - 1];
+        uint256 deadlineRemaining = (block.timestamp >= proposal.deadline) ? 0 : proposal.deadline - block.timestamp;
+        uint256 finalizeTimeEnd = proposal.createdAt + finalizeTimeLimit;
+        uint256 finalizeTimeRemaining = (block.timestamp >= finalizeTimeEnd) ? 0 : finalizeTimeEnd - block.timestamp;
         return ProposalData(
             proposal.index,
             proposal.detail,
@@ -483,13 +607,18 @@ contract MarkerDAO is Ownable {
             proposal.turnout,
             proposal.executed,
             proposal.deadline,
+            deadlineRemaining,
+            finalizeTimeRemaining,
             proposal.createdAt
         );
     }
 
-    function queryLatestProposal() external view returns (ProposalData memory) {
-        require(proposalCount > 0, "No proposals exist");
-        Proposal storage proposal = proposals[proposalCount - 1];
+    function queryLatestPassedProposal() external view returns (ProposalData memory) {
+        require(passedProposalCount > 0, "No passed proposals exist");
+        Proposal storage proposal = passedProposals[passedProposalCount - 1];
+        uint256 deadlineRemaining = (block.timestamp >= proposal.deadline) ? 0 : proposal.deadline - block.timestamp;
+        uint256 finalizeTimeEnd = proposal.createdAt + finalizeTimeLimit;
+        uint256 finalizeTimeRemaining = (block.timestamp >= finalizeTimeEnd) ? 0 : finalizeTimeEnd - block.timestamp;
         return ProposalData(
             proposal.index,
             proposal.detail,
@@ -503,14 +632,41 @@ contract MarkerDAO is Ownable {
             proposal.turnout,
             proposal.executed,
             proposal.deadline,
+            deadlineRemaining,
+            finalizeTimeRemaining,
+            proposal.createdAt
+        );
+    }
+
+    function queryLatestRejectedProposal() external view returns (ProposalData memory) {
+        require(rejectedProposalCount > 0, "No rejected proposals exist");
+        Proposal storage proposal = rejectedProposals[rejectedProposalCount - 1];
+        uint256 deadlineRemaining = (block.timestamp >= proposal.deadline) ? 0 : proposal.deadline - block.timestamp;
+        uint256 finalizeTimeEnd = proposal.createdAt + finalizeTimeLimit;
+        uint256 finalizeTimeRemaining = (block.timestamp >= finalizeTimeEnd) ? 0 : finalizeTimeEnd - block.timestamp;
+        return ProposalData(
+            proposal.index,
+            proposal.detail,
+            proposal.transactionData,
+            proposal.proposalType,
+            proposal.status,
+            proposal.proposer,
+            proposal.fftSpent,
+            proposal.votesFor,
+            proposal.votesAgainst,
+            proposal.turnout,
+            proposal.executed,
+            proposal.deadline,
+            deadlineRemaining,
+            finalizeTimeRemaining,
             proposal.createdAt
         );
     }
 
     // Query Functions for Routines
     function queryActiveRoutineByIndex(uint256 index) external view returns (RoutineData memory) {
-        require(index < routineCount, "Routine does not exist");
-        Routine storage routine = routines[index];
+        require(index < activeRoutineCount, "Routine does not exist");
+        Routine storage routine = activeRoutines[index];
         require(routine.active && block.timestamp < routine.runwayEnd, "Routine not active");
         return RoutineData(
             routine.index,
@@ -520,15 +676,18 @@ contract MarkerDAO is Ownable {
             routine.interval,
             routine.runwayEnd,
             routine.lastExecution,
-            routine.active
+            routine.active,
+            routine.proposalIndex
         );
     }
 
     function queryRejectedRoutineByIndex(uint256 index) external view returns (ProposalData memory) {
-        require(index < proposalCount, "Proposal does not exist");
-        Proposal storage proposal = proposals[index];
+        require(index < rejectedProposalCount, "Proposal does not exist");
+        Proposal storage proposal = rejectedProposals[index];
         require(proposal.proposalType == ProposalType.Routine, "Not a routine proposal");
-        require(proposal.status == ProposalStatus.Rejected, "Routine not rejected");
+        uint256 deadlineRemaining = (block.timestamp >= proposal.deadline) ? 0 : proposal.deadline - block.timestamp;
+        uint256 finalizeTimeEnd = proposal.createdAt + finalizeTimeLimit;
+        uint256 finalizeTimeRemaining = (block.timestamp >= finalizeTimeEnd) ? 0 : finalizeTimeEnd - block.timestamp;
         return ProposalData(
             proposal.index,
             proposal.detail,
@@ -542,13 +701,15 @@ contract MarkerDAO is Ownable {
             proposal.turnout,
             proposal.executed,
             proposal.deadline,
+            deadlineRemaining,
+            finalizeTimeRemaining,
             proposal.createdAt
         );
     }
 
     function queryPassedRoutineByIndex(uint256 index) external view returns (RoutineData memory) {
-        require(index < routineCount, "Routine does not exist");
-        Routine storage routine = routines[index];
+        require(index < activeRoutineCount, "Routine does not exist");
+        Routine storage routine = activeRoutines[index];
         return RoutineData(
             routine.index,
             routine.detail,
@@ -557,14 +718,14 @@ contract MarkerDAO is Ownable {
             routine.interval,
             routine.runwayEnd,
             routine.lastExecution,
-            routine.active
+            routine.active,
+            routine.proposalIndex
         );
     }
 
     function queryRemovedRoutineByIndex(uint256 index) external view returns (RoutineData memory) {
-        require(index < routineCount, "Routine does not exist");
-        Routine storage routine = routines[index];
-        require(!routine.active, "Routine not removed");
+        require(index < removedRoutineCount, "Routine does not exist");
+        Routine storage routine = removedRoutines[index];
         return RoutineData(
             routine.index,
             routine.detail,
@@ -573,13 +734,14 @@ contract MarkerDAO is Ownable {
             routine.interval,
             routine.runwayEnd,
             routine.lastExecution,
-            routine.active
+            routine.active,
+            routine.proposalIndex
         );
     }
 
-    function queryRoutineByIndex(uint256 index) external view returns (RoutineData memory) {
-        require(index < routineCount, "Routine does not exist");
-        Routine storage routine = routines[index];
+    function queryLatestActiveRoutine() external view returns (RoutineData memory) {
+        require(activeRoutineCount > 0, "No active routines exist");
+        Routine storage routine = activeRoutines[activeRoutineCount - 1];
         return RoutineData(
             routine.index,
             routine.detail,
@@ -588,13 +750,14 @@ contract MarkerDAO is Ownable {
             routine.interval,
             routine.runwayEnd,
             routine.lastExecution,
-            routine.active
+            routine.active,
+            routine.proposalIndex
         );
     }
 
-    function queryLatestRoutine() external view returns (RoutineData memory) {
-        require(routineCount > 0, "No routines exist");
-        Routine storage routine = routines[routineCount - 1];
+    function queryLatestRemovedRoutine() external view returns (RoutineData memory) {
+        require(removedRoutineCount > 0, "No removed routines exist");
+        Routine storage routine = removedRoutines[removedRoutineCount - 1];
         return RoutineData(
             routine.index,
             routine.detail,
@@ -603,7 +766,13 @@ contract MarkerDAO is Ownable {
             routine.interval,
             routine.runwayEnd,
             routine.lastExecution,
-            routine.active
+            routine.active,
+            routine.proposalIndex
         );
+    }
+
+    // Helper function to query voted NFTs for a proposal by voter
+    function getVoterTokens(uint256 proposalIndex, address voter) external view returns (uint256[] memory) {
+        return voterTokens[proposalIndex][voter];
     }
 }
