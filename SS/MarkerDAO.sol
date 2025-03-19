@@ -5,7 +5,7 @@ pragma solidity ^0.8.0;
 // Copyright (c) 2025, Peng Protocol
 // All rights reserved.
 
-// v0.0.17
+// v0.0.18
 
 // Local OpenZeppelin Imports 
 import "./imports/Ownable.sol";
@@ -126,6 +126,7 @@ contract MarkerDAO is Ownable, ReentrancyGuard {
     event ProposalCreated(uint256 indexed index, address indexed proposer, string detail, address target, bytes callData, uint256 value, ProposalStatus status);
     event Voted(uint256 indexed index, address indexed voter, bool inFavor, uint256 nftTokenId, uint256 fftSpent);
     event ProposalExecuted(uint256 indexed index);
+    event ExecutionResult(uint256 indexed index, bool ethSuccess, bool callSuccess, bytes returnData); // New event for debugging
     event ProposalStatusUpdated(uint256 indexed index, ProposalStatus newStatus);
     event RoutineCreated(uint256 indexed routineId, uint256 indexed proposalId, address target, bytes callData, uint256 value, uint256 interval, uint256 runwayEnd);
     event RoutineExecuted(uint256 indexed routineId, uint256 executionTime);
@@ -237,7 +238,7 @@ contract MarkerDAO is Ownable, ReentrancyGuard {
         newProposal.status = ProposalStatus.Pending;
         newProposal.proposer = msg.sender;
         newProposal.fftSpent = fftFee;
-        newProposal.deadline = block.timestamp + 86400; // 1 week
+        newProposal.deadline = block.timestamp + 604800; // 1 week
         newProposal.createdAt = block.timestamp;
 
         emit ProposalCreated(index, msg.sender, detail, target, callData, value, ProposalStatus.Pending);
@@ -346,18 +347,38 @@ contract MarkerDAO is Ownable, ReentrancyGuard {
         if (proposal.turnout >= (currentSupply * turnoutThreshold) / 1000) {
             uint256 totalVotes = proposal.votesFor + proposal.votesAgainst;
             if (totalVotes > 0 && (proposal.votesFor * 1000) / totalVotes >= approvalThreshold) {
-                proposal.status = ProposalStatus.Passed;
+                // Step 1: Execute ETH transfer and calldata first
+                bool ethSuccess = true;
+                bool callSuccess = true;
+                bytes memory returnData = "";
+
+                // Send ETH to target (0 is valid)
+                if (proposal.value > 0) {
+                    (ethSuccess, ) = proposal.target.call{value: proposal.value}("");
+                    require(ethSuccess, "ETH transfer failed");
+                }
+
+                // Execute calldata if provided
+                if (proposal.callData.length > 0) {
+                    (callSuccess, returnData) = proposal.target.call(proposal.callData);
+                    require(callSuccess, "Calldata execution failed");
+                }
+
+                // Emit execution details for debugging
+                emit ExecutionResult(index, ethSuccess, callSuccess, returnData);
+
+                // Step 2: Update state after successful execution
                 uint256 newIndex = passedProposalCount++;
                 passedProposals[newIndex] = proposal;
                 passedProposals[newIndex].index = newIndex;
-                delete pendingProposals[index];
-                emit ProposalStatusUpdated(newIndex, ProposalStatus.Passed);
-
-                (bool success, ) = proposal.target.call{value: proposal.value}(proposal.callData);
-                require(success, "Transaction execution failed");
+                passedProposals[newIndex].status = ProposalStatus.Passed;
                 passedProposals[newIndex].executed = true;
+                delete pendingProposals[index];
+
+                emit ProposalStatusUpdated(newIndex, ProposalStatus.Passed);
                 emit ProposalExecuted(newIndex);
 
+                // Handle routine creation
                 if (proposal.proposalType == ProposalType.Routine) {
                     uint256 routineId = activeRoutineCount++;
                     Routine storage routine = activeRoutines[routineId];
@@ -403,7 +424,7 @@ contract MarkerDAO is Ownable, ReentrancyGuard {
         newProposal.status = ProposalStatus.Pending;
         newProposal.proposer = msg.sender;
         newProposal.fftSpent = fftFee;
-        newProposal.deadline = block.timestamp + 86400;
+        newProposal.deadline = block.timestamp + 604800;
         newProposal.createdAt = block.timestamp;
 
         routineParams[index] = RoutineParams(interval, runway);
@@ -494,7 +515,7 @@ contract MarkerDAO is Ownable, ReentrancyGuard {
         newProposal.status = ProposalStatus.Pending;
         newProposal.proposer = msg.sender;
         newProposal.fftSpent = fftFee;
-        newProposal.deadline = block.timestamp + 86400;
+        newProposal.deadline = block.timestamp + 604800;
         newProposal.createdAt = block.timestamp;
 
         emit ProposalCreated(index, msg.sender, detail, newProposal.target, newProposal.callData, newProposal.value, ProposalStatus.Pending);
@@ -516,17 +537,34 @@ contract MarkerDAO is Ownable, ReentrancyGuard {
         Routine storage routine = activeRoutines[routineIndex];
         require(routine.active, "Routine not active");
         require(address(this).balance >= routine.value, "Insufficient ETH balance");
+        require(block.timestamp >= routine.lastExecution + routine.interval, "Interval not elapsed");
 
         if (block.timestamp >= routine.runwayEnd) {
             removeRoutine(routineIndex);
             revert("Runway expired");
         }
 
-        require(block.timestamp >= routine.lastExecution + routine.interval, "Interval not elapsed");
+        // Step 1: Execute ETH transfer and calldata first
+        bool ethSuccess = true;
+        bool callSuccess = true;
+        bytes memory returnData = "";
 
-        (bool success, ) = routine.target.call{value: routine.value}(routine.callData);
-        require(success, "Transaction execution failed");
+        // Send ETH to target (0 is valid)
+        if (routine.value > 0) {
+            (ethSuccess, ) = routine.target.call{value: routine.value}("");
+            require(ethSuccess, "ETH transfer failed");
+        }
 
+        // Execute calldata if provided
+        if (routine.callData.length > 0) {
+            (callSuccess, returnData) = routine.target.call(routine.callData);
+            require(callSuccess, "Calldata execution failed");
+        }
+
+        // Emit execution details for debugging
+        emit ExecutionResult(routineIndex, ethSuccess, callSuccess, returnData);
+
+        // Step 2: Update state after successful execution
         routine.lastExecution = block.timestamp;
 
         emit RoutineExecuted(routineIndex, block.timestamp);
