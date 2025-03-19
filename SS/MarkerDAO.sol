@@ -5,7 +5,7 @@ pragma solidity ^0.8.0;
 // Copyright (c) 2025, Peng Protocol
 // All rights reserved.
 
-// v0.0.18
+// v0.0.19
 
 // Local OpenZeppelin Imports 
 import "./imports/Ownable.sol";
@@ -59,7 +59,7 @@ contract MarkerDAO is Ownable, ReentrancyGuard {
         uint256 value;            // ETH value to send with the call
         address proposer;
         uint256 interval;
-        uint256 runwayEnd;
+        uint256 runwayEnd;        // Absolute end timestamp
         uint256 lastExecution;
         bool active;
         uint256 proposalIndex;    // Links to passedProposals
@@ -67,7 +67,7 @@ contract MarkerDAO is Ownable, ReentrancyGuard {
 
     struct RoutineParams {
         uint256 interval;
-        uint256 runwayEnd;
+        uint256 runwayDuration;   // Duration in seconds from finalization
     }
 
     // New memory structs for querying
@@ -126,7 +126,7 @@ contract MarkerDAO is Ownable, ReentrancyGuard {
     event ProposalCreated(uint256 indexed index, address indexed proposer, string detail, address target, bytes callData, uint256 value, ProposalStatus status);
     event Voted(uint256 indexed index, address indexed voter, bool inFavor, uint256 nftTokenId, uint256 fftSpent);
     event ProposalExecuted(uint256 indexed index);
-    event ExecutionResult(uint256 indexed index, bool ethSuccess, bool callSuccess, bytes returnData); // New event for debugging
+    event ExecutionResult(uint256 indexed index, bool ethSuccess, bool callSuccess, bytes returnData);
     event ProposalStatusUpdated(uint256 indexed index, ProposalStatus newStatus);
     event RoutineCreated(uint256 indexed routineId, uint256 indexed proposalId, address target, bytes callData, uint256 value, uint256 interval, uint256 runwayEnd);
     event RoutineExecuted(uint256 indexed routineId, uint256 executionTime);
@@ -224,7 +224,7 @@ contract MarkerDAO is Ownable, ReentrancyGuard {
         require(bytes(detail).length <= 500, "Detail exceeds 500 characters");
         require(target != address(0), "Invalid target address");
 
-        uint256 fftFee = 1 * (10 ** tryDecimals(IERC20Metadata(fftToken))); // Fixed 1 FFT with dynamic decimals
+        uint256 fftFee = 1 * (10 ** tryDecimals(IERC20Metadata(fftToken)));
         SafeERC20.safeTransferFrom(IERC20(fftToken), msg.sender, address(this), fftFee);
 
         uint256 index = pendingProposalCount++;
@@ -266,7 +266,7 @@ contract MarkerDAO is Ownable, ReentrancyGuard {
                 proposal.votesFor = proposal.votesFor.add(1);
                 proposal.turnout = proposal.turnout.add(1);
                 votesCast++;
-                emit Voted(index, msg.sender, true, tokenId, fftAmount / maxIterations); // Approximate FFT per vote
+                emit Voted(index, msg.sender, true, tokenId, fftAmount / maxIterations);
             }
         }
         require(votesCast > 0, "No new votes cast");
@@ -297,7 +297,7 @@ contract MarkerDAO is Ownable, ReentrancyGuard {
                 proposal.votesAgainst = proposal.votesAgainst.add(1);
                 proposal.turnout = proposal.turnout.add(1);
                 votesCast++;
-                emit Voted(index, msg.sender, false, tokenId, fftAmount / maxIterations); // Approximate FFT per vote
+                emit Voted(index, msg.sender, false, tokenId, fftAmount / maxIterations);
             }
         }
         require(votesCast > 0, "No new votes cast");
@@ -309,11 +309,9 @@ contract MarkerDAO is Ownable, ReentrancyGuard {
     function updateProposalStatus(uint256 index) internal {
         Proposal storage proposal = pendingProposals[index];
         uint256 currentSupply = IERC721Enumerable(nftCollection).totalSupply();
-        // Only reject if deadline passed and turnout insufficient
         if (block.timestamp >= proposal.deadline && proposal.turnout < (currentSupply * turnoutThreshold) / 1000) {
             moveToRejected(index);
         }
-        // No automatic passing here; moved to finalizeProposal
     }
 
     function moveToPassed(uint256 pendingIndex) internal {
@@ -347,27 +345,22 @@ contract MarkerDAO is Ownable, ReentrancyGuard {
         if (proposal.turnout >= (currentSupply * turnoutThreshold) / 1000) {
             uint256 totalVotes = proposal.votesFor + proposal.votesAgainst;
             if (totalVotes > 0 && (proposal.votesFor * 1000) / totalVotes >= approvalThreshold) {
-                // Step 1: Execute ETH transfer and calldata first
                 bool ethSuccess = true;
                 bool callSuccess = true;
                 bytes memory returnData = "";
 
-                // Send ETH to target (0 is valid)
                 if (proposal.value > 0) {
                     (ethSuccess, ) = proposal.target.call{value: proposal.value}("");
                     require(ethSuccess, "ETH transfer failed");
                 }
 
-                // Execute calldata if provided
                 if (proposal.callData.length > 0) {
                     (callSuccess, returnData) = proposal.target.call(proposal.callData);
                     require(callSuccess, "Calldata execution failed");
                 }
 
-                // Emit execution details for debugging
                 emit ExecutionResult(index, ethSuccess, callSuccess, returnData);
 
-                // Step 2: Update state after successful execution
                 uint256 newIndex = passedProposalCount++;
                 passedProposals[newIndex] = proposal;
                 passedProposals[newIndex].index = newIndex;
@@ -378,7 +371,6 @@ contract MarkerDAO is Ownable, ReentrancyGuard {
                 emit ProposalStatusUpdated(newIndex, ProposalStatus.Passed);
                 emit ProposalExecuted(newIndex);
 
-                // Handle routine creation
                 if (proposal.proposalType == ProposalType.Routine) {
                     uint256 routineId = activeRoutineCount++;
                     Routine storage routine = activeRoutines[routineId];
@@ -389,7 +381,7 @@ contract MarkerDAO is Ownable, ReentrancyGuard {
                     routine.value = proposal.value;
                     routine.proposer = proposal.proposer;
                     routine.interval = routineParams[index].interval;
-                    routine.runwayEnd = routineParams[index].runwayEnd;
+                    routine.runwayEnd = block.timestamp + routineParams[index].runwayDuration;
                     routine.active = true;
                     routine.proposalIndex = newIndex;
                     emit RoutineCreated(routineId, newIndex, proposal.target, proposal.callData, proposal.value, routine.interval, routine.runwayEnd);
@@ -403,14 +395,21 @@ contract MarkerDAO is Ownable, ReentrancyGuard {
     }
 
     // Routine Proposal Functions
-    function proposeRoutine(address target, bytes calldata callData, uint256 value, string calldata detail, uint256 interval, uint256 runway) external {
+    function proposeRoutine(
+        address target, 
+        bytes calldata callData, 
+        uint256 value, 
+        string calldata detail, 
+        uint256 interval, 
+        uint256 runwayDuration
+    ) external {
         require(IERC721(nftCollection).balanceOf(msg.sender) > 0, "Not an NFT holder");
         require(bytes(detail).length <= 500, "Detail exceeds 500 characters");
         require(target != address(0), "Invalid target address");
         require(interval > 0, "Invalid interval");
-        require(runway > block.timestamp, "Runway must be in the future");
+        require(runwayDuration > 0, "Runway duration must be positive");
 
-        uint256 fftFee = 1 * (10 ** tryDecimals(IERC20Metadata(fftToken))); // Fixed 1 FFT with dynamic decimals
+        uint256 fftFee = 1 * (10 ** tryDecimals(IERC20Metadata(fftToken)));
         SafeERC20.safeTransferFrom(IERC20(fftToken), msg.sender, address(this), fftFee);
 
         uint256 index = pendingProposalCount++;
@@ -427,7 +426,7 @@ contract MarkerDAO is Ownable, ReentrancyGuard {
         newProposal.deadline = block.timestamp + 604800;
         newProposal.createdAt = block.timestamp;
 
-        routineParams[index] = RoutineParams(interval, runway);
+        routineParams[index] = RoutineParams(interval, runwayDuration);
 
         emit ProposalCreated(index, msg.sender, detail, target, callData, value, ProposalStatus.Pending);
     }
@@ -454,7 +453,7 @@ contract MarkerDAO is Ownable, ReentrancyGuard {
                 proposal.votesFor = proposal.votesFor.add(1);
                 proposal.turnout = proposal.turnout.add(1);
                 votesCast++;
-                emit Voted(index, msg.sender, true, tokenId, fftAmount / maxIterations); // Approximate FFT per vote
+                emit Voted(index, msg.sender, true, tokenId, fftAmount / maxIterations);
             }
         }
         require(votesCast > 0, "No new votes cast");
@@ -485,7 +484,7 @@ contract MarkerDAO is Ownable, ReentrancyGuard {
                 proposal.votesAgainst = proposal.votesAgainst.add(1);
                 proposal.turnout = proposal.turnout.add(1);
                 votesCast++;
-                emit Voted(index, msg.sender, false, tokenId, fftAmount / maxIterations); // Approximate FFT per vote
+                emit Voted(index, msg.sender, false, tokenId, fftAmount / maxIterations);
             }
         }
         require(votesCast > 0, "No new votes cast");
@@ -501,16 +500,16 @@ contract MarkerDAO is Ownable, ReentrancyGuard {
         require(routine.active, "Routine not active");
         require(bytes(detail).length <= 500, "Detail exceeds 500 characters");
 
-        uint256 fftFee = 1 * (10 ** tryDecimals(IERC20Metadata(fftToken))); // Fixed 1 FFT with dynamic decimals
+        uint256 fftFee = 1 * (10 ** tryDecimals(IERC20Metadata(fftToken)));
         SafeERC20.safeTransferFrom(IERC20(fftToken), msg.sender, address(this), fftFee);
 
         uint256 index = pendingProposalCount++;
         Proposal storage newProposal = pendingProposals[index];
         newProposal.index = index;
         newProposal.detail = detail;
-        newProposal.target = address(this); // Call MarkerDAO's removeRoutine
+        newProposal.target = address(this);
         newProposal.callData = abi.encodeWithSignature("removeRoutine(uint256)", routineIndex);
-        newProposal.value = 0; // No ETH needed for removal
+        newProposal.value = 0;
         newProposal.proposalType = ProposalType.RoutineRemoval;
         newProposal.status = ProposalStatus.Pending;
         newProposal.proposer = msg.sender;
@@ -544,27 +543,22 @@ contract MarkerDAO is Ownable, ReentrancyGuard {
             revert("Runway expired");
         }
 
-        // Step 1: Execute ETH transfer and calldata first
         bool ethSuccess = true;
         bool callSuccess = true;
         bytes memory returnData = "";
 
-        // Send ETH to target (0 is valid)
         if (routine.value > 0) {
             (ethSuccess, ) = routine.target.call{value: routine.value}("");
             require(ethSuccess, "ETH transfer failed");
         }
 
-        // Execute calldata if provided
         if (routine.callData.length > 0) {
             (callSuccess, returnData) = routine.target.call(routine.callData);
             require(callSuccess, "Calldata execution failed");
         }
 
-        // Emit execution details for debugging
         emit ExecutionResult(routineIndex, ethSuccess, callSuccess, returnData);
 
-        // Step 2: Update state after successful execution
         routine.lastExecution = block.timestamp;
 
         emit RoutineExecuted(routineIndex, block.timestamp);
