@@ -5,7 +5,7 @@ pragma solidity ^0.8.0;
 // Copyright (c) 2025, Peng Protocol
 // All rights reserved.
 
-// v0.0.19
+// v0.0.21
 
 // Local OpenZeppelin Imports 
 import "./imports/Ownable.sol";
@@ -247,7 +247,7 @@ contract MarkerDAO is Ownable, ReentrancyGuard {
     function upvoteProposal(uint256 index, uint256 fftAmount) external {
         require(index < pendingProposalCount, "Proposal does not exist");
         Proposal storage proposal = pendingProposals[index];
-        require(proposal.proposalType == ProposalType.Regular || proposal.proposalType == ProposalType.RoutineRemoval, "Invalid proposal type");
+        require(proposal.proposalType == ProposalType.Regular, "Invalid proposal type");
         require(proposal.status == ProposalStatus.Pending, "Proposal not pending");
 
         uint256 voterBalance = IERC721Enumerable(nftCollection).balanceOf(msg.sender);
@@ -278,7 +278,7 @@ contract MarkerDAO is Ownable, ReentrancyGuard {
     function downvoteProposal(uint256 index, uint256 fftAmount) external {
         require(index < pendingProposalCount, "Proposal does not exist");
         Proposal storage proposal = pendingProposals[index];
-        require(proposal.proposalType == ProposalType.Regular || proposal.proposalType == ProposalType.RoutineRemoval, "Invalid proposal type");
+        require(proposal.proposalType == ProposalType.Regular, "Invalid proposal type");
         require(proposal.status == ProposalStatus.Pending, "Proposal not pending");
 
         uint256 voterBalance = IERC721Enumerable(nftCollection).balanceOf(msg.sender);
@@ -337,6 +337,7 @@ contract MarkerDAO is Ownable, ReentrancyGuard {
     function finalizeProposal(uint256 index) external nonReentrant {
         require(index < pendingProposalCount, "Proposal does not exist");
         Proposal storage proposal = pendingProposals[index];
+        require(proposal.proposalType == ProposalType.Regular, "Use appropriate finalize function");
         require(proposal.status == ProposalStatus.Pending, "Proposal not pending");
         require(block.timestamp >= proposal.createdAt + finalizeTimeLimit, "Time limit not elapsed");
         require(address(this).balance >= proposal.value, "Insufficient ETH balance");
@@ -370,22 +371,84 @@ contract MarkerDAO is Ownable, ReentrancyGuard {
 
                 emit ProposalStatusUpdated(newIndex, ProposalStatus.Passed);
                 emit ProposalExecuted(newIndex);
+            } else {
+                moveToRejected(index);
+            }
+        } else if (block.timestamp >= proposal.deadline) {
+            moveToRejected(index);
+        }
+    }
 
-                if (proposal.proposalType == ProposalType.Routine) {
-                    uint256 routineId = activeRoutineCount++;
-                    Routine storage routine = activeRoutines[routineId];
-                    routine.index = routineId;
-                    routine.detail = proposal.detail;
-                    routine.target = proposal.target;
-                    routine.callData = proposal.callData;
-                    routine.value = proposal.value;
-                    routine.proposer = proposal.proposer;
-                    routine.interval = routineParams[index].interval;
-                    routine.runwayEnd = block.timestamp + routineParams[index].runwayDuration;
-                    routine.active = true;
-                    routine.proposalIndex = newIndex;
-                    emit RoutineCreated(routineId, newIndex, proposal.target, proposal.callData, proposal.value, routine.interval, routine.runwayEnd);
+    function finalizeRoutineProposal(uint256 index) external nonReentrant {
+        require(index < pendingProposalCount, "Proposal does not exist");
+        Proposal storage proposal = pendingProposals[index];
+        require(proposal.proposalType == ProposalType.Routine, "Not a routine proposal");
+        require(proposal.status == ProposalStatus.Pending, "Proposal not pending");
+        require(block.timestamp >= proposal.createdAt + finalizeTimeLimit, "Time limit not elapsed");
+
+        uint256 currentSupply = IERC721Enumerable(nftCollection).totalSupply();
+        if (proposal.turnout >= (currentSupply * turnoutThreshold) / 1000) {
+            uint256 totalVotes = proposal.votesFor + proposal.votesAgainst;
+            if (totalVotes > 0 && (proposal.votesFor * 1000) / totalVotes >= approvalThreshold) {
+                uint256 newIndex = passedProposalCount++;
+                passedProposals[newIndex] = proposal;
+                passedProposals[newIndex].index = newIndex;
+                passedProposals[newIndex].status = ProposalStatus.Passed;
+                delete pendingProposals[index];
+
+                emit ProposalStatusUpdated(newIndex, ProposalStatus.Passed);
+
+                uint256 routineId = activeRoutineCount++;
+                Routine storage routine = activeRoutines[routineId];
+                routine.index = routineId;
+                routine.detail = proposal.detail;
+                routine.target = proposal.target;
+                routine.callData = proposal.callData;
+                routine.value = proposal.value;
+                routine.proposer = proposal.proposer;
+                routine.interval = routineParams[index].interval;
+                routine.runwayEnd = block.timestamp + routineParams[index].runwayDuration;
+                routine.active = true;
+                routine.proposalIndex = newIndex;
+                emit RoutineCreated(routineId, newIndex, proposal.target, proposal.callData, proposal.value, routine.interval, routine.runwayEnd);
+            } else {
+                moveToRejected(index);
+            }
+        } else if (block.timestamp >= proposal.deadline) {
+            moveToRejected(index);
+        }
+    }
+
+    function finalizeRoutineRemovalProposal(uint256 index) external nonReentrant {
+        require(index < pendingProposalCount, "Proposal does not exist");
+        Proposal storage proposal = pendingProposals[index];
+        require(proposal.proposalType == ProposalType.RoutineRemoval, "Not a routine removal proposal");
+        require(proposal.status == ProposalStatus.Pending, "Proposal not pending");
+        require(block.timestamp >= proposal.createdAt + finalizeTimeLimit, "Time limit not elapsed");
+
+        uint256 currentSupply = IERC721Enumerable(nftCollection).totalSupply();
+        if (proposal.turnout >= (currentSupply * turnoutThreshold) / 1000) {
+            uint256 totalVotes = proposal.votesFor + proposal.votesAgainst;
+            if (totalVotes > 0 && (proposal.votesFor * 1000) / totalVotes >= approvalThreshold) {
+                bool callSuccess = true;
+                bytes memory returnData = "";
+
+                if (proposal.callData.length > 0) {
+                    (callSuccess, returnData) = proposal.target.call(proposal.callData);
+                    require(callSuccess, "Calldata execution failed");
                 }
+
+                emit ExecutionResult(index, true, callSuccess, returnData);
+
+                uint256 newIndex = passedProposalCount++;
+                passedProposals[newIndex] = proposal;
+                passedProposals[newIndex].index = newIndex;
+                passedProposals[newIndex].status = ProposalStatus.Passed;
+                passedProposals[newIndex].executed = true;
+                delete pendingProposals[index];
+
+                emit ProposalStatusUpdated(newIndex, ProposalStatus.Passed);
+                emit ProposalExecuted(newIndex);
             } else {
                 moveToRejected(index);
             }
@@ -537,11 +600,7 @@ contract MarkerDAO is Ownable, ReentrancyGuard {
         require(routine.active, "Routine not active");
         require(address(this).balance >= routine.value, "Insufficient ETH balance");
         require(block.timestamp >= routine.lastExecution + routine.interval, "Interval not elapsed");
-
-        if (block.timestamp >= routine.runwayEnd) {
-            removeRoutine(routineIndex);
-            revert("Runway expired");
-        }
+        require(block.timestamp < routine.runwayEnd, "Runway expired");
 
         bool ethSuccess = true;
         bool callSuccess = true;
