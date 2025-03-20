@@ -38,7 +38,7 @@ Changes the status to "passed" if passed or "rejected" if rejected.
 Can only be called after 24 hours since the proposal was created. 
 If proposal type is routine, does not execute calldata but moves routine details into active routines. 
 
-...
+
 
 - **proposeRoutine**
 
@@ -49,7 +49,7 @@ Creates a new routine proposal, requires; address - calldata - native token valu
 
 Executes a routine's custom transaction if its "interval" has elapsed since the last time it was called and its runway is still active. All other proposal/routine functions trigger this function. 
 
-...
+
 
 - **setNFT (ownerOnly)**
 
@@ -63,7 +63,7 @@ Determines the FFT used for voting.
 
 Determines when the proposal can be finalized, default is 24 hours in seconds, after which a proposal is eligible for execution or routine activation. 
 
-...
+
 
 - **queryProposals**
 
@@ -151,13 +151,13 @@ This also presents passed or rejected routine proposals
 
 - **Upvote**
 Same as "upvote" in "Recent Proposals" but uses type "2". 
-...
+
 
 - **Downvote**
 Same as "downvote" in "Recent Proposals" but uses type "2".
-...
 
-- ** Routines**
+
+- **Routines**
 
 Queries and displays first (1000) routines by their index number. 
 
