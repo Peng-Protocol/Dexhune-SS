@@ -130,13 +130,9 @@ Has "more" button to query additional (1000) proposals.
 Displays text that reads; "Nobody here but us chickens!" if there are no pending regular proposals. 
 
 - **Upvote**
-
-Displayed next to each proposal, presents a pop-up with an "amount" field that allows the caller to state how much FFT they want to spend on the vote. Pop-up has "Vote" button to push upvote transaction. 
-
-Checks of the user has approved enough FFT for their vote, otherwise pushes a transaction for "approve" at the FFT contract address with popup "You need to approve first!". "Vote" button visibly changes to "approve".
+Displayed next to each proposal, presents a pop-up with an "amount" field that allows the caller to state how much FFT they want to spend on the vote. Pop-up has "Vote" button to push upvote transaction. Checks of the user has approved enough FFT for their vote, otherwise pushes a transaction for "approve" at the FFT contract address with popup "You need to approve first!". "Vote" button visibly changes to "approve".
 
 - **Downvote**
-
 Same as "Upvote" but for Downvote transactions. 
 
 - **Recent Routine Proposals**
