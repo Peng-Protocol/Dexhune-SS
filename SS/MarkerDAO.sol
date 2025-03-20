@@ -12,6 +12,8 @@ pragma solidity ^0.8.0;
 // - Removed proposeRoutineRemoval and associated RoutineRemoval logic
 // - Removed removedRoutines mapping and removedRoutineCount
 // - Maintained proposalType as 1,2,3; 3 is a ghost (non-functional)
+// Updates within v0.0.20:
+// - Added intervalTimeRemaining to RoutineData in queryRoutines
 
 import "./imports/Ownable.sol";
 import "./imports/SafeERC20.sol";
@@ -98,13 +100,14 @@ contract MarkerDAO is Ownable, ReentrancyGuard {
         uint256 lastExecution;
         bool active;
         uint256 proposalIndex;
+        uint256 intervalTimeRemaining; // Added: Time until next execution
     }
 
     // Storage
     mapping(uint256 => Proposal) pendingProposals;
     mapping(uint256 => Proposal) passedProposals;
     mapping(uint256 => Proposal) rejectedProposals;
-    uint256 public proposalCount; // Renamed from pendingProposalCount
+    uint256 public proposalCount;
     uint256 public passedProposalCount;
     uint256 public rejectedProposalCount;
 
@@ -264,7 +267,7 @@ contract MarkerDAO is Ownable, ReentrancyGuard {
         } else if (proposalType == 2) {
             _finalizeRoutine(proposalId);
         } else if (proposalType == 3) {
-            _finalizeRoutineRemoval(proposalId); // Ghost: minimal logic
+            _finalizeRoutineRemoval(proposalId);
         }
     }
 
@@ -327,7 +330,6 @@ contract MarkerDAO is Ownable, ReentrancyGuard {
     }
 
     function _finalizeRoutineRemoval(uint256 proposalId) internal {
-        // Ghost: Minimal logic, just reject or pass without execution
         Proposal storage proposal = pendingProposals[proposalId];
         uint256 currentSupply = IERC721Enumerable(nftCollection).totalSupply();
 
@@ -424,6 +426,9 @@ contract MarkerDAO is Ownable, ReentrancyGuard {
     function queryRoutines(uint256 routineIndex) external view returns (RoutineData memory) {
         require(routineIndex < activeRoutineCount, "Routine does not exist");
         Routine memory routine = activeRoutines[routineIndex];
+        uint256 nextExecution = routine.lastExecution + routine.interval;
+        uint256 intervalTimeRemaining = (block.timestamp >= nextExecution) ? 0 : nextExecution - block.timestamp;
+
         return RoutineData(
             routine.index,
             routine.detail,
@@ -435,7 +440,8 @@ contract MarkerDAO is Ownable, ReentrancyGuard {
             routine.runwayEnd,
             routine.lastExecution,
             routine.active,
-            routine.proposalIndex
+            routine.proposalIndex,
+            intervalTimeRemaining
         );
     }
 
