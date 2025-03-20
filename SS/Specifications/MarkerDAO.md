@@ -133,6 +133,8 @@ Displays text that reads; "Nobody here but us chickens!" if there are no pending
 
 Displayed next to each proposal, presents a pop-up with an "amount" field that allows the caller to state how much FFT they want to spend on the vote. Pop-up has "Vote" button to push upvote transaction. 
 
+Checks of the user has approved enough FFT for their vote, otherwise pushes a transaction for "approve" at the FFT contract address with popup "You need to approve first!". "Vote" button visibly changes to "approve".
+
 - **Downvote**
 
 Same as "Upvote" but for Downvote transactions. 
@@ -148,11 +150,11 @@ Displays text that reads; "Nobody here but us chickens!" if there are no routine
 This also presents passed or rejected routine proposals  
 
 - **Upvote**
-
+Same as "upvote" in "Recent Proposals" but uses type "2". 
 ...
 
 - **Downvote**
-
+Same as "downvote" in "Recent Proposals" but uses type "2".
 ...
 
 - ** Routines**
@@ -172,6 +174,20 @@ Same as "Recent Proposals" but for passed proposals.
 
 Same as "Recent Proposals" but for rejected proposals. 
 
-- **1d ; links**
+- **1d ; Proposal Builder**
+
+This section is only visible if the wallet is connected and owns >1 NFT. 
+
+Has text that reads; "Create a new Proposal". 
+
+Has  fields for "toAddress", "callData", "POL Value", "Details". Which are passed to the contract "propose" parameters and pushed for signing in the user's wallet. 
+
+Checks if the user has >1 FFT, otherwise presents error popup "You need more LUSD!".  Amount must be approved, if not "Propose" Button changes to "Approve" and instead pushes a transaction to approve the contract. 
+
+Has toggle for routine or regular. 
+
+If routine is toggled this presents additional fields for "interval" and "runway". Also when "Propose" is clicked it pushes a transaction to propose routine instead. 
+
+- **1e ; links**
 
 Text links to; GitHub, Telegram and X
