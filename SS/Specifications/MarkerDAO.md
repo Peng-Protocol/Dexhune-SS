@@ -8,7 +8,9 @@ All fees from listing tokens on Dexhune are sent to MarkerDAO. Participants can 
 
 Participants are regarded as holders of a target NFT collection set by the initial owner, once an NFT collection is set, it can only be changed by DAO vote. 
 
-Each vote requires expenditure of a set fungible token (FFT). A proposal requires 33.3% turnout in the set NFT collection's supply and 51% upvotes to pass. 
+Each vote requires expenditure of a set fungible token (FFT) with a (1) unit minimum but no upper limit, the amount of FFT spent does not influence the vote but can be used to fund proposals before they pass. 
+
+A proposal requires 33.3% turnout in the set NFT and 51% upvotes to pass. 
 
 The DAO can execute "routines", which occur at stated intervals, these are custom transactions that occur periodically. 
 
@@ -20,43 +22,32 @@ Routines have "runways", which is a duration for which the routine will run.
 
 - **Propose**
 
-Creates a new proposal entry, requires; custom transaction and string detail which need to be voted on by the DAO. Proposer must be an NFT holder, charges a fee in FFT equal to 0.0001% of the DAO's FFT balance - else proposal is rejected. 
+Creates a new proposal entry, requires; string detail which need to be voted on by the DAO. Proposer must be an NFT holder, charges a (1) FFT fee - else proposal is rejected. 
+Requres; address (where calldata is executed), callData (custom transaction for smart contracts), value (native tokens sent). 
+Each proposal has a deadline equal to (1) week in seconds. 
 
-- **upvoteProposal**
+- **Vote**
 
-Requires proposal index, proposal must exist and status must be "pending", adds an upvote equal to a stated amount in FFT. 
+Requires proposal index, proposal type (regular or routine), vote type, proposal must exist and status must be "pending", adds an upvote or downvote equal to number of NFTs the address owns. Max iteration is 30 NFTs per vote, callers with more than 30 can vote again, contract will iterate over NFTs owned and exact items used to vote per proposal. 
 
-- **downvoteProposal**
-
-Requires proposal index, proposal must exist and status must be "pending", adds a downvote equal to a stated amount in FFT. 
 
 - **finalizeProposal**
 
-Requires index number, proposal status must be "pending", executes the custom transaction of the proposal if passed - else ignores the custom transaction.
+Requires index number, proposal type, proposal status must be "pending", executes the custom transaction of the proposal if "regular" and passed  - else ignores the custom transaction. 
 Changes the status to "passed" if passed or "rejected" if rejected. 
 Can only be called after 24 hours since the proposal was created. 
+If proposal type is routine, does not execute calldata but moves routine details into active routines. 
 
 ...
 
 - **proposeRoutine**
 
-Creates a new routine entry, requires; custom transaction - string detail - interval and runway, which need to be voted on by the DAO. Proposer must be an NFT holder, charges a fee in FFT equal to 0.0001% of the DAO's FFT balance - else proposal is rejected. 
+Creates a new routine proposal, requires; address - calldata - native token value - string detail - interval and runway, which need to be voted on by the DAO. Proposer must be an NFT holder, charges a (1) FFT fee  - else proposal is rejected. 
 
-- **upvoteRoutineProposal**
-
-Requires routine index, routine must exist and status cannot be "rejected", adds an upvote equal to a stated amount in FFT. 
-
-- **downvoteRoutineProposal**
-
-Requires routine index, routine must exist and status cannot be "rejected", adds a downvote equal to a stated amount in FFT.
-
-- **ProposeRoutineRemoval**
-
-Creates a new routine removal entry, requires routine index, routine must exist and status must be "passed". 
 
 - **pushRoutine**
 
-Executes a routine's custom transaction if it's "interval" has elapsed since the last time it was called and its runway is still active. All other proposal/routine functions trigger this function. 
+Executes a routine's custom transaction if its "interval" has elapsed since the last time it was called and its runway is still active. All other proposal/routine functions trigger this function. 
 
 ...
 
@@ -68,57 +59,24 @@ Determines the NFT whose holders are allowed to vote. Contract queries NFT holdi
 
 Determines the FFT used for voting. 
 
-...
+- **setFinalizeTime (ownerOnly)**
 
-- **queryActiveProposalByIndex**
-
-This returns the full details of an active proposal by its index number. 
-
-- **queryRejectedProposalByIndex**
-
-This returns the full details of a rejected proposal by its index number. 
-
-- **queryPassedProposalByIndex**
-
-This returns the full details of a passed proposal by its index number. 
-
-- **queryProposalByIndex**
-
-Returns the full details of a proposal by its index number. 
-
-- **queryLatestProposal**
-
-Returns the full details of the proposal with the highest index. 
+Determines when the proposal can be finalized, default is 24 hours in seconds, after which a proposal is eligible for execution or routine activation. 
 
 ...
 
-- **queryActiveRoutineByIndex**
+- **queryProposals**
 
-This returns the full details of an active routine by its index number. 
+This returns the full details of a proposal by its index number. This returns both active and passed proposals. 
 
-- **queryRejectedRoutineByIndex**
+- **queryRoutines**
 
-This returns the full details of a rejected routine by its index number. 
+This returns the full details of a routine by its index number. This returns both active and expired routines. 
 
-- **queryPassedRoutineByIndex**
-
-This returns the full details of a passed routine by its index number. 
-
-- **queryRemovedRoutineByIndex**
-
-This returns the full details of a removed routine by its index number. 
-
-- **queryRoutineByIndex**
-
-Returns the full details of a routine by its index number. 
-
-- **queryLatestRoutine**
-
-Returns the full details of the routine with the highest index. 
-
-...
 
 ### **Data**
+The following data is public:
+
 - **NFT**
 
 Stores the address of the DAO's NFT collection, whose holders are allowed to vote. 
@@ -127,13 +85,22 @@ Stores the address of the DAO's NFT collection, whose holders are allowed to vot
 
 Stores the address of the DAO's FFT, which is used for voting. 
 
-- **Proposals**
+- **proposals**
 
-Stores all proposals (+ routine proposals) with the following details; Index, string detail, custom transaction, status (regular/routine - pending - rejected - passed). 
+Stores all proposals (+ routine proposals) with the following details; Index, string detail, custom transaction, type (regular/routine) status (pending - rejected - passed). 
 
-- **Routines**
+- **routines**
 
 Stores all routines with the following details; Index, string detail, custom transaction, status (pending - rejected - passed - removed), interval, runway. 
+
+- **finalizeTimeLimit**
+
+Stores the time limit before each proposal can be finalized. 
+
+- **proposalCount**
+
+Stores the number of proposals made, incremented by each new proposal. 
+
 
 ## **Frontend**
 A frontend application for interacting with MarkerDAO.  
@@ -156,7 +123,11 @@ If the wallet is connected; queries and presents the address's NFT and FFT balan
 
 - **Recent Proposals**
 
-Queries and displays all pending proposals by their index number. 
+Queries up to (1000) proposals incremently till the "proposalCount" height, filters and displays all pending regular  proposals by their index number. 
+
+Has "more" button to query additional (1000) proposals. 
+
+Displays text that reads; "Nobody here but us chickens!" if there are no pending regular proposals. 
 
 - **Upvote**
 
@@ -168,7 +139,13 @@ Same as "Upvote" but for Downvote transactions.
 
 - **Recent Routine Proposals**
 
-Queries and displays all pending routine proposals by their index number. 
+Queries up to (1000) proposals incremently till the "proposalCount" height, filters and displays all routine proposals by their index number. 
+
+Has "more" button to query additional (1000) proposals. 
+
+Displays text that reads; "Nobody here but us chickens!" if there are no routine proposals. 
+
+This also presents passed or rejected routine proposals  
 
 - **Upvote**
 
@@ -178,48 +155,22 @@ Queries and displays all pending routine proposals by their index number.
 
 ...
 
-- ** Active Routines**
+- ** Routines**
 
-Queries and displays first (1000) active routines by their index number. 
+Queries and displays first (1000) routines by their index number. 
 
-Each routine entry has a timer for when it can be executed, once it exceeds this time the timer becomes a button that reads; "execute". If clicked; the frontend will query the routine to see if it is unexecuted, if true then pushes transaction to execute the routine.
-Each routine has a "runway", which is how long it will run for. 
+Each routine entry has a timer for when it can be executed, once it exceeds this time the timer becomes a button that reads; "execute". If clicked; the frontend will query the routine to see if it is unexecuted, if unexecuted then pushes transaction to execute the routine.
+Each routine has a "runway", which is how long it will run for, this is parsed from its timestamp into human readable time. 
 
-- **More Button**
-
-Triggers the frontend to query additional (1000) active routines. 
+Has "More Button" that to query additional (1000) active routines. 
 
 - **Passed Proposals**
 
-Queries and displays first (1000) passed proposals by their index number. 
-
-- **More Button**
-
-Triggers the frontend to query additional (1000) passed proposals. 
+Same as "Recent Proposals" but for passed proposals. 
 
 - **Past Rejected Proposals**
 
-Queries and displays first (1000) rejected proposals by their index number. 
-
-- **More Button**
-
-Triggers the frontend to query additional (1000) Rejected Proposals. 
-
-- **Past Rejected Routines**
-
-Queries and displays first (1000) rejected routine proposals by their index number. 
-
-- **More Button**
-
-Triggers the frontend to query additional (1000) rejected routines. 
-
-- **Removed Routines**
-
-Queries and displays first (1000) removed routines by their index number. 
-
-- **More Button**
-
-Triggers the frontend to query additional (1000) removes routines. 
+Same as "Recent Proposals" but for rejected proposals. 
 
 - **1d ; links**
 
