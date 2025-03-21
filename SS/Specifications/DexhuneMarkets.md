@@ -131,10 +131,6 @@ Once a user claims fees their dVolume is set to current tVolume, thereby resetti
 
 Iterates through a specified number of staked addresses and determines if they are inactive. Gives back the staked tokens of addresses that have missed more than (10) listing proposals and clears their staker slot. 
 
-- **setMarkets (ownerOnly)**
-
-Determines the Dexhune Markets contract address. 
-
 - **queryProposal**
 
 Each pending proposal stores the index of the listing/delisting request and votes. This function returns the full details of a  proposal by index number. 
