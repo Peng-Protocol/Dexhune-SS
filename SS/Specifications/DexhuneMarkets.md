@@ -1,89 +1,58 @@
-# **Premise**
+# **Premise ///
 A decentralized listing platform for Dexhune.
 
 # **General**
 The system has (2) contracts; "Dexhune Markets" and "Red Marker DAO". 
 
 ## **Dexhune Markets Contract**
-This is responsible for storing listed tokens and their names + ticker symbols. 
-This contract is owned by an admin, the admin approves new listing requests. 
+This is responsible for storing listed token addresses and their names + ticker symbols. 
+This contract is ownable, the owner approves new listing requests. 
 
 ### **Functions**
 - **requestListing**
 
 Creates a new listing request which is stored by the contract under "pendingListings" with an index number and boolean condition. 
-The admin can set the listing's boolean condition to 'true', in which case it is stored under "fullListings"
+The owner can set the listing's boolean condition to 'true', in which case it is stored under "fullListings"
 Takes a fee based on the amount in "listPrice. 
-Fee is billed in "feeToken" and is sent to the admin. 
+Fee is billed in "feeToken" and is sent to the owner. 
 Fails if fee cannot be paid. 
-Ensures that the requested asset is not already listed, else fails. 
+Ensures that the requested address is not already listed, else fails. 
 Ensures that another request to list the same token does not already exist, else fails. 
-Optionally the user can provide an ETHscription image hash. 
+Optionally the user can provide an ETHscription image hash and "exceptions" string. 
 
 - **requestDelisting**
 
 Creates a new delisting request with a stated listed token contract address. This is stored in "pendingDelistings". 
 Takes a fee based on the amount in "listPrice. 
-Fee is billed in "feeToken" and is sent to the admin. 
+Fee is billed in "feeToken" and is sent to the owner. 
 Fails if fee cannot be paid. 
 Ensures that the requested asset is listed, else fails. 
 Ensures that another request to delist the same token does not already exist, else fails. 
 
-- **approveListing (adminOnly)**
+- **approveListing (ownerOnly)**
 
 Sets a listing request to "true" and moves it to "fullListings".
+Queries and stores the token name and ticker symbol. 
 
-- **approveDelisting (adminOnly)**
+- **approveDelisting (ownerOnly)**
 
-Sets a delisting request to "true" and moves the associated token out of "fullListings".
+Sets a delisting request to "true" and moves the associated token out of "fullListings". Reduces the totalListings number by (1). 
 
-- **setAdmin (adminOnly)**
-
-Transfers ownership of the contract, the "admin" role is the same as "owner" but with a different name. 
-Deployer is the original admin. 
-
-- **setFeeToken (adminOnly)**
+- **setFeeToken (ownerOnly)**
 
 Determines the fee token. 
 
-- **queryListingByName**
+- **QueryByIndex**
 
-Returns the details of a full listing by its name. 
-
-- **queryListingByIndex**
-
-Returns the details of a full listing by its index number. 
-
-- **queryListingByTicker**
-
-Returns the details of a full listing by its ticker symbol. 
-
-- **queryListingByAddress**
-
-Returns the details of a full listing by its address. 
-
-- **queryPendingListingByAddress**
-
-Returns the index numbers of all pending listings by their address.
-
-- **queryPendingListingByIndex**
-
-Returns the full details of a pending listing by its index number. 
-
-- **queryPendingDelistingByAddress**
-
-Returns the index numbers of all pending delistings by their address. 
-
-- **queryPendingDelistingByIndex**
-
-Returns the full details of a pending listings by its index number. 
+Returns the details of a request or listing by its index number.
+Requires: status (pending - passed -rejected, 1 - 2 - 3), and index number. 
 
 ### **Data**
 - **listPrice**
 
-List price is set by fetching the balance of the fee token at the admin address and calculating; 
+List price is set by fetching the balance of the fee token at the owner address and calculating; 
 
-Admin Balance / (1000 + total listings) 
+Owner Balance / (1000 + total listings) 
 
 List price can be "0". 
 
@@ -91,27 +60,25 @@ List price can be "0".
 
 Stores the address of the fee token. 
 
-- **admin**
+- **listings**
 
-Stores the address of the admin.
+A struct for listings, stores the contract address of a listing request - index number - ETHscription hash (if any). 
+Stores the status; "pending", "listed", or "rejected" (1, 2, 3). 
+Stores the token name, ticker, and "exceptions" string. 
 
-- **pendingListings**
+- **totalListings** 
 
-Stores the contract address of a listing request - index number - ETHscription hash (if any) and boolean condition. 
+Stores the number of all fully listed tokens, updated when listings are passed or removed. 
 
-- **pendingDelistings**
+- **deadline**
 
-Stores the contract address of a delisting request - index number - ETHscription hash (if any) and boolean condition.  
-
-- **fullListings**
-
-Stores the contract address - ETHscription hash (if any) - name and symbol of an approved listing. Name and symbol are queried and stored upon admin confirmation. 
+Determines when requests can be deleted with _clearRequests. _clearRequests iterate over up to 10 pending listing requests to check their deadline. Is triggered by write functions. 
 
 ## **Red Marker DAO**
-A simple DAO for approving or rejecting proposals to list or unlist tokens from Dexhune Markets.
-However, each vote requires a permanent deduction of token units from the voter.
+A simple DAO for approving or rejecting requests to list or unlist tokens on Dexhune Markets.
+Each vote requires a permanent deduction of token units from the voter.
 How much the user can vote is determined by their stake amount. 
-But every staked balance is subject to a gaussian rebase mechanism, which redistributes all tokens of all stakers to create a "normal distribution" curve. 
+But every staked balance is subject to a rebase mechanism, which redistributes all tokens of all stakers to create a "normal" or equak distribution. 
 
 
 ### **Functions**
@@ -124,11 +91,15 @@ A proposal to approve a listing/delisting requires the listing/delisting request
 
 Proposals require at least 51% of the total staked token to pass.
 
-- **upvoteAction**
+- **upvote**
 
 All actions are assumed rejected by the totality of the staked token until upvoted otherwise.
 Each upvote is a permanent deduction of the vote amount which is held within the contract and later becomes fees. 
 Is limited by how much the address has staked. 
+Increases tVolume by the amount spent. 
+If an upvote tips the votes cast above 51% then the proposal passes and executes `approveListing` or `approveDelisting` depending on the type of proposal. 
+Updates callers `lastVote`. 
+Required params : proposal index, amount. 
 
 - **stakeToken**
 
@@ -158,40 +129,45 @@ Once a user claims fees their dVolume is set to current tVolume, thereby resetti
 
 - **ejectInactive**
 
-Returns the staked tokens of addresses that have missed more than (10) listing proposals and clears their staker slot. 
+Iterates through a specified number of staked addresses and determines if they are inactive. Gives back the staked tokens of addresses that have missed more than (10) listing proposals and clears their staker slot. 
 
 - **setMarkets (ownerOnly)**
 
 Determines the Dexhune Markets contract address. 
 
-- **queryProposalByAddress**
+- **queryProposal**
 
-Each proposal stores the full details of the listing/delisting request, including the token address and votes. This function returns the full details of a listing/delisting request, including how many votes have been cast in favor. 
+Each pending proposal stores the index of the listing/delisting request and votes. This function returns the full details of a  proposal by index number. 
 
-- **queryActiveProposalByIndex**
+- **queryLatest** 
 
-Returns the full details of an active proposal by its index number. 
+Fetches and the details the current active proposal, if any. 
 
-- **queryPassedProposalByIndex**
+Required params; Index. 
 
-Returns the full details of a passed proposal by its index number. 
+- **queryInactive**
 
-- **queryRejectedProposalByIndex**
+Iterates through a specified number of staked addresses and determines if they are inactive, returns the addresses of inactive members up to the specified number of iterations. Ensure this doesn't exceed stack depth limit. 
 
-Returns the full details of a rejected proposal by its index number. 
+- **queryStake**
 
-- **queryInactiveByIndex**
+Returns the full details of an address's stalker slot. 
 
-Returns the address of an inactive member by its index number. 
+-- **setMarkets(ownerOnly)**
 
-- **queryStakeByAddress**
+Determines the Dexhune Markets contract. 
 
-Returns the number of staked tokens an address has. 
+- **setStakingToken**
 
-- **queryStakeByIndex**
+Determines the staking token. 
 
-Returns the number of staked tokens an address has. 
+- **_clearProposal**
 
+Iterates over (5) pending proposals to determine if their deadline has elapsed, moves them to "rejected" if elapsed. 
+Is triggered by; `propose`, `upvote, `stakeToken` and `pullStake`. Is private.
+
+- **_rebase** 
+Fetches the stake balances of all staker addresses and attempts to create a normal distribution. Is triggered by `stakeToken` and `pullStake`.  
 
 ### **Staker Slots**
 
@@ -213,7 +189,7 @@ Each Staker gets a data entry formatted as follows;
 ### **Data**
 - **tVolume**
 
-Stores the current amount of [TOKEN] that has been transacted by the contract, is updated whenever a vote is cast. 
+Stores the current amount of [TOKEN] that has been transacted by the contract, is added to whenever a vote is cast.  
 
 - **fees**
 
@@ -229,9 +205,22 @@ Stores the address of the token used for staking. Is set into the contract pre-d
 
 Stores how much of the `TOKEN` is currently staked, is increased whenever more stake is added or reduced when stake is withdrawn. 
 
-- **totalProposals**
+- **passedProposalsCount**
 
 Stores the number of proposals passed by the DAO. 
+
+- **pendingProposalsCount**
+
+Stores the number of pending proposals stored by the DAO. Updated whenever a proposal is passed. 
+
+- **rejectedProposalsCount**
+
+Stores the number of rejected proposals stored by the DAO. Updated whenever a proposal is rejected. 
+
+- **proposals**
+
+A struct, each proposal stores; request index on markets, votes, type (listing or delisting request, 0 or 1) and deadline. 
+The deadline is set once the proposal is made and is 10 minutes by default. 
 
 - **Markets**
 
