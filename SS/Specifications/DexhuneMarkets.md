@@ -94,9 +94,8 @@ Proposals require at least 51% of the total staked token to pass.
 - **upvote**
 
 All actions are assumed rejected by the totality of the staked token until upvoted otherwise.
-Each upvote is a permanent deduction of the vote amount which is held within the contract and later becomes fees. 
+Each upvote is a permanent deduction of the vote amount which is held within the contract, divided by totalsStakers and added to all staker's balances equally. 
 Is limited by how much the address has staked. 
-Increases tVolume by the amount spent. 
 If an upvote tips the votes cast above 51% then the proposal passes and executes `approveListing` or `approveDelisting` depending on the type of proposal. 
 Updates callers `lastVote`. 
 Required params : proposal index, amount. 
@@ -104,28 +103,11 @@ Required params : proposal index, amount.
 - **stakeToken**
 
 Staking one's tokens makes a deduction of the tokens being staked and creates a "staker" data slot. 
-Users can add to their stake by calling this function again, restaking does not reset one's dVolume. 
+Users can add to their stake by calling this function again. 
 
 - **pullStake**
 
 Removes a stated amount of a user's staked tokens, returning them to their address, clears their staker slot if the deduction wipes the entire balance, caller must be a staker. 
-
-- **claimFees**
-
-Allows the user to claim a certain portion of the "fees" storage.
-This is effected using the following formula; 
-
-```
-total volume / volume at deposit * 100 - 100 = contributed volume 
-
-user stake / total stake * 100 = stake contribution 
-
-(fees / 100 * stake contribution) / 100 * contributed volume 
-```
-
-Output amount cannot be greater than available fees, if greater then only pay available fees.
-
-Once a user claims fees their dVolume is set to current tVolume, thereby resetting how much they are entitled to claim. 
 
 - **ejectInactive**
 
@@ -171,28 +153,15 @@ Each Staker gets a data entry formatted as follows;
 
 - Staker Address ; (Address)
 - Staked Amount ; (uint256)
-- dVolume ; (uint256) 
 - Last Vote ; (uint256) 
 
 "Staker Address" stores the address of the staker and is necessary during withdrawals. 
 
-"Staked Amount" stores how much they have staked cumulatively and is necessary for claiming fees.
-
-"dVolume" stores the tVolume at the time of deposit and is necessary for calculating fee allocation. 
+"Staked Amount" stores how much they have staked cumulatively.
 
 "Last Vote" stores the "totalProposals" height at the time of a staker's last logged vote. Is needed for `ejectInactive`. 
 
 ### **Data**
-- **tVolume**
-
-Stores the current amount of [TOKEN] that has been transacted by the contract, is added to whenever a vote is cast.  
-
-- **fees**
-
-Stores any unallocated [TOKEN] found in the contract. This is calculated as; 
-
-Total Balance - totalStake 
-
 - **stakingToken**
 
 Stores the address of the token used for staking. Is set into the contract pre-deployment. 
