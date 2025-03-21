@@ -153,7 +153,7 @@ Iterates through a specified number of staked addresses and determines if they a
 
 Returns the full details of an address's stalker slot. 
 
--- **setMarkets(ownerOnly)**
+- **setMarkets(ownerOnly)**
 
 Determines the Dexhune Markets contract. 
 
