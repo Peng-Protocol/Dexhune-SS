@@ -1,16 +1,13 @@
 // SPDX-License-Identifier: BSD-3-Clause
 pragma solidity ^0.8.0;
 
-// v0.0.6
+// v0.0.8
 // RedMarkerDAO: DAO for approving/rejecting Dexhune Markets token listings
 // Changes:
-// - Added `initialStake` as a public state variable to track totalStake snapshot at proposal creation (v0.0.2)
-// - Moved `initialStake` into `Proposal` struct to vary per proposal, removed standalone `uint256 public initialStake` (v0.0.3)
-// - Fixed `pullStake` function signature and syntax to align with original design (v0.0.2)
-// - Updated `proposeAction` and `upvote` to use `proposal.initialStake` for per-proposal tracking (v0.0.3)
-// - Added `kickInactive` function to erase inactive stakers and rebase their balance to remaining stakers (v0.0.4)
-// - Changed `kickInactive` from `onlyOwner` to `public` to allow anyone to call it (v0.0.5)
-// - set minimum stake to 1e18
+// - Previous changes from v0.0.2 to v0.0.7...
+// - `initialStakedAmount` now increases with each `stakeToken` call, not just first (v0.0.8)
+// - Added `minimumVote` as 10% of `rebaseFactor` in `upvote` to prevent tiny votes (v0.0.8)
+// Note: Assumes DexhuneMarkets sends fees in stakingToken to RMD, increasing totalStake indirectly
 
 import "./imports/Ownable.sol";
 import "./imports/SafeERC20.sol";
@@ -20,6 +17,7 @@ import "./imports/ReentrancyGuard.sol";
 interface IDexhuneMarkets {
     function approveListing(uint256 listingIndex) external;
     function approveDelisting(uint256 delistingIndex) external;
+    function transferOwnership(address newOwner) external;
 }
 
 contract RedMarkerDAO is Ownable, ReentrancyGuard {
@@ -41,6 +39,7 @@ contract RedMarkerDAO is Ownable, ReentrancyGuard {
         address stakerAddress;
         uint256 stakedAmount;
         uint256 lastVote;
+        uint256 initialStakedAmount; // Tracks total contributed stake
     }
 
     struct Proposal {
@@ -48,7 +47,7 @@ contract RedMarkerDAO is Ownable, ReentrancyGuard {
         uint256 votes;
         uint8 proposalType; // 0 = listing, 1 = delisting
         uint256 deadline;
-        uint256 initialStake; // Total stake snapshot at proposal creation
+        uint256 initialStake;
     }
 
     // Public Storage
@@ -65,6 +64,7 @@ contract RedMarkerDAO is Ownable, ReentrancyGuard {
     event ProposalVoted(uint256 indexed index, address indexed voter, uint256 amount);
     event ProposalPassed(uint256 indexed index, uint256 requestIndex, uint8 proposalType);
     event StakerKicked(address indexed staker, uint256 amount);
+    event MarketsOwnershipTransferred(address indexed newOwner);
 
     constructor() {
         markets = address(0);
@@ -97,36 +97,38 @@ contract RedMarkerDAO is Ownable, ReentrancyGuard {
         delete stakers[staker];
         isStaker[staker] = false;
         totalStakers--;
-        // Note: totalStake remains unchanged, amount is redistributed via rebase
         _rebase();
         emit StakerKicked(staker, amount);
     }
 
-function stakeToken(uint256 amount) external nonReentrant {
-    require(stakingToken != address(0), "Staking token not set");
-    rebaseFactor = totalStakers > 0 ? (totalStake / totalStakers < 1e18 ? 1e18 : totalStake / totalStakers) : 1e18;
-    require(amount >= rebaseFactor, "Amount below rebase factor");
-    SafeERC20.safeTransferFrom(IERC20(stakingToken), msg.sender, address(this), amount);
-    StakerSlot storage slot = stakers[msg.sender];
-    if (!isStaker[msg.sender]) {
-        slot.stakerAddress = msg.sender;
-        isStaker[msg.sender] = true;
-        stakerList.push(msg.sender);
-        totalStakers++;
+    function stakeToken(uint256 amount) external nonReentrant {
+        require(stakingToken != address(0), "Staking token not set");
+        rebaseFactor = totalStakers > 0 ? (totalStake / totalStakers < 1e18 ? 1e18 : totalStake / totalStakers) : 1e18;
+        require(amount >= rebaseFactor, "Amount below rebase factor");
+        SafeERC20.safeTransferFrom(IERC20(stakingToken), msg.sender, address(this), amount);
+        StakerSlot storage slot = stakers[msg.sender];
+        if (!isStaker[msg.sender]) {
+            slot.stakerAddress = msg.sender;
+            isStaker[msg.sender] = true;
+            stakerList.push(msg.sender);
+            totalStakers++;
+        }
+        slot.initialStakedAmount += amount; // Increase initial stake each time
+        slot.stakedAmount += amount;
+        totalStake += amount;
+        _rebase();
+        _clearProposal();
+        emit Staked(msg.sender, amount);
     }
-    slot.stakedAmount += amount;
-    totalStake += amount;
-    _rebase();
-    _clearProposal();
-    emit Staked(msg.sender, amount);
-}
 
     function pullStake(uint256 amount) external nonReentrant {
         require(isStaker[msg.sender], "Not a staker");
-        require(amount > 0 && amount <= stakers[msg.sender].stakedAmount, "Invalid amount");
-        stakers[msg.sender].stakedAmount -= amount;
+        StakerSlot storage slot = stakers[msg.sender];
+        uint256 maxPayout = (slot.lastVote + 5 >= proposalCount) ? slot.stakedAmount : slot.initialStakedAmount;
+        require(amount > 0 && amount <= maxPayout, "Invalid amount or exceeds allowed payout");
+        slot.stakedAmount -= amount;
         totalStake -= amount;
-        if (stakers[msg.sender].stakedAmount == 0) {
+        if (slot.stakedAmount == 0) {
             for (uint256 i = 0; i < stakerList.length; i++) {
                 if (stakerList[i] == msg.sender) {
                     stakerList[i] = stakerList[stakerList.length - 1];
@@ -155,7 +157,7 @@ function stakeToken(uint256 amount) external nonReentrant {
             votes: 0,
             proposalType: proposalType,
             deadline: block.timestamp + defaultDeadline,
-            initialStake: totalStake // Snapshot totalStake for this proposal
+            initialStake: totalStake
         });
         pendingProposalsCount++;
         _clearProposal();
@@ -165,14 +167,16 @@ function stakeToken(uint256 amount) external nonReentrant {
     function upvote(uint256 proposalIndex, uint256 voteAmount) external nonReentrant {
         require(proposalIndex < proposalCount, "Invalid proposal index");
         require(isStaker[msg.sender], "Not a staker");
+        uint256 minimumVote = rebaseFactor / 10; // 10% of rebaseFactor
+        require(voteAmount >= minimumVote, "Vote below minimum");
         require(voteAmount > 0 && voteAmount <= stakers[msg.sender].stakedAmount, "Invalid vote amount");
         Proposal storage proposal = proposals[proposalIndex];
         require(proposal.deadline > block.timestamp, "Proposal expired");
         stakers[msg.sender].stakedAmount -= voteAmount;
         proposal.votes += voteAmount;
         stakers[msg.sender].lastVote = proposalCount;
-        totalStake += voteAmount; // Redistribute voteAmount to all stakers
-        if (proposal.votes > proposal.initialStake * 50 / 100) { // Check against proposal-specific initial stake
+        totalStake += voteAmount;
+        if (proposal.votes > proposal.initialStake * 50 / 100) {
             IDexhuneMarkets marketsContract = IDexhuneMarkets(markets);
             if (proposal.proposalType == 0) {
                 marketsContract.approveListing(proposal.requestIndex);
@@ -183,9 +187,17 @@ function stakeToken(uint256 amount) external nonReentrant {
             pendingProposalsCount--;
             emit ProposalPassed(proposalIndex, proposal.requestIndex, proposal.proposalType);
         }
-        _rebase(); // Rebase after adding voteAmount to totalStake
+        _rebase();
         _clearProposal();
         emit ProposalVoted(proposalIndex, msg.sender, voteAmount);
+    }
+
+    function transferMarkets(address newOwner) external nonReentrant {
+        require(markets != address(0), "Markets not set");
+        require(newOwner != address(0), "Invalid new owner");
+        IDexhuneMarkets marketsContract = IDexhuneMarkets(markets);
+        marketsContract.transferOwnership(newOwner);
+        emit MarketsOwnershipTransferred(newOwner);
     }
 
     // Read Functions
@@ -198,7 +210,7 @@ function stakeToken(uint256 amount) external nonReentrant {
                 inactive[found++] = staker;
             }
         }
-        assembly { mstore(inactive, found) } // Resize array
+        assembly { mstore(inactive, found) }
         return inactive;
     }
 
@@ -213,7 +225,7 @@ function stakeToken(uint256 amount) external nonReentrant {
         while (checked < 5 && i < proposalCount) {
             Proposal storage proposal = proposals[i];
             if (proposal.deadline > 0 && block.timestamp >= proposal.deadline) {
-                proposal.deadline = 0; // Mark as expired
+                proposal.deadline = 0;
                 pendingProposalsCount--;
                 rejectedProposalsCount++;
             }
