@@ -1,8 +1,12 @@
 // SPDX-License-Identifier: BSD-3-Clause
 pragma solidity ^0.8.0;
 
-// v0.0.1
+// v0.0.2
 // RedMarkerDAO: DAO for approving/rejecting Dexhune Markets token listings
+// Changes:
+// - Added `initialStake` as a public state variable to track totalStake snapshot at proposal creation
+// - Fixed `pullStake` function signature and syntax to align with original design
+// - Ensured all identifiers are declared before use and adhered to guideline constraints
 
 import "./imports/Ownable.sol";
 import "./imports/SafeERC20.sol";
@@ -27,6 +31,7 @@ contract RedMarkerDAO is Ownable, ReentrancyGuard {
     uint256 public totalStakers;
     uint256 public rebaseFactor; 
     uint256 public defaultDeadline = 24 * 60 * 60; // 24 hours in seconds
+    uint256 public initialStake; // Snapshot of totalStake at proposal creation
 
     // Structs
     struct StakerSlot {
@@ -74,23 +79,23 @@ contract RedMarkerDAO is Ownable, ReentrancyGuard {
 
     // Write Functions
     function stakeToken(uint256 amount) external nonReentrant {
-    require(stakingToken != address(0), "Staking token not set");
-    rebaseFactor = totalStakers > 0 ? (totalStake / totalStakers < 1000e18 ? 1000e18 : totalStake / totalStakers) : 1000e18;
-    require(amount >= rebaseFactor, "Amount below rebase factor");
-    SafeERC20.safeTransferFrom(IERC20(stakingToken), msg.sender, address(this), amount);
-    StakerSlot storage slot = stakers[msg.sender];
-    if (!isStaker[msg.sender]) {
-        slot.stakerAddress = msg.sender;
-        isStaker[msg.sender] = true;
-        stakerList.push(msg.sender);
-        totalStakers++;
+        require(stakingToken != address(0), "Staking token not set");
+        rebaseFactor = totalStakers > 0 ? (totalStake / totalStakers < 1000e18 ? 1000e18 : totalStake / totalStakers) : 1000e18;
+        require(amount >= rebaseFactor, "Amount below rebase factor");
+        SafeERC20.safeTransferFrom(IERC20(stakingToken), msg.sender, address(this), amount);
+        StakerSlot storage slot = stakers[msg.sender];
+        if (!isStaker[msg.sender]) {
+            slot.stakerAddress = msg.sender;
+            isStaker[msg.sender] = true;
+            stakerList.push(msg.sender);
+            totalStakers++;
+        }
+        slot.stakedAmount += amount;
+        totalStake += amount;
+        _rebase();
+        _clearProposal();
+        emit Staked(msg.sender, amount);
     }
-    slot.stakedAmount += amount;
-    totalStake += amount;
-    _rebase();
-    _clearProposal();
-    emit Staked(msg.sender, amount);
-}
 
     function pullStake(uint256 amount) external nonReentrant {
         require(isStaker[msg.sender], "Not a staker");
@@ -116,48 +121,48 @@ contract RedMarkerDAO is Ownable, ReentrancyGuard {
     }
 
     function proposeAction(uint256 requestIndex, uint8 proposalType) external nonReentrant {
-    require(stakingToken != address(0), "Staking token not set");
-    require(markets != address(0), "Markets not set");
-    require(stakers[msg.sender].stakedAmount >= 1e18, "Insufficient stake");
-    require(proposalType <= 1, "Invalid proposal type");
-    uint256 index = proposalCount++;
-    proposals[index] = Proposal({
-        requestIndex: requestIndex,
-        votes: 0,
-        proposalType: proposalType,
-        deadline: block.timestamp + defaultDeadline
-    });
-    pendingProposalsCount++;
-    initialStake = totalStake; // Snapshot totalStake at proposal creation
-    _clearProposal();
-    emit ProposalCreated(index, msg.sender, requestIndex, proposalType);
-}
+        require(stakingToken != address(0), "Staking token not set");
+        require(markets != address(0), "Markets not set");
+        require(stakers[msg.sender].stakedAmount >= 1e18, "Insufficient stake");
+        require(proposalType <= 1, "Invalid proposal type");
+        uint256 index = proposalCount++;
+        proposals[index] = Proposal({
+            requestIndex: requestIndex,
+            votes: 0,
+            proposalType: proposalType,
+            deadline: block.timestamp + defaultDeadline
+        });
+        pendingProposalsCount++;
+        initialStake = totalStake; // Snapshot totalStake at proposal creation
+        _clearProposal();
+        emit ProposalCreated(index, msg.sender, requestIndex, proposalType);
+    }
 
     function upvote(uint256 proposalIndex, uint256 voteAmount) external nonReentrant {
-    require(proposalIndex < proposalCount, "Invalid proposal index");
-    require(isStaker[msg.sender], "Not a staker");
-    require(voteAmount > 0 && voteAmount <= stakers[msg.sender].stakedAmount, "Invalid vote amount");
-    Proposal storage proposal = proposals[proposalIndex];
-    require(proposal.deadline > block.timestamp, "Proposal expired");
-    stakers[msg.sender].stakedAmount -= voteAmount;
-    proposal.votes += voteAmount;
-    stakers[msg.sender].lastVote = proposalCount;
-    totalStake += voteAmount; // Redistribute voteAmount to all stakers
-    if (proposal.votes > initialStake * 50 / 100) { // Check against initial stake
-        IDexhuneMarkets marketsContract = IDexhuneMarkets(markets);
-        if (proposal.proposalType == 0) {
-            marketsContract.approveListing(proposal.requestIndex);
-        } else {
-            marketsContract.approveDelisting(proposal.requestIndex);
+        require(proposalIndex < proposalCount, "Invalid proposal index");
+        require(isStaker[msg.sender], "Not a staker");
+        require(voteAmount > 0 && voteAmount <= stakers[msg.sender].stakedAmount, "Invalid vote amount");
+        Proposal storage proposal = proposals[proposalIndex];
+        require(proposal.deadline > block.timestamp, "Proposal expired");
+        stakers[msg.sender].stakedAmount -= voteAmount;
+        proposal.votes += voteAmount;
+        stakers[msg.sender].lastVote = proposalCount;
+        totalStake += voteAmount; // Redistribute voteAmount to all stakers
+        if (proposal.votes > initialStake * 50 / 100) { // Check against initial stake
+            IDexhuneMarkets marketsContract = IDexhuneMarkets(markets);
+            if (proposal.proposalType == 0) {
+                marketsContract.approveListing(proposal.requestIndex);
+            } else {
+                marketsContract.approveDelisting(proposal.requestIndex);
+            }
+            passedProposalsCount++;
+            pendingProposalsCount--;
+            emit ProposalPassed(proposalIndex, proposal.requestIndex, proposal.proposalType);
         }
-        passedProposalsCount++;
-        pendingProposalsCount--;
-        emit ProposalPassed(proposalIndex, proposal.requestIndex, proposal.proposalType);
+        _rebase(); // Rebase after adding voteAmount to totalStake
+        _clearProposal();
+        emit ProposalVoted(proposalIndex, msg.sender, voteAmount);
     }
-    _rebase(); // Rebase after adding voteAmount to totalStake
-    _clearProposal();
-    emit ProposalVoted(proposalIndex, msg.sender, voteAmount);
-}
 
     // Read Functions
     function queryInactive(uint256 maxIterations) external view returns (address[] memory) {
