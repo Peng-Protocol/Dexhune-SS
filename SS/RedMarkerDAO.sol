@@ -1,12 +1,11 @@
 // SPDX-License-Identifier: BSD-3-Clause
 pragma solidity ^0.8.0;
 
-// v0.0.8
+// v0.0.9
 // RedMarkerDAO: DAO for approving/rejecting Dexhune Markets token listings
 // Changes:
-// - Previous changes from v0.0.2 to v0.0.7...
-// - `initialStakedAmount` now increases with each `stakeToken` call, not just first (v0.0.8)
-// - Added `minimumVote` as 10% of `rebaseFactor` in `upvote` to prevent tiny votes (v0.0.8)
+// - Previous changes from v0.0.2 to v0.0.8...
+// - `pullStake` now reduces `initialStakedAmount` by the withdrawn amount (v0.0.9)
 // Note: Assumes DexhuneMarkets sends fees in stakingToken to RMD, increasing totalStake indirectly
 
 import "./imports/Ownable.sol";
@@ -39,7 +38,7 @@ contract RedMarkerDAO is Ownable, ReentrancyGuard {
         address stakerAddress;
         uint256 stakedAmount;
         uint256 lastVote;
-        uint256 initialStakedAmount; // Tracks total contributed stake
+        uint256 initialStakedAmount; // Tracks total contributed stake, reduced by withdrawals
     }
 
     struct Proposal {
@@ -127,6 +126,7 @@ contract RedMarkerDAO is Ownable, ReentrancyGuard {
         uint256 maxPayout = (slot.lastVote + 5 >= proposalCount) ? slot.stakedAmount : slot.initialStakedAmount;
         require(amount > 0 && amount <= maxPayout, "Invalid amount or exceeds allowed payout");
         slot.stakedAmount -= amount;
+        slot.initialStakedAmount -= amount; // Reduce initial stake by withdrawn amount
         totalStake -= amount;
         if (slot.stakedAmount == 0) {
             for (uint256 i = 0; i < stakerList.length; i++) {
