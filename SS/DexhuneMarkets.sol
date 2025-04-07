@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: BSD-3-Clause
-pragma solidity ^0.8.0;
+pragma solidity ^0.8.1;
 
-// v0.0.4
-// DexhuneMarkets: Token listing management with owner-approved requests, fixed incremental indices
+// v0.0.5
+// DexhuneMarkets: Added fullListingIndex mapping to track full listings by token address
 
 import "./imports/Ownable.sol";
 import "./imports/SafeERC20.sol";
@@ -37,8 +37,9 @@ contract DexhuneMarkets is Ownable, ReentrancyGuard {
     mapping(uint256 => Listing) public pendingListings;
     mapping(uint256 => Listing) public fullListings;
     mapping(uint256 => Listing) public rejectedListings;
-    uint256 public pendingListingCount; // Now only increments
-    uint256 public pendingDelistingCount; // Now only increments
+    mapping(address => uint256) public fullListingIndex; // New mapping for token address to fullListings index
+    uint256 public pendingListingCount; // Only increments
+    uint256 public pendingDelistingCount; // Only increments
     mapping(address => bool) public isListed;
     mapping(address => bool) private hasPendingListing;
     mapping(address => bool) private hasPendingDelisting;
@@ -50,6 +51,7 @@ contract DexhuneMarkets is Ownable, ReentrancyGuard {
     event DelistingApproved(uint256 indexed index, address contractAddress);
     event FeeTokenSet(address indexed newFeeToken);
     event DeadlineSet(uint256 newDeadline);
+    event ListingIndexUpdated(address indexed contractAddress, uint256 newIndex); // New event for frontend tracking
 
     constructor() {
         feeToken = address(0);
@@ -134,11 +136,11 @@ contract DexhuneMarkets is Ownable, ReentrancyGuard {
         listing.deadline = 0;
         listing.index = totalListings; // Assign next available fullListings index
         fullListings[totalListings] = listing;
+        fullListingIndex[listing.contractAddress] = totalListings; // Set index in new mapping
         isListed[listing.contractAddress] = true;
         hasPendingListing[listing.contractAddress] = false;
         delete pendingListings[listingIndex];
         totalListings++;
-        // No decrement of pendingListingCount—index persists
         emit ListingApproved(totalListings - 1, listing.contractAddress);
     }
 
@@ -154,11 +156,13 @@ contract DexhuneMarkets is Ownable, ReentrancyGuard {
         isListed[listing.contractAddress] = false;
         hasPendingDelisting[listing.contractAddress] = false;
         delete pendingListings[delistingIndex];
-        // No decrement of pendingDelistingCount—index persists
-        // Shift fullListings to close gap (only fullListings shifts, not pending)
+        delete fullListingIndex[listing.contractAddress]; // Clear index for delisted token
+        // Shift fullListings and update indices
         for (uint256 i = targetIndex; i < totalListings - 1; i++) {
             fullListings[i] = fullListings[i + 1];
-            fullListings[i].index = i; // Update index to reflect new position
+            fullListings[i].index = i; // Update index in struct
+            fullListingIndex[fullListings[i].contractAddress] = i; // Update index in mapping
+            emit ListingIndexUpdated(fullListings[i].contractAddress, i); // Emit event for frontend
         }
         delete fullListings[totalListings - 1];
         totalListings--;
@@ -190,10 +194,28 @@ contract DexhuneMarkets is Ownable, ReentrancyGuard {
             require(index < totalListings, "Invalid listed index");
             return fullListings[index];
         } else if (status == 2) {
-            require(index < totalListings, "Invalid rejected index"); // Uses totalListings as rejected index aligns with fullListings
+            require(index < totalListings, "Invalid rejected index");
             return rejectedListings[index];
         } else {
             revert("Invalid status");
         }
+    }
+
+    // Frontend helper: Get listing by token address
+    function getListingByToken(address token) external view returns (Listing memory) {
+        require(isListed[token], "Token not listed");
+        uint256 index = fullListingIndex[token];
+        return fullListings[index];
+    }
+
+    // Frontend helper: Paginate full listings
+    function getAllListings(uint256 start, uint256 count) external view returns (Listing[] memory) {
+        require(start < totalListings, "Start index out of bounds");
+        uint256 end = start + count > totalListings ? totalListings : start + count;
+        Listing[] memory listings = new Listing[](end - start);
+        for (uint256 i = start; i < end; i++) {
+            listings[i - start] = fullListings[i];
+        }
+        return listings;
     }
 }
