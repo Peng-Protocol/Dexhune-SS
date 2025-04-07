@@ -42,10 +42,14 @@ Sets a delisting request to "true" and moves the associated token out of "fullLi
 
 Determines the fee token. 
 
-- **QueryByIndex**
+- **queryByIndex**
 
 Returns the details of a request or listing by its index number.
 Requires: status (pending - passed -rejected, 1 - 2 - 3), and index number. 
+
+- **queryByToken**
+
+A mapoing that returns a full or pending listing by its token address. 
 
 ### **Data**
 - **listPrice**
@@ -73,6 +77,10 @@ Stores the number of all fully listed tokens, updated when listings are passed o
 - **deadline**
 
 Determines when requests can be deleted with _clearRequests. _clearRequests iterate over up to 10 pending listing requests to check their deadline. Is triggered by write functions. 
+
+- **listingByAddress**
+
+An array that returns the index number of a full listing by its token address, is added to when the listing request is approved. 
 
 ## **Red Marker DAO**
 A simple DAO for approving or rejecting requests to list or unlist tokens on Dexhune Markets.
