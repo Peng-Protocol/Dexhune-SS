@@ -169,7 +169,7 @@ contract SSAgent is Ownable {
         return allListings[index];
     }
 
-    function queryByAddress(address target, uint256 maxIteration, uint256 step) external view returns (uint256[] memory) {
+    function queryByAddressView(address target, uint256 maxIteration, uint256 step) external view returns (uint256[] memory) {
         uint256[] memory indices = queryByAddress[target];
         uint256 start = step * maxIteration;
         uint256 end = (step + 1) * maxIteration > indices.length ? indices.length : (step + 1) * maxIteration;
