@@ -1,12 +1,13 @@
 // SPDX-License-Identifier: BSD-3-Clause
 pragma solidity ^0.8.1;
 
-// Version: 0.0.1 (Updated)
+// Version: 0.0.2 (Updated)
 // Changes:
-// - Renamed MFPLiquidityTemplate to SSLiquidityTemplate, IMFPListing to ISSListing.
-// - Replaced routerAddress with mapping(address => bool) routers and setRouters function.
-// - Added taxCollector with setCollector function; 10% fee on withdrawals in xExecuteOut/yExecuteOut with 18-decimal precision.
-// - Notes: setCollector called by SS agent immediately after deployment; imports are standard.
+// - Updated ISSListing interface: prices accepts listingId (new in v0.0.2).
+// - Modified xPrepOut, yPrepOut to call prices(listingId) instead of prices(0) (new in v0.0.2).
+// - Updated claimFees to accept listingAddress, validate via ISSListing.volumeBalances (new in v0.0.2).
+// - Side effects: Ensures price fetching uses stored listingId; claimFees validates listingAddress.
+// - Fixed claimFees: Renamed parameter to _listingAddress and removed incorrect this.listingAddress usage (new fix).
 
 import "./imports/SafeERC20.sol";
 import "./imports/ReentrancyGuard.sol";
@@ -263,7 +264,7 @@ contract SSLiquidityTemplate is ReentrancyGuard {
         uint256 withdrawAmountB = 0;
 
         if (deficit > 0) {
-            uint256 currentPrice = ISSListing(listingAddress).prices(0);
+            uint256 currentPrice = ISSListing(listingAddress).prices(listingId);
             require(currentPrice > 0, "Price cannot be zero");
             uint256 compensation = (deficit * 1e18) / currentPrice;
             withdrawAmountB = compensation > details.yLiquid ? details.yLiquid : compensation;
@@ -283,7 +284,7 @@ contract SSLiquidityTemplate is ReentrancyGuard {
         uint256 withdrawAmountA = 0;
 
         if (deficit > 0) {
-            uint256 currentPrice = ISSListing(listingAddress).prices(0);
+            uint256 currentPrice = ISSListing(listingAddress).prices(listingId);
             require(currentPrice > 0, "Price cannot be zero");
             uint256 compensation = (deficit * currentPrice) / 1e18;
             withdrawAmountA = compensation > details.xLiquid ? details.xLiquid : compensation;
@@ -370,8 +371,11 @@ contract SSLiquidityTemplate is ReentrancyGuard {
         }
     }
 
-    function claimFees(address caller, uint256 liquidityIndex, bool isX, uint256 volume) external nonReentrant {
+    function claimFees(address caller, address _listingAddress, uint256 liquidityIndex, bool isX, uint256 volume) external nonReentrant {
         require(routers[caller], "Router only");
+        require(_listingAddress == listingAddress, "Invalid listing address");
+        (uint256 xBalance, , , ) = ISSListing(_listingAddress).volumeBalances(listingId);
+        require(xBalance > 0, "Invalid listing");
         LiquidityDetails storage details = liquidityDetails[listingId];
         Slot storage slot = isX ? xLiquiditySlots[listingId][liquidityIndex] : yLiquiditySlots[listingId][liquidityIndex];
         require(slot.depositor == msg.sender, "Not depositor");
@@ -419,7 +423,6 @@ contract SSLiquidityTemplate is ReentrancyGuard {
         UpdateType[] memory updates = new UpdateType[](2);
         updates[0] = UpdateType(2, liquidityIndex, xSlot.allocation, newDepositor, address(0));
         updates[1] = UpdateType(3, liquidityIndex, xSlot.allocation, newDepositor, address(0));
-        // Using msg.sender as caller; assumes router proxies this call or a router is msg.sender
         this.update(msg.sender, updates);
     }
 
