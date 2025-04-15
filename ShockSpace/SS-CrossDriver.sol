@@ -1,14 +1,16 @@
 // SPDX-License-Identifier: BSD-3-Clause
 pragma solidity ^0.8.1;
 
-// Version 0.0.2:
-// - Acts as a proxy contract, delegating logic to SSPositionLibrary and SSUtilityLibrary.
-// - Moved addExcessMargin, updateSL, updateTP, and batch operations to SSPositionLibrary.
-// - Includes ISSListing, ISSLiquidity, ISSPositionLibrary, ISSUtilityLibrary interfaces locally.
-// - No import of SSIsolatedDriver in libraries, passing required data explicitly.
-// - Size: ~200 lines, maintaining minimal footprint.
-// - Handles storage, minimal validation, and library calls.
-// - Updated liquidation price and payout formulas in SSPositionLibrary per clarification.
+// Version 0.0.1:
+// - Cloned from SSIsolatedDriver, acts as a proxy contract delegating to CSDPositionLibrary and CSDUtilityLibrary.
+// - Adds makerTokenMargin for token-wide totalMargin, single index per maker and token.
+// - Immediate totalMargin updates for addExcessMargin, enterLong, enterShort, pullMargin, closures, cancellations, liquidations.
+// - New functions: makerTokenMarginView, makerMarginIndex (view), pullMargin.
+// - Modified: enterLong, enterShort, closeLongPosition, closeShortPosition, addExcessMargin, forceExecution.
+// - Corrected liquidation price calculations for enterLong and enterShort.
+// - Includes local interfaces, no library imports in libraries.
+// - Size: ~235 lines, minimal footprint.
+// - Handles storage, validation, and library calls.
 
 import "imports/SafeERC20.sol";
 import "imports/ReentrancyGuard.sol";
@@ -16,7 +18,7 @@ import "imports/Strings.sol";
 import "imports/IERC20Metadata.sol";
 import "imports/Ownable.sol";
 
-contract SSIsolatedDriver is ReentrancyGuard, Ownable {
+contract SSCrossDriver is ReentrancyGuard, Ownable {
     using SafeERC20 for IERC20;
 
     // Structs
@@ -26,7 +28,7 @@ contract SSIsolatedDriver is ReentrancyGuard, Ownable {
         uint256 maxPrice;
         uint256 initialMargin;
         uint256 taxedMargin;
-        uint256 excessMargin; // Reference for deductions, included in liquidation and payout calculations
+        uint256 excessMargin; // Reference only, not used in calculations; stores margin for deductions
         uint8 leverage;
         uint256 leverageAmount;
         uint256 initialLoan;
@@ -69,7 +71,7 @@ contract SSIsolatedDriver is ReentrancyGuard, Ownable {
         function liquidityDetails(address listingAddress) external view returns (uint256 xLiquid, uint256 yLiquid);
     }
 
-    interface ISSPositionLibrary {
+    interface ICSDPositionLibrary {
         function enterLong(
             address listingAddress,
             string memory entryPrice,
@@ -81,6 +83,7 @@ contract SSIsolatedDriver is ReentrancyGuard, Ownable {
             address token0,
             uint256 normalizedInitialMargin,
             uint256 normalizedExcessMargin,
+            uint256 totalMargin,
             address driver
         ) external returns (uint256 positionId);
 
@@ -95,6 +98,7 @@ contract SSIsolatedDriver is ReentrancyGuard, Ownable {
             address token1,
             uint256 normalizedInitialMargin,
             uint256 normalizedExcessMargin,
+            uint256 totalMargin,
             address driver
         ) external returns (uint256 positionId);
 
@@ -106,6 +110,7 @@ contract SSIsolatedDriver is ReentrancyGuard, Ownable {
             uint256 excessMargin,
             uint256 leverageAmount,
             uint256 initialLoan,
+            uint256 totalMargin,
             address driver
         ) external returns (uint256 payout);
 
@@ -118,6 +123,7 @@ contract SSIsolatedDriver is ReentrancyGuard, Ownable {
             uint8 leverage,
             uint256 taxedMargin,
             uint256 excessMargin,
+            uint256 totalMargin,
             address driver
         ) external returns (uint256 payout);
 
@@ -126,6 +132,7 @@ contract SSIsolatedDriver is ReentrancyGuard, Ownable {
             address listingAddress,
             address makerAddress,
             uint256 taxedMargin,
+            uint256 excessMargin,
             uint8 positionType,
             address driver
         ) external;
@@ -136,11 +143,9 @@ contract SSIsolatedDriver is ReentrancyGuard, Ownable {
         ) external returns (uint256 resultCount);
 
         function addExcessMargin(
-            uint256 positionId,
+            address maker,
             uint256 amount,
             address token,
-            address listingAddress,
-            uint8 positionType,
             uint256 normalizedAmount,
             address driver
         ) external;
@@ -187,7 +192,7 @@ contract SSIsolatedDriver is ReentrancyGuard, Ownable {
         ) external returns (uint256 count);
     }
 
-    interface ISSUtilityLibrary {
+    interface ICSDUtilityLibrary {
         function normalizeAmount(address token, uint256 amount) external view returns (uint256);
         function parseEntryPrice(string memory entryPrice, address listingAddress) external view returns (uint256 minPrice, uint256 maxPrice);
         function parseUint(string memory str) external pure returns (uint256);
@@ -199,6 +204,8 @@ contract SSIsolatedDriver is ReentrancyGuard, Ownable {
     mapping(address => uint256[]) public userPositions;
     mapping(uint8 => uint256[]) public positionsByType; // 0: Long, 1: Short
     mapping(address => mapping(uint8 => uint256[])) public pendingPositions; // listingAddress -> type -> positionIds
+    mapping(address => mapping(address => uint256)) public makerTokenMargin; // maker => token => totalMargin
+    mapping(address => address[]) public makerMarginTokens; // maker => token[] (tracks non-zero margins)
     mapping(uint256 => HistoricalInterest) public historicalInterest;
     uint256 public positionCount;
     uint256 public historicalInterestHeight;
@@ -218,28 +225,30 @@ contract SSIsolatedDriver is ReentrancyGuard, Ownable {
     event PositionsExecuted(uint256 count, address listingAddress);
     event StopLossUpdated(uint256 indexed positionId, uint256 newStopLossPrice);
     event TakeProfitUpdated(uint256 indexed positionId, uint256 newTakeProfitPrice);
-    event ExcessMarginAdded(uint256 indexed positionId, uint256 amount);
+    event ExcessMarginAdded(address indexed maker, uint256 amount, address token);
+    event MarginPulled(address indexed maker, uint256 amount, address token);
     event PositionsClosed(uint256 count);
     event PositionsCancelled(uint256 count);
     event LibrarySet(address indexed library, string libraryType);
 
+    // Modifiers
+    modifier onlyAgent() {
+        require(msg.sender == agent, "Only agent");
+        _;
+    }
+
+    // Constructor
+    constructor(address _positionLibrary, address _utilityLibrary) {
+        positionLibrary = _positionLibrary;
+        utilityLibrary = _utilityLibrary;
+        emit LibrarySet(_positionLibrary, "PositionLibrary");
+        emit LibrarySet(_utilityLibrary, "UtilityLibrary");
+    }
+
     // Set agent
-    function setAgent(address _agent) external {
+    function setAgent(address _agent) external onlyAgent {
         require(_agent != address(0), "Invalid agent");
         agent = _agent;
-    }
-
-    // Set library addresses (owner-only)
-    function setPositionLibrary(address _positionLibrary) external onlyOwner {
-        require(_positionLibrary != address(0), "Invalid address");
-        positionLibrary = _positionLibrary;
-        emit LibrarySet(_positionLibrary, "PositionLibrary");
-    }
-
-    function setUtilityLibrary(address _utilityLibrary) external onlyOwner {
-        require(_utilityLibrary != address(0), "Invalid address");
-        utilityLibrary = _utilityLibrary;
-        emit LibrarySet(_utilityLibrary, "UtilityLibrary");
     }
 
     // Enter long position
@@ -255,15 +264,16 @@ contract SSIsolatedDriver is ReentrancyGuard, Ownable {
         require(listingAddress != address(0), "Invalid listing");
         require(initialMargin > 0, "Invalid margin");
         require(leverage >= 2 && leverage <= 100, "Invalid leverage");
+        require(excessMargin <= initialMargin * leverage, "Excess margin too high");
         require(positionLibrary != address(0), "PositionLibrary not set");
         require(utilityLibrary != address(0), "UtilityLibrary not set");
 
-        // Fetch tokens
+        // Fetch token
         address token0 = ISSListing(listingAddress).tokenA();
 
         // Normalize margins
-        uint256 normalizedInitialMargin = ISSUtilityLibrary(utilityLibrary).normalizeAmount(token0, initialMargin);
-        uint256 normalizedExcessMargin = ISSUtilityLibrary(utilityLibrary).normalizeAmount(token0, excessMargin);
+        uint256 normalizedInitialMargin = ICSDUtilityLibrary(utilityLibrary).normalizeAmount(token0, initialMargin);
+        uint256 normalizedExcessMargin = ICSDUtilityLibrary(utilityLibrary).normalizeAmount(token0, excessMargin);
 
         // Transfer margin
         if (token0 == address(0)) {
@@ -272,8 +282,15 @@ contract SSIsolatedDriver is ReentrancyGuard, Ownable {
             IERC20(token0).safeTransferFrom(msg.sender, address(this), initialMargin + excessMargin);
         }
 
-        // Delegate to SSPositionLibrary
-        uint256 positionId = ISSPositionLibrary(positionLibrary).enterLong(
+        // Update totalMargin immediately
+        uint256 totalMargin = makerTokenMargin[msg.sender][token0];
+        makerTokenMargin[msg.sender][token0] += initialMargin + excessMargin;
+        if (totalMargin == 0) {
+            makerMarginTokens[msg.sender].push(token0);
+        }
+
+        // Delegate to CSDPositionLibrary with totalMargin for liquidation price
+        uint256 positionId = ICSDPositionLibrary(positionLibrary).enterLong(
             listingAddress,
             entryPrice,
             initialMargin,
@@ -284,6 +301,7 @@ contract SSIsolatedDriver is ReentrancyGuard, Ownable {
             token0,
             normalizedInitialMargin,
             normalizedExcessMargin,
+            makerTokenMargin[msg.sender][token0],
             address(this)
         );
 
@@ -303,25 +321,33 @@ contract SSIsolatedDriver is ReentrancyGuard, Ownable {
         require(listingAddress != address(0), "Invalid listing");
         require(initialMargin > 0, "Invalid margin");
         require(leverage >= 2 && leverage <= 100, "Invalid leverage");
+        require(excessMargin <= initialMargin * leverage, "Excess margin too high");
         require(positionLibrary != address(0), "PositionLibrary not set");
         require(utilityLibrary != address(0), "UtilityLibrary not set");
 
-        // Fetch tokens
+        // Fetch token
         address token1 = ISSListing(listingAddress).tokenB();
 
         // Normalize margins
-        uint256 normalizedInitialMargin = ISSUtilityLibrary(utilityLibrary).normalizeAmount(token1, initialMargin);
-        uint256 normalizedExcessMargin = ISSUtilityLibrary(utilityLibrary).normalizeAmount(token1, excessMargin);
+        uint256 normalizedInitialMargin = ICSDUtilityLibrary(utilityLibrary).normalizeAmount(token1, initialMargin);
+        uint256 normalizedExcessMargin = ICSDUtilityLibrary(utilityLibrary).normalizeAmount(token1, excessMargin);
 
         // Transfer margin
         if (token1 == address(0)) {
-            require(msg.value == initialMargin + excessMargin, "Invalid ETH amount");
+            require(msg.value == initialMargin + excessMargin, "Incorrect ETH amount");
         } else {
             IERC20(token1).safeTransferFrom(msg.sender, address(this), initialMargin + excessMargin);
         }
 
-        // Delegate to SSPositionLibrary
-        uint256 positionId = ISSPositionLibrary(positionLibrary).enterShort(
+        // Update totalMargin immediately
+        uint256 totalMargin = makerTokenMargin[msg.sender][token1];
+        makerTokenMargin[msg.sender][token1] += initialMargin + excessMargin;
+        if (totalMargin == 0) {
+            makerMarginTokens[msg.sender].push(token1);
+        }
+
+        // Delegate to CSDPositionLibrary with totalMargin for liquidation price
+        uint256 positionId = ICSDPositionLibrary(positionLibrary).enterShort(
             listingAddress,
             entryPrice,
             initialMargin,
@@ -332,6 +358,7 @@ contract SSIsolatedDriver is ReentrancyGuard, Ownable {
             token1,
             normalizedInitialMargin,
             normalizedExcessMargin,
+            makerTokenMargin[msg.sender][token1],
             address(this)
         );
 
@@ -346,8 +373,8 @@ contract SSIsolatedDriver is ReentrancyGuard, Ownable {
         require(pos.status2 == 0, "Position not open");
         require(pos.makerAddress == msg.sender, "Not position maker");
 
-        // Delegate to SSPositionLibrary
-        uint256 payout = ISSPositionLibrary(positionLibrary).closeLongPosition(
+        // Delegate to CSDPositionLibrary
+        uint256 payout = ICSDPositionLibrary(positionLibrary).closeLongPosition(
             positionId,
             pos.listingAddress,
             pos.makerAddress,
@@ -355,8 +382,16 @@ contract SSIsolatedDriver is ReentrancyGuard, Ownable {
             pos.excessMargin,
             pos.leverageAmount,
             pos.initialLoan,
+            makerTokenMargin[pos.makerAddress][ISSListing(pos.listingAddress).tokenA()],
             address(this)
         );
+
+        // Deduct margin immediately
+        address token = ISSListing(pos.listingAddress).tokenA();
+        makerTokenMargin[pos.makerAddress][token] -= (pos.taxedMargin + pos.excessMargin);
+        if (makerTokenMargin[pos.makerAddress][token] == 0) {
+            _removeToken(pos.makerAddress, token);
+        }
 
         emit PositionClosed(positionId, payout);
     }
@@ -369,8 +404,8 @@ contract SSIsolatedDriver is ReentrancyGuard, Ownable {
         require(pos.status2 == 0, "Position not open");
         require(pos.makerAddress == msg.sender, "Not position maker");
 
-        // Delegate to SSPositionLibrary
-        uint256 payout = ISSPositionLibrary(positionLibrary).closeShortPosition(
+        // Delegate to CSDPositionLibrary
+        uint256 payout = ICSDPositionLibrary(positionLibrary).closeShortPosition(
             positionId,
             pos.listingAddress,
             pos.makerAddress,
@@ -379,8 +414,16 @@ contract SSIsolatedDriver is ReentrancyGuard, Ownable {
             pos.leverage,
             pos.taxedMargin,
             pos.excessMargin,
+            makerTokenMargin[pos.makerAddress][ISSListing(pos.listingAddress).tokenB()],
             address(this)
         );
+
+        // Deduct margin immediately
+        address token = ISSListing(pos.listingAddress).tokenB();
+        makerTokenMargin[pos.makerAddress][token] -= (pos.taxedMargin + pos.excessMargin);
+        if (makerTokenMargin[pos.makerAddress][token] == 0) {
+            _removeToken(pos.makerAddress, token);
+        }
 
         emit PositionClosed(positionId, payout);
     }
@@ -393,15 +436,23 @@ contract SSIsolatedDriver is ReentrancyGuard, Ownable {
         require(pos.status2 == 0, "Position not open");
         require(pos.makerAddress == msg.sender, "Not position maker");
 
-        // Delegate to SSPositionLibrary
-        ISSPositionLibrary(positionLibrary).cancelPosition(
+        // Delegate to CSDPositionLibrary
+        ICSDPositionLibrary(positionLibrary).cancelPosition(
             positionId,
             pos.listingAddress,
             pos.makerAddress,
             pos.taxedMargin,
+            pos.excessMargin,
             pos.positionType,
             address(this)
         );
+
+        // Deduct margin immediately
+        address token = pos.positionType == 0 ? ISSListing(pos.listingAddress).tokenA() : ISSListing(pos.listingAddress).tokenB();
+        makerTokenMargin[pos.makerAddress][token] -= (pos.taxedMargin + pos.excessMargin);
+        if (makerTokenMargin[pos.makerAddress][token] == 0) {
+            _removeToken(pos.makerAddress, token);
+        }
 
         emit PositionCancelled(positionId);
     }
@@ -409,7 +460,7 @@ contract SSIsolatedDriver is ReentrancyGuard, Ownable {
     // Force execution
     function forceExecution(address listingAddress) external nonReentrant {
         require(positionLibrary != address(0), "PositionLibrary not set");
-        uint256 resultCount = ISSPositionLibrary(positionLibrary).forceExecution(
+        uint256 resultCount = ICSDPositionLibrary(positionLibrary).forceExecution(
             listingAddress,
             address(this)
         );
@@ -417,103 +468,76 @@ contract SSIsolatedDriver is ReentrancyGuard, Ownable {
     }
 
     // Add excess margin
-    function addExcessMargin(uint256 positionId, uint256 amount) external payable nonReentrant {
+    function addExcessMargin(address maker, uint256 amount, address token) external payable nonReentrant {
+        require(amount > 0, "Invalid amount");
         require(positionLibrary != address(0), "PositionLibrary not set");
         require(utilityLibrary != address(0), "UtilityLibrary not set");
-        require(amount > 0, "Invalid amount");
 
-        PositionDetails storage pos = positionDetails[positionId];
-        require(pos.status2 == 0, "Position not open");
+        // Transfer margin
+        if (token == address(0)) {
+            require(msg.value == amount, "Incorrect ETH amount");
+        } else {
+            IERC20(token).safeTransferFrom(msg.sender, address(this), amount);
+        }
 
-        address token = pos.positionType == 0 ? ISSListing(pos.listingAddress).tokenA() : ISSListing(pos.listingAddress).tokenB();
-        uint256 normalizedAmount = ISSUtilityLibrary(utilityLibrary).normalizeAmount(token, amount);
+        // Normalize amount
+        uint256 normalizedAmount = ICSDUtilityLibrary(utilityLibrary).normalizeAmount(token, amount);
 
-        // Delegate to SSPositionLibrary
-        ISSPositionLibrary(positionLibrary).addExcessMargin(
-            positionId,
+        // Delegate to CSDPositionLibrary
+        ICSDPositionLibrary(positionLibrary).addExcessMargin(
+            maker,
             amount,
             token,
-            pos.listingAddress,
-            pos.positionType,
             normalizedAmount,
             address(this)
         );
 
-        emit ExcessMarginAdded(positionId, normalizedAmount);
+        // Update totalMargin immediately
+        uint256 totalMargin = makerTokenMargin[maker][token];
+        makerTokenMargin[maker][token] += amount;
+        if (totalMargin == 0) {
+            makerMarginTokens[maker].push(token);
+        }
+
+        emit ExcessMarginAdded(maker, amount, token);
     }
 
-    // Update stop loss
-    function updateSL(uint256 positionId, uint256 newStopLossPrice) external nonReentrant {
-        require(positionLibrary != address(0), "PositionLibrary not set");
-        PositionDetails storage pos = positionDetails[positionId];
-        require(pos.makerAddress == msg.sender, "Not position maker");
-        require(pos.status2 == 0, "Position not open");
+    // Pull margin
+    function pullMargin(address token, uint256 amount) external nonReentrant {
+        require(amount > 0, "Invalid amount");
+        require(makerTokenMargin[msg.sender][token] >= amount, "Insufficient margin");
 
-        // Delegate to SSPositionLibrary
-        ISSPositionLibrary(positionLibrary).updateSL(
-            positionId,
-            newStopLossPrice,
-            pos.listingAddress,
-            pos.positionType,
-            pos.makerAddress,
-            pos.minPrice,
-            pos.maxPrice,
-            address(this)
-        );
+        // Deduct margin immediately
+        makerTokenMargin[msg.sender][token] -= amount;
+        if (makerTokenMargin[msg.sender][token] == 0) {
+            _removeToken(msg.sender, token);
+        }
 
-        emit StopLossUpdated(positionId, newStopLossPrice);
-    }
+        // Transfer funds
+        if (token == address(0)) {
+            payable(msg.sender).transfer(amount);
+        } else {
+            IERC20(token).safeTransfer(msg.sender, amount);
+        }
 
-    // Update take profit
-    function updateTP(uint256 positionId, uint256 newTakeProfitPrice) external nonReentrant {
-        require(positionLibrary != address(0), "PositionLibrary not set");
-        PositionDetails storage pos = positionDetails[positionId];
-        require(pos.makerAddress == msg.sender, "Not position maker");
-        require(pos.status2 == 0, "Position not open");
-
-        // Delegate to SSPositionLibrary
-        ISSPositionLibrary(positionLibrary).updateTP(
-            positionId,
-            newTakeProfitPrice,
-            pos.positionType,
-            pos.makerAddress,
-            pos.minPrice,
-            pos.maxPrice,
-            address(this)
-        );
-
-        emit TakeProfitUpdated(positionId, newTakeProfitPrice);
-    }
-
-    // Close all short positions
-    function closeAllShort() external nonReentrant {
-        require(positionLibrary != address(0), "PositionLibrary not set");
-        uint256 count = ISSPositionLibrary(positionLibrary).closeAllShort(msg.sender, address(this));
-        emit PositionsClosed(count);
-    }
-
-    // Cancel all short positions
-    function cancelAllShort() external nonReentrant {
-        require(positionLibrary != address(0), "PositionLibrary not set");
-        uint256 count = ISSPositionLibrary(positionLibrary).cancelAllShort(msg.sender, address(this));
-        emit PositionsCancelled(count);
-    }
-
-    // Close all long positions
-    function closeAllLongs() external nonReentrant {
-        require(positionLibrary != address(0), "PositionLibrary not set");
-        uint256 count = ISSPositionLibrary(positionLibrary).closeAllLongs(msg.sender, address(this));
-        emit PositionsClosed(count);
-    }
-
-    // Cancel all long positions
-    function cancelAllLong() external nonReentrant {
-        require(positionLibrary != address(0), "PositionLibrary not set");
-        uint256 count = ISSPositionLibrary(positionLibrary).cancelAllLong(msg.sender, address(this));
-        emit PositionsCancelled(count);
+        emit MarginPulled(msg.sender, amount, token);
     }
 
     // View functions
+    function makerTokenMarginView(address maker, address token) external view returns (uint256) {
+        return makerTokenMargin[maker][token];
+    }
+
+    function makerMarginIndex(address maker, uint256 index) external view returns (address token, uint256 totalMargin) {
+        if (index < makerMarginTokens[maker].length) {
+            token = makerMarginTokens[maker][index];
+            totalMargin = makerTokenMargin[maker][token];
+        } else {
+            token = address(0);
+            totalMargin = 0;
+        }
+    }
+
     function PositionsByTypeView(uint8 positionType, uint256 step, uint16 maxIteration) external view returns (uint256[] memory) {
         require(positionType <= 1, "Invalid type");
         require(maxIteration <= 1000, "Max iteration exceeded");
@@ -558,5 +582,42 @@ contract SSIsolatedDriver is ReentrancyGuard, Ownable {
             result[i - start] = historicalInterest[i];
         }
         return result;
+    }
+
+    // Batch operations
+    function closeAllShort() external nonReentrant {
+        require(positionLibrary != address(0), "PositionLibrary not set");
+        uint256 count = ICSDPositionLibrary(positionLibrary).closeAllShort(msg.sender, address(this));
+        emit PositionsClosed(count);
+    }
+
+    function cancelAllShort() external nonReentrant {
+        require(positionLibrary != address(0), "PositionLibrary not set");
+        uint256 count = ICSDPositionLibrary(positionLibrary).cancelAllShort(msg.sender, address(this));
+        emit PositionsCancelled(count);
+    }
+
+    function closeAllLongs() external nonReentrant {
+        require(positionLibrary != address(0), "PositionLibrary not set");
+        uint256 count = ICSDPositionLibrary(positionLibrary).closeAllLongs(msg.sender, address(this));
+        emit PositionsClosed(count);
+    }
+
+    function cancelAllLong() external nonReentrant {
+        require(positionLibrary != address(0), "PositionLibrary not set");
+        uint256 count = ICSDPositionLibrary(positionLibrary).cancelAllLong(msg.sender, address(this));
+        emit PositionsCancelled(count);
+    }
+
+    // Internal helper
+    function _removeToken(address maker, address token) internal {
+        address[] storage tokens = makerMarginTokens[maker];
+        for (uint256 i = 0; i < tokens.length; i++) {
+            if (tokens[i] == token) {
+                tokens[i] = tokens[tokens.length - 1];
+                tokens.pop();
+                break;
+            }
+        }
     }
 }
