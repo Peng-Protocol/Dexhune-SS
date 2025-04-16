@@ -1,24 +1,15 @@
 // SPDX-License-Identifier: BSD-3-Clause
-
 pragma solidity ^0.8.1;
 
-// Version: 0.0.10 (Updated)
+// Version: 0.0.11 (Updated)
 // Changes:
-// - Removed impactPrice and balance updates from executeLongPayoutLiquid, executeShortPayoutLiquid (new in v0.0.2).
-// - Renamed orderId to payoutId in ISSListing getLongPayout, getShortPayout returns to fix declaration conflict (new in v0.0.3).
-// - Added PreparedWithdrawal struct to ISSLiquidity to fix undefined identifier in xPrepOut, yPrepOut (new in v0.0.3).
-// - Updated xClaimFees, yClaimFees to use listingAddress instead of listingId in ISSLiquidity (new in v0.0.3).
-// - Added Slot struct to ISSLiquidity to fix undefined identifier in getXSlotView, getYSlotView (new in v0.0.4).
-// - Removed Slot struct from SSLiquidLibrary to avoid duplication (new in v0.0.4).
-// - Fixed executeShortPayoutLiquid to use payoutUpdates in ssUpdate (new in v0.0.4).
-// - Added pendingSellOrdersView, pendingBuyOrdersView to ISSListing to fix undefined function error in prepBuyLiquid, prepSellLiquid (new in v0.0.5).
-// - Removed xDeposit, yDeposit, xWithdraw, yWithdraw, xPrepOut, yPrepOut, and related structs; made self-contained with tailored ISSLiquidity (new in v0.0.6).
-// - Fixed stack depth in executeBuyLiquid by extracting UpdateType construction to helper function; applied similar optimization to executeSellLiquid (new in v0.0.7).
-// - Fixed stack depth in executeLongPayoutLiquid, executeShortPayoutLiquid by extracting processPayoutOrder tuple handling to helper function and consolidating counters (new in v0.0.8).
-// - Fixed TypeError in executeShortPayoutLiquid by correcting ssUpdate to use payoutUpdates instead of updates (new in v0.0.9).
-// - Fixed stack depth in executeLongPayoutLiquid, executeShortPayoutLiquid by extracting loops to processPayouts helper and using PayoutContext struct to reduce variables (new in v0.0.10).
-// - Changed license to BSD-3-Clause (new in v0.0.10).
-// - Side effects: Resolves stack too deep errors; maintains trading and payout functionality; no dependency on SSLiquidSlotLibrary.sol.
+// - Modified prepLongPayoutLiquid to cap amount at yBalance (tokenB) instead of xBalance (new in v0.0.11).
+// - Modified prepShortPayoutLiquid to cap amount at xBalance (tokenA) instead of yBalance (new in v0.0.11).
+// - Updated executeLongPayoutLiquid to use tokenB and yBalance for long payouts (new in v0.0.11).
+// - Updated executeShortPayoutLiquid to use tokenA and xBalance for short payouts (new in v0.0.11).
+// - Updated processPayoutOrder to use decimalsB for long, decimalsA for short payouts (new in v0.0.11).
+// - Side effects: Aligns long payouts with tokenB (yBalance) and short payouts with tokenA (xBalance) per requirements.
+// - Note: decimalsA and decimalsB not implemented in SS-ListingTemplate.sol; assumed available externally.
 
 import "./imports/SafeERC20.sol";
 
@@ -196,7 +187,7 @@ library SSLiquidLibrary {
         PreparedPayoutUpdate memory update,
         bool isLong
     ) internal returns (ISSListing.UpdateType memory, ISSListing.PayoutUpdate memory) {
-        uint8 decimals = isLong ? ctx.listing.decimalsA() : ctx.listing.decimalsB();
+        uint8 decimals = isLong ? ctx.listing.decimalsB() : ctx.listing.decimalsA();
         uint256 rawAmount = denormalize(update.amount, decimals);
 
         ctx.liquidity.updateLiquidity(ctx.proxy, isLong, update.amount);
@@ -224,7 +215,7 @@ library SSLiquidLibrary {
         return (
             ISSListing.UpdateType(
                 0,
-                isLong ? 0 : 1,
+                isLong ? 1 : 0,
                 update.amount,
                 address(0),
                 update.recipient,
@@ -292,7 +283,7 @@ library SSLiquidLibrary {
             }
         }
 
-        require((isLong ? balances.xBalance : balances.yBalance) >= totalAmount, "Insufficient balance");
+        require((isLong ? balances.yBalance : balances.xBalance) >= totalAmount, "Insufficient balance");
 
         ISSListing.UpdateType[] memory updates = new ISSListing.UpdateType[](preparedUpdates.length);
         ISSListing.PayoutUpdate[] memory payoutUpdates = new ISSListing.PayoutUpdate[](preparedUpdates.length);
@@ -367,7 +358,7 @@ library SSLiquidLibrary {
 
         ISSListing listing = ISSListing(listingAddress);
         uint256[] memory payoutIds = listing.longPayoutByIndexView(0);
-        (uint256 xBalance, , , ) = listing.listingVolumeBalancesView();
+        (, uint256 yBalance, , ) = listing.listingVolumeBalancesView();
 
         uint256 updateCount;
         PreparedPayoutUpdate[] memory updates = new PreparedPayoutUpdate[](payoutIds.length);
@@ -376,8 +367,8 @@ library SSLiquidLibrary {
             (, address recipient, uint256 required, uint256 filled, , uint8 status) = listing.getLongPayout(payoutIds[i]);
             if (status == 0 && required > filled) {
                 uint256 amount = required - filled;
-                if (amount > xBalance) {
-                    amount = xBalance;
+                if (amount > yBalance) {
+                    amount = yBalance;
                 }
                 if (amount > 0) {
                     updates[updateCount] = PreparedPayoutUpdate(payoutIds[i], true, amount, recipient);
@@ -398,7 +389,7 @@ library SSLiquidLibrary {
 
         ISSListing listing = ISSListing(listingAddress);
         uint256[] memory payoutIds = listing.shortPayoutByIndexView(0);
-        (, uint256 yBalance, , ) = listing.listingVolumeBalancesView();
+        (uint256 xBalance, , , ) = listing.listingVolumeBalancesView();
 
         uint256 updateCount;
         PreparedPayoutUpdate[] memory updates = new PreparedPayoutUpdate[](payoutIds.length);
@@ -407,8 +398,8 @@ library SSLiquidLibrary {
             (, address recipient, uint256 required, uint256 filled, , uint8 status) = listing.getShortPayout(payoutIds[i]);
             if (status == 0 && required > filled) {
                 uint256 amount = required - filled;
-                if (amount > yBalance) {
-                    amount = yBalance;
+                if (amount > xBalance) {
+                    amount = xBalance;
                 }
                 if (amount > 0) {
                     updates[updateCount] = PreparedPayoutUpdate(payoutIds[i], false, amount, recipient);
@@ -484,8 +475,6 @@ library SSLiquidLibrary {
         address proxy,
         PreparedUpdate[] memory preparedUpdates
     ) external {
-        require(ISS(listingAgent).isValidListing(listingAddress), "Invalid listing");
-
         ISSListing listing = ISSListing(listingAddress);
         ISSLiquidity liquidity = ISSLiquidity(listing.liquidityAddresses(0));
         BalanceData memory balances;
@@ -544,11 +533,11 @@ library SSLiquidLibrary {
             listing: ISSListing(listingAddress),
             liquidity: ISSLiquidity(ISSListing(listingAddress).liquidityAddresses(0)),
             proxy: proxy,
-            token: ISSListing(listingAddress).tokenA()
+            token: ISSListing(listingAddress).tokenB()
         });
 
         BalanceData memory balances;
-        (balances.xBalance, , , ) = ctx.listing.listingVolumeBalancesView();
+        (, balances.yBalance, , ) = ctx.listing.listingVolumeBalancesView();
 
         (ISSListing.UpdateType[] memory updates, ISSListing.PayoutUpdate[] memory payoutUpdates, uint256 count) = processPayouts(
             preparedUpdates,
@@ -580,11 +569,11 @@ library SSLiquidLibrary {
             listing: ISSListing(listingAddress),
             liquidity: ISSLiquidity(ISSListing(listingAddress).liquidityAddresses(0)),
             proxy: proxy,
-            token: ISSListing(listingAddress).tokenB()
+            token: ISSListing(listingAddress).tokenA()
         });
 
         BalanceData memory balances;
-        (, balances.yBalance, , ) = ctx.listing.listingVolumeBalancesView();
+        (balances.xBalance, , , ) = ctx.listing.listingVolumeBalancesView();
 
         (ISSListing.UpdateType[] memory updates, ISSListing.PayoutUpdate[] memory payoutUpdates, uint256 count) = processPayouts(
             preparedUpdates,

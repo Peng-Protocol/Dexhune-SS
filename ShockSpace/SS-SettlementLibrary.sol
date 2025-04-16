@@ -1,20 +1,16 @@
 // SPDX-License-Identifier: BSD-3-Clause
 pragma solidity ^0.8.1;
 
-// Version: 0.0.6 (Updated)
+// Version: 0.0.7 (Updated)
 // Changes:
-// - Added getListingIdFromAddress to fetch listingId from SSListingTemplate (new in v0.0.2).
-// - Updated prepLongPayouts, prepShortPayouts to use fetched listingId instead of 0 (new in v0.0.2).
-// - Side effects: Ensures payouts use correct listingId, preventing mismatches.
-// - Added pendingBuyOrdersView, pendingSellOrdersView to ISSListing interface (new in v0.0.3).
-// - Fixed orderId declaration conflict in getLongPayout, getShortPayout by renaming to payoutId (new in v0.0.3).
-// - Added SafeERC20 import for safe token transfers (new in v0.0.3).
-// - Updated processOrder, processPayoutOrder to handle ETH balances (new in v0.0.3).
-// - Merged executeLongPayouts, executeShortPayouts into executePayouts (new in v0.0.3).
-// - Fixed destructuring in prepBuyOrders, prepSellOrders for getLongPayout, getShortPayout (new in v0.0.4).
-// - Added getPayoutParams to fix stack too deep in executePayouts (new in v0.0.5).
-// - Reverted to separate executeLongPayouts, executeShortPayouts; removed impactPrice; added processPayoutUpdates (new in v0.0.6).
-// - Side effects: Aligns with SS-ProxyRouter.sol; payouts use fixed amounts without price updates.
+// - Modified prepLongPayouts to cap amount at yBalance (tokenB) instead of xBalance (new in v0.0.7).
+// - Modified prepShortPayouts to cap amount at xBalance (tokenA) instead of yBalance (new in v0.0.7).
+// - Updated executeLongPayouts to use tokenB and yBalance for long payouts (new in v0.0.7).
+// - Updated executeShortPayouts to use tokenA and xBalance for short payouts (new in v0.0.7).
+// - Adjusted getPayoutParams to return tokenB/yBalance for isLong=true, tokenA/xBalance for isLong=false (new in v0.0.7).
+// - Updated processPayoutOrder to use decimalsB for long, decimalsA for short payouts (new in v0.0.7).
+// - Side effects: Aligns long payouts with tokenB (yBalance) and short payouts with tokenA (xBalance) per requirements.
+// - Note: decimalsA and decimalsB not implemented in SS-ListingTemplate.sol; assumed available externally.
 
 import "./imports/SafeERC20.sol";
 
@@ -178,7 +174,7 @@ library SSSettlementLibrary {
         ISSListing listing = ISSListing(listingAddress);
         uint256 listingId = getListingIdFromAddress(listingAddress, listingAgent);
         uint256[] memory payoutIds = listing.longPayoutByIndexView(listingId);
-        (uint256 xBalance, , , ) = listing.listingVolumeBalancesView();
+        (, uint256 yBalance, , ) = listing.listingVolumeBalancesView();
 
         uint256 updateCount;
         PreparedPayoutUpdate[] memory updates = new PreparedPayoutUpdate[](payoutIds.length);
@@ -187,8 +183,8 @@ library SSSettlementLibrary {
             (, address recipient, uint256 required, uint256 filled, , uint8 status) = listing.getLongPayout(payoutIds[i]);
             if (status == 0 && required > filled) {
                 uint256 amount = required - filled;
-                if (amount > xBalance) {
-                    amount = xBalance;
+                if (amount > yBalance) {
+                    amount = yBalance;
                 }
                 if (amount > 0) {
                     updates[updateCount] = PreparedPayoutUpdate(payoutIds[i], true, amount, recipient);
@@ -210,7 +206,7 @@ library SSSettlementLibrary {
         ISSListing listing = ISSListing(listingAddress);
         uint256 listingId = getListingIdFromAddress(listingAddress, listingAgent);
         uint256[] memory payoutIds = listing.shortPayoutByIndexView(listingId);
-        (, uint256 yBalance, , ) = listing.listingVolumeBalancesView();
+        (uint256 xBalance, , , ) = listing.listingVolumeBalancesView();
 
         uint256 updateCount;
         PreparedPayoutUpdate[] memory updates = new PreparedPayoutUpdate[](payoutIds.length);
@@ -219,8 +215,8 @@ library SSSettlementLibrary {
             (, address recipient, uint256 required, uint256 filled, , uint8 status) = listing.getShortPayout(payoutIds[i]);
             if (status == 0 && required > filled) {
                 uint256 amount = required - filled;
-                if (amount > yBalance) {
-                    amount = yBalance;
+                if (amount > xBalance) {
+                    amount = xBalance;
                 }
                 if (amount > 0) {
                     updates[updateCount] = PreparedPayoutUpdate(payoutIds[i], false, amount, recipient);
@@ -270,7 +266,7 @@ library SSSettlementLibrary {
         address token,
         bool isLong
     ) internal returns (ISSListing.UpdateType memory, ISSListing.PayoutUpdate memory) {
-        uint8 decimals = isLong ? listing.decimalsA() : listing.decimalsB();
+        uint8 decimals = isLong ? listing.decimalsB() : listing.decimalsA();
         uint256 rawAmount = denormalize(update.amount, decimals);
 
         uint256 preBalance = token == address(0) ? update.recipient.balance : IERC20(token).balanceOf(update.recipient);
@@ -296,7 +292,7 @@ library SSSettlementLibrary {
         return (
             ISSListing.UpdateType(
                 0,
-                isLong ? 0 : 1,
+                isLong ? 1 : 0,
                 update.amount,
                 address(0),
                 update.recipient,
@@ -389,8 +385,8 @@ library SSSettlementLibrary {
         returns (uint256 xBalance, uint256 yBalance, address token, uint256 balance)
     {
         (xBalance, yBalance, , ) = listing.listingVolumeBalancesView();
-        token = isLong ? listing.tokenA() : listing.tokenB();
-        balance = isLong ? xBalance : yBalance;
+        token = isLong ? listing.tokenB() : listing.tokenA();
+        balance = isLong ? yBalance : xBalance;
     }
 
     function processPayoutUpdates(
@@ -421,7 +417,7 @@ library SSSettlementLibrary {
 
     function executeLongPayouts(address listingAddress, address proxy, PreparedPayoutUpdate[] memory preparedUpdates) external {
         ISSListing listing = ISSListing(listingAddress);
-        (uint256 xBalance, , address token, uint256 balance) = getPayoutParams(listing, true);
+        (uint256 xBalance, uint256 yBalance, address token, uint256 balance) = getPayoutParams(listing, true);
 
         uint256 totalAmount;
         for (uint256 i = 0; i < preparedUpdates.length; i++) {
@@ -430,7 +426,7 @@ library SSSettlementLibrary {
             }
         }
 
-        require(balance >= totalAmount, "Insufficient xBalance");
+        require(balance >= totalAmount, "Insufficient yBalance");
 
         ISSListing.UpdateType[] memory updates = new ISSListing.UpdateType[](preparedUpdates.length);
         ISSListing.PayoutUpdate[] memory payoutUpdates = new ISSListing.PayoutUpdate[](preparedUpdates.length);
@@ -457,7 +453,7 @@ library SSSettlementLibrary {
 
     function executeShortPayouts(address listingAddress, address proxy, PreparedPayoutUpdate[] memory preparedUpdates) external {
         ISSListing listing = ISSListing(listingAddress);
-        (, uint256 yBalance, address token, uint256 balance) = getPayoutParams(listing, false);
+        (uint256 xBalance, uint256 yBalance, address token, uint256 balance) = getPayoutParams(listing, false);
 
         uint256 totalAmount;
         for (uint256 i = 0; i < preparedUpdates.length; i++) {
@@ -466,7 +462,7 @@ library SSSettlementLibrary {
             }
         }
 
-        require(balance >= totalAmount, "Insufficient yBalance");
+        require(balance >= totalAmount, "Insufficient xBalance");
 
         ISSListing.UpdateType[] memory updates = new ISSListing.UpdateType[](preparedUpdates.length);
         ISSListing.PayoutUpdate[] memory payoutUpdates = new ISSListing.PayoutUpdate[](preparedUpdates.length);

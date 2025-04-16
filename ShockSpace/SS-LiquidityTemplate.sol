@@ -1,13 +1,18 @@
 // SPDX-License-Identifier: BSD-3-Clause
 pragma solidity ^0.8.1;
 
-// Version: 0.0.2 (Updated)
+// Version: 0.0.3 (Updated)
 // Changes:
-// - Updated ISSListing interface: prices accepts listingId (new in v0.0.2).
-// - Modified xPrepOut, yPrepOut to call prices(listingId) instead of prices(0) (new in v0.0.2).
-// - Updated claimFees to accept listingAddress, validate via ISSListing.volumeBalances (new in v0.0.2).
-// - Side effects: Ensures price fetching uses stored listingId; claimFees validates listingAddress.
-// - Fixed claimFees: Renamed parameter to _listingAddress and removed incorrect this.listingAddress usage (new fix).
+// - Modified claimFees to align with intended behavior (new in v0.0.3):
+//   - TokenA providers (xLiquiditySlots, isX=true): Claim yFees (tokenB).
+//   - TokenB providers (yLiquiditySlots, isX=false): Claim xFees (tokenA).
+//   - Swapped fee pools: yFees for isX=true, xFees for isX=false.
+//   - Swapped tokens: tokenB for isX=true, tokenA for isX=false.
+//   - Updated FeesClaimed event to reflect swapped fees (xFees: isX ? 0 : feeShare, yFees: isX ? feeShare : 0).
+//   - Adjusted _claimFeeShare updates to deduct from correct fee pool (yFees for xSlots, xFees for ySlots).
+// - Side effects: Ensures liquidity providers claim fees in opposite token of their deposit.
+// - No changes to deposit, transact, xExecuteOut, yExecuteOut, or other functions.
+// - Note: decimalsA/decimalsB not addressed, as per user instruction to defer.
 
 import "./imports/SafeERC20.sol";
 import "./imports/ReentrancyGuard.sol";
@@ -381,18 +386,18 @@ contract SSLiquidityTemplate is ReentrancyGuard {
         require(slot.depositor == msg.sender, "Not depositor");
 
         uint256 liquid = isX ? details.xLiquid : details.yLiquid;
-        uint256 fees = isX ? details.xFees : details.yFees;
+        uint256 fees = isX ? details.yFees : details.xFees; // Swap: xSlots claim yFees, ySlots claim xFees
         uint256 allocation = slot.allocation;
         uint256 dVolume = slot.dVolume;
 
         (uint256 feeShare, UpdateType[] memory updates) = _claimFeeShare(volume, dVolume, liquid, allocation, fees);
         if (feeShare > 0) {
-            updates[0] = UpdateType(1, isX ? 0 : 1, fees - feeShare, address(0), address(0));
+            updates[0] = UpdateType(1, isX ? 1 : 0, fees - feeShare, address(0), address(0)); // Deduct yFees for xSlots, xFees for ySlots
             updates[1] = UpdateType(isX ? 2 : 3, liquidityIndex, allocation, msg.sender, address(0));
             this.update(caller, updates);
 
-            this.transact(caller, isX ? tokenA : tokenB, feeShare, msg.sender);
-            emit FeesClaimed(listingId, liquidityIndex, isX ? feeShare : 0, isX ? 0 : feeShare);
+            this.transact(caller, isX ? tokenB : tokenA, feeShare, msg.sender); // xSlots get tokenB, ySlots get tokenA
+            emit FeesClaimed(listingId, liquidityIndex, isX ? 0 : feeShare, isX ? feeShare : 0);
         }
     }
 

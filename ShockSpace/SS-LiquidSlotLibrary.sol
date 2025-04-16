@@ -1,13 +1,13 @@
 // SPDX-License-Identifier: BSD-3-Clause
 pragma solidity ^0.8.1;
 
-// Version: 0.0.1 (Initial)
-// Description:
-// - Manages deposit and withdrawal functions for SS-LiquidityTemplate.sol.
-// - Includes xPrepOut, yPrepOut as part of withdrawal process, replicating SS-LiquidityTemplate.sol logic.
-// - Self-contained with ISSLiquidity interface; no dependency on SS-LiquidLibrary.sol.
-// - Compatible with SS-ProxyRouter.sol (version 0.0.3), SS-LiquidityTemplate.sol (version 0.0.2).
-// - Includes depositor checks inspired by MFP-LiquidLibrary.sol (version 0.0.14).
+// Version: 0.0.2 (Updated)
+// Changes:
+// - Modified xClaimFees to call claimFees with isX=false to claim yFees (tokenB) for tokenA providers (new in v0.0.2).
+// - Modified yClaimFees to call claimFees with isX=true to claim xFees (tokenA) for tokenB providers (new in v0.0.2).
+// - Side effects: Aligns fee claims with intended behavior (xSlots claim yFees, ySlots claim xFees).
+// - No changes to xDeposit, yDeposit, xWithdraw, yWithdraw, xPrepOut, yPrepOut.
+// - Note: decimalsA/decimalsB not addressed, as per user instruction to defer.
 
 import "./imports/SafeERC20.sol";
 
@@ -176,5 +176,17 @@ library SSLiquidSlotLibrary {
         liquidity.yExecuteOut(proxy, index, withdrawal);
 
         return withdrawal;
+    }
+
+    function xClaimFees(address listingAddress, uint256 liquidityIndex, address listingAgent, address proxy) external {
+        require(ISS(listingAgent).isValidListing(listingAddress), "Invalid listing");
+        ISSLiquidity liquidity = ISSLiquidity(ISSListing(listingAddress).liquidityAddresses(0));
+        liquidity.claimFees(proxy, liquidityIndex, false, 0); // Claim yFees (tokenB) for xSlots
+    }
+
+    function yClaimFees(address listingAddress, uint256 liquidityIndex, address listingAgent, address proxy) external {
+        require(ISS(listingAgent).isValidListing(listingAddress), "Invalid listing");
+        ISSLiquidity liquidity = ISSLiquidity(ISSListing(listingAddress).liquidityAddresses(0));
+        liquidity.claimFees(proxy, liquidityIndex, true, 0); // Claim xFees (tokenA) for ySlots
     }
 }

@@ -1,13 +1,14 @@
 // SPDX-License-Identifier: BSD-3-Clause
 pragma solidity ^0.8.1;
 
-// Version: 0.0.3 (Updated)
+// Version: 0.0.4 (Updated)
 // Changes:
-// - Added getListingId view function to return listingId for SSSettlementLibrary (new in v0.0.2).
-// - Updated ISSListing interface: prices accepts listingId; added getListingId (new in v0.0.2).
-// - Side effects: Enables SSSettlementLibrary to fetch correct listingId; aligns prices with SSLiquidityTemplate.
-// - Added getBuyOrder, getSellOrder view functions to align with SS-LiquidLibrary.sol (new in v0.0.3).
-// - Side effects: Resolves interface mismatch for prepBuyLiquid, prepSellLiquid.
+// - Added decimalsA, decimalsB state variables and view functions to fulfill ISSListing interface (new in v0.0.4).
+// - Updated setTokens to initialize decimalsA, decimalsB based on tokenA, tokenB (new in v0.0.4).
+// - Side effects: Resolves payout failures in SS-SettlementLibrary.sol and SS-LiquidLibrary.sol by providing decimalsA(), decimalsB().
+// - No changes to update, transact, ssUpdate, or existing view functions (e.g., getBuyOrder, listingVolumeBalancesView).
+// - Retained normalize, denormalize functions for transact compatibility.
+// - Compatible with SS-LiquidityTemplate.sol (v0.0.3), SS-LiquidSlotLibrary.sol (v0.0.2), SS-OrderLibrary.sol (v0.0.1).
 
 import "./imports/SafeERC20.sol";
 import "./imports/ReentrancyGuard.sol";
@@ -19,6 +20,8 @@ contract SSListingTemplate is ReentrancyGuard {
     bool public routersSet;
     address public tokenA;
     address public tokenB;
+    uint8 public decimalsA;
+    uint8 public decimalsB;
     uint256 public listingId;
     mapping(uint256 => uint256) public nextOrderId;
 
@@ -165,6 +168,8 @@ contract SSListingTemplate is ReentrancyGuard {
         require(_tokenA != address(0) || _tokenB != address(0), "Both tokens cannot be zero");
         tokenA = _tokenA;
         tokenB = _tokenB;
+        decimalsA = _tokenA == address(0) ? 18 : IERC20(_tokenA).decimals();
+        decimalsB = _tokenB == address(0) ? 18 : IERC20(_tokenB).decimals();
     }
 
     function update(address caller, UpdateType[] memory updates) external nonReentrant {
@@ -328,6 +333,14 @@ contract SSListingTemplate is ReentrancyGuard {
             prices[listingId] = (balances.xBalance * 1e18) / balances.yBalance;
         }
         emit BalancesUpdated(listingId, balances.xBalance, balances.yBalance);
+    }
+
+    function decimalsA() external view returns (uint8) {
+        return decimalsA;
+    }
+
+    function decimalsB() external view returns (uint8) {
+        return decimalsB;
     }
 
     function getListingId() external view returns (uint256) {
