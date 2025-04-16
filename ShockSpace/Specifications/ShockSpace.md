@@ -341,7 +341,7 @@ On Shorts; stop Loss price must be greater than entry price, while Take Profit m
 ### **Functions**
 - enterLong
 
-Entering a long position deducts a stated `Initial Margin` amount in `Token-1` from the user's address. Long positions record a leveraged amount in `Token-1` which in the SSD's positions database. 
+Entering a long position deducts a stated `Initial Margin` amount in `Token-0` from the user's address. Long positions record a leveraged amount in `Token-0` which in the SSD's positions database. 
 
 Longs take a fee calculated as; 
 
@@ -353,7 +353,7 @@ This represents the percent of the initial margin that is taken as fees once the
 
 - cancelPosition 
 
-If a position's Status-1 is `false` this allows the user to cancel it and retrieve their taxed margin. Creates a payout order to settle the user their taxed margin, can be settled with yBalance or yLiquid (longs), xBalance or xLiquid (shorts).  
+If a position's Status-1 is `false` this allows the user to cancel it and retrieve their taxed margin. Creates a payout order to settle the user their taxed margin, can be settled with xBalance or xLiquid (longs), yBalance or yLiquid (shorts).  
 
 Requires position ID. 
 
@@ -374,21 +374,21 @@ Requires position ID.
 
  
 
-Creates a unique order that instructs the contract to pay the user from xBalance or xLiquid. This is effected using `settleOrders` or `settleLiquid`. 
+Creates a unique order that instructs the contract to pay the user from yBalance or yLiquid. This is effected using `settleOrders` or `settleLiquid`. 
 
-Their pending settlement is in `TOKEN-0`. 
+Their pending settlement is in `TOKEN-1`. 
 
 
 
 - enterShort 
 
-A Short position is similar to a long position but each Short entry is billed `TOKEN-0` and settled Paper `TOKEN-0`. 
+A Short position is similar to a long position but each Short entry is billed `TOKEN-1` and settled Paper `TOKEN-1`. 
 
 Short fees get added to the yFees balance on the Liquidity contract. 
 
 - closeShortPosition
 
-Similar to `closeLongPosition` but deals with shorts and yBalance or yLiquid. 
+Similar to `closeLongPosition` but deals with shorts and xBalance or xLiquid. 
 
 Closes the user's short position with profit or loss. 
 
@@ -396,9 +396,7 @@ Calculates payout as;
 
 `(entry price - exit price) * initial margin * leverage + (taxed margin + excess margin) * current price`
 
-User is settled from yBalance or yLiquid using `settleOrders` or `settleLiquid`. 
-
-Their pending settlement is in `Token-1`. 
+Their pending settlement is in `Token-0`. 
 
 Requires position ID. 
 
