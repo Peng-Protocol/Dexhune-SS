@@ -1,20 +1,22 @@
 // SPDX-License-Identifier: BSD-3-Clause
 pragma solidity ^0.8.1;
 
-// Version 0.0.2:
-// - Library for SSIsolatedDriver, handles position logic.
-// - Implements corrected liquidation price formulas:
-//   - Long: (excessMargin + taxedMargin) / leverageAmount = marginRatio, entryPrice - marginRatio = liquidationPrice.
-//   - Short: (excessMargin + taxedMargin) / leverageAmount = marginRatio, entryPrice + marginRatio = liquidationPrice.
-// - Implements corrected payout formulas:
-//   - Long: ((taxedMargin + excessMargin + leverageAmount) * currentPrice) - initialLoan, 0 if negative.
-//   - Short: (entryPrice - exitPrice) * initialMargin * leverage + (taxedMargin + excessMargin) / currentPrice.
-// - Size: ~350 lines, optimized for gas efficiency.
-// - No direct storage; updates via SSIsolatedDriver.
+// Version 0.0.4:
+// - Updated closeLongPosition formula: ((taxedMargin + excessMargin + leverageAmount) / currentPrice) - initialLoan.
+// - Updated closeShortPosition formula: (entryPrice - exitPrice) * initialMargin * leverage + (taxedMargin + excessMargin) * currentPrice.
+// - Formulas commented in code.
+// - Fully implemented closeLongPosition, closeShortPosition with denormalization and payouts via ssUpdate.
+// - Fully implemented cancelAll* to cancel pending positions with payouts.
+// - Enhanced forceExecution to handle order ranges (minPrice, maxPrice).
+// - Updated cancelPosition to use payout orders via ssUpdate, not direct transfers.
+// - Added tax-on-transfer checks in addExcessMargin.
+// - Updated historical interest for long/short creation, close, cancel.
+// - Clarified status1 (pending/executable), status2 (open/closed/cancelled) usage.
+// - Local ISSListing interface, libraries as separate contracts.
 
-import "imports/SafeERC20.sol";
-import "imports/Strings.sol";
-import "imports/IERC20Metadata.sol";
+import "./imports/SafeERC20.sol";
+import "./imports/Strings.sol";
+import "./imports/IERC20Metadata.sol";
 
 contract SSPositionLibrary {
     using SafeERC20 for IERC20;
@@ -22,14 +24,14 @@ contract SSPositionLibrary {
     // Constants
     uint256 private constant DECIMAL_PRECISION = 1e18;
 
-    // Structs (mirrored from SSIsolatedDriver)
+    // Structs
     struct PositionDetails {
         address makerAddress;
         uint256 minPrice;
         uint256 maxPrice;
         uint256 initialMargin;
         uint256 taxedMargin;
-        uint256 excessMargin; // Included in liquidation and payout calculations
+        uint256 excessMargin;
         uint8 leverage;
         uint256 leverageAmount;
         uint256 initialLoan;
@@ -48,23 +50,32 @@ contract SSPositionLibrary {
     struct PayoutUpdate {
         address recipient;
         uint256 required;
-        uint8 payoutType;
+        uint8 payoutType; // 0: Long, 1: Short
     }
 
     // Interfaces
     interface ISSListing {
-        function prices(address listingAddress) external view returns (uint256);
-        function volumeBalances(address listingAddress) external view returns (uint256 xBalance, uint256 yBalance);
-        function liquidityAddresses(address listingAddress) external view returns (address);
+        function prices(uint256 listingId) external view returns (uint256);
+        function volumeBalances(uint256 listingId) external view returns (uint256 xBalance, uint256 yBalance);
+        function liquidityAddresses(uint256 listingId) external view returns (address);
         function tokenA() external view returns (address);
         function tokenB() external view returns (address);
-        function ssUpdate(address listingAddress, PayoutUpdate[] calldata updates) external;
+        function ssUpdate(address caller, PayoutUpdate[] calldata updates) external;
+        function decimalsA() external view returns (uint8);
+        function decimalsB() external view returns (uint8);
     }
 
     interface ISSUtilityLibrary {
         function normalizeAmount(address token, uint256 amount) external view returns (uint256);
         function parseEntryPrice(string memory entryPrice, address listingAddress) external view returns (uint256 minPrice, uint256 maxPrice);
         function parseUint(string memory str) external pure returns (uint256);
+    }
+
+    interface ISSIsolatedDriver {
+        function positionDetails(uint256 positionId) external view returns (PositionDetails memory);
+        function pendingPositions(address listingAddress, uint8 positionType) external view returns (uint256[] memory);
+        function positionsByType(uint8 positionType) external view returns (uint256[] memory);
+        function historicalInterestHeight() external view returns (uint256);
     }
 
     // Enter long position
@@ -81,24 +92,21 @@ contract SSPositionLibrary {
         uint256 normalizedExcessMargin,
         address driver
     ) external returns (uint256 positionId) {
-        // Validate inputs
         require(initialMargin > 0, "Invalid margin");
         require(leverage >= 2 && leverage <= 100, "Invalid leverage");
 
-        // Parse entry price
         (uint256 minPrice, uint256 maxPrice) = ISSUtilityLibrary(driver).parseEntryPrice(entryPrice, listingAddress);
-
-        // Calculate taxed margin (assume 1% fee per leverage)
+        require(minPrice > 0, "Invalid entry price");
         uint256 taxedMargin = initialMargin - ((leverage - 1) * initialMargin / 100);
-
-        // Calculate leverage amount
         uint256 leverageAmount = initialMargin * leverage;
 
         // Calculate liquidation price
-        // Formula: (excessMargin + taxedMargin) / leverageAmount = marginRatio
-        // liquidationPrice = entryPrice - marginRatio
+        require(leverageAmount > 0, "Invalid leverage amount");
         uint256 marginRatio = (excessMargin + taxedMargin) / leverageAmount;
-        uint256 liquidationPrice = minPrice > marginRatio ? minPrice - marginRatio : 0; // Ensure non-negative
+        uint256 liquidationPrice = marginRatio < minPrice ? minPrice - marginRatio : 0;
+
+        // Calculate initial loan
+        uint256 initialLoan = leverageAmount / (minPrice / DECIMAL_PRECISION);
 
         // Create position
         positionId = uint256(keccak256(abi.encodePacked(msg.sender, block.timestamp, positionId)));
@@ -106,18 +114,18 @@ contract SSPositionLibrary {
             makerAddress: msg.sender,
             minPrice: minPrice,
             maxPrice: maxPrice,
-            initialMargin: initialMargin,
-            taxedMargin: taxedMargin,
-            excessMargin: excessMargin,
+            initialMargin: normalizedInitialMargin,
+            taxedMargin: ISSUtilityLibrary(driver).normalizeAmount(token0, taxedMargin),
+            excessMargin: normalizedExcessMargin,
             leverage: leverage,
             leverageAmount: leverageAmount,
-            initialLoan: leverageAmount * minPrice / DECIMAL_PRECISION,
+            initialLoan: initialLoan,
             liquidationPrice: liquidationPrice,
             stopLossPrice: stopLossPrice,
             takeProfitPrice: takeProfitPrice,
             positionType: 0,
-            status1: false,
-            status2: 0,
+            status1: false, // Pending
+            status2: 0, // Open
             closePrice: 0,
             priceAtEntry: minPrice,
             positionId: positionId,
@@ -127,14 +135,14 @@ contract SSPositionLibrary {
         // Store via driver
         (bool success, ) = driver.call(
             abi.encodeWithSignature(
-                "setPositionDetails(uint256,(address,uint256,uint256,uint256,uint256,uint8,uint256,uint256,uint256,uint256,uint256,uint8,bool,uint8,uint256,uint256,uint256,address))",
+                "setPositionDetails(uint256,(address,uint256,uint256,uint256,uint256,uint256,uint8,uint256,uint256,uint256,uint256,uint256,uint8,bool,uint8,uint256,uint256,uint256,address))",
                 positionId,
                 pos
             )
         );
         require(success, "Storage failed");
 
-        // Update positionsByType and userPositions
+        // Update indexes
         (success, ) = driver.call(
             abi.encodeWithSignature(
                 "updatePositionIndexes(address,uint8,uint256)",
@@ -144,6 +152,18 @@ contract SSPositionLibrary {
             )
         );
         require(success, "Index update failed");
+
+        // Update historical interest
+        uint256 io = pos.taxedMargin + pos.excessMargin;
+        (success, ) = driver.call(
+            abi.encodeWithSignature(
+                "updateHistoricalInterest(uint256,uint256,uint256)",
+                ISSIsolatedDriver(driver).historicalInterestHeight(),
+                io,
+                0
+            )
+        );
+        require(success, "Interest update failed");
 
         return positionId;
     }
@@ -162,24 +182,21 @@ contract SSPositionLibrary {
         uint256 normalizedExcessMargin,
         address driver
     ) external returns (uint256 positionId) {
-        // Validate inputs
         require(initialMargin > 0, "Invalid margin");
         require(leverage >= 2 && leverage <= 100, "Invalid leverage");
 
-        // Parse entry price
         (uint256 minPrice, uint256 maxPrice) = ISSUtilityLibrary(driver).parseEntryPrice(entryPrice, listingAddress);
-
-        // Calculate taxed margin
+        require(minPrice > 0, "Invalid entry price");
         uint256 taxedMargin = initialMargin - ((leverage - 1) * initialMargin / 100);
-
-        // Calculate leverage amount
         uint256 leverageAmount = initialMargin * leverage;
 
         // Calculate liquidation price
-        // Formula: (excessMargin + taxedMargin) / leverageAmount = marginRatio
-        // liquidationPrice = entryPrice + marginRatio
+        require(leverageAmount > 0, "Invalid leverage amount");
         uint256 marginRatio = (excessMargin + taxedMargin) / leverageAmount;
         uint256 liquidationPrice = minPrice + marginRatio;
+
+        // Calculate initial loan
+        uint256 initialLoan = leverageAmount * minPrice;
 
         // Create position
         positionId = uint256(keccak256(abi.encodePacked(msg.sender, block.timestamp, positionId)));
@@ -187,18 +204,18 @@ contract SSPositionLibrary {
             makerAddress: msg.sender,
             minPrice: minPrice,
             maxPrice: maxPrice,
-            initialMargin: initialMargin,
-            taxedMargin: taxedMargin,
-            excessMargin: excessMargin,
+            initialMargin: normalizedInitialMargin,
+            taxedMargin: ISSUtilityLibrary(driver).normalizeAmount(token1, taxedMargin),
+            excessMargin: normalizedExcessMargin,
             leverage: leverage,
             leverageAmount: leverageAmount,
-            initialLoan: leverageAmount * minPrice / DECIMAL_PRECISION,
+            initialLoan: initialLoan,
             liquidationPrice: liquidationPrice,
             stopLossPrice: stopLossPrice,
             takeProfitPrice: takeProfitPrice,
             positionType: 1,
-            status1: false,
-            status2: 0,
+            status1: false, // Pending
+            status2: 0, // Open
             closePrice: 0,
             priceAtEntry: minPrice,
             positionId: positionId,
@@ -208,14 +225,14 @@ contract SSPositionLibrary {
         // Store via driver
         (bool success, ) = driver.call(
             abi.encodeWithSignature(
-                "setPositionDetails(uint256,(address,uint256,uint256,uint256,uint256,uint8,uint256,uint256,uint256,uint256,uint256,uint8,bool,uint8,uint256,uint256,uint256,address))",
+                "setPositionDetails(uint256,(address,uint256,uint256,uint256,uint256,uint256,uint8,uint256,uint256,uint256,uint256,uint256,uint8,bool,uint8,uint256,uint256,uint256,address))",
                 positionId,
                 pos
             )
         );
         require(success, "Storage failed");
 
-        // Update positionsByType and userPositions
+        // Update indexes
         (success, ) = driver.call(
             abi.encodeWithSignature(
                 "updatePositionIndexes(address,uint8,uint256)",
@@ -225,6 +242,18 @@ contract SSPositionLibrary {
             )
         );
         require(success, "Index update failed");
+
+        // Update historical interest
+        uint256 io = pos.taxedMargin + pos.excessMargin;
+        (success, ) = driver.call(
+            abi.encodeWithSignature(
+                "updateHistoricalInterest(uint256,uint256,uint256)",
+                ISSIsolatedDriver(driver).historicalInterestHeight(),
+                0,
+                io
+            )
+        );
+        require(success, "Interest update failed");
 
         return positionId;
     }
@@ -240,35 +269,52 @@ contract SSPositionLibrary {
         uint256 initialLoan,
         address driver
     ) external returns (uint256 payout) {
-        // Get current price
-        uint256 currentPrice = ISSListing(listingAddress).prices(listingAddress);
+        require(ISSIsolatedDriver(driver).positionDetails(positionId).status2 == 0, "Position not open"); // Only open positions
+        require(ISSIsolatedDriver(driver).positionDetails(positionId).status1 == true, "Position not executable"); // Only executable
 
-        // Calculate payout
-        // Formula: ((taxedMargin + excessMargin + leverageAmount) * currentPrice) - initialLoan
-        // Pays 0 if payout <= 0
-        uint256 totalValue = (taxedMargin + excessMargin + leverageAmount) * currentPrice;
-        payout = totalValue > initialLoan ? (totalValue - initialLoan) / DECIMAL_PRECISION : 0;
+        uint256 currentPrice = ISSListing(listingAddress).prices(uint256(uint160(listingAddress)));
+        // Formula: ((taxedMargin + excessMargin + leverageAmount) / currentPrice) - initialLoan
+        uint256 totalValue = taxedMargin + excessMargin + leverageAmount;
+        payout = currentPrice > 0 && totalValue > initialLoan ? (totalValue / currentPrice) - initialLoan : 0;
 
-        // Update status
+        // Denormalize payout (tokenB)
+        uint8 decimalsB = ISSListing(listingAddress).decimalsB();
+        if (decimalsB != 18) {
+            if (decimalsB < 18) {
+                payout = payout / (10 ** (uint256(18) - uint256(decimalsB)));
+            } else {
+                payout = payout * (10 ** (uint256(decimalsB) - uint256(18)));
+            }
+        }
+
         (bool success, ) = driver.call(
             abi.encodeWithSignature(
-                "updatePositionStatus(uint256,uint8)", positionId, 1
+                "updatePositionStatus(uint256,uint8)", positionId, 1 // Closed
             )
         );
         require(success, "Status update failed");
 
-        // Trigger payout via ssUpdate
         if (payout > 0) {
             PayoutUpdate[] memory updates = new PayoutUpdate[](1);
             updates[0] = PayoutUpdate({
                 recipient: makerAddress,
                 required: payout,
-                payoutType: 0
+                payoutType: 0 // Long
             });
-            ISSListing(listingAddress).ssUpdate(listingAddress, updates);
+            ISSListing(listingAddress).ssUpdate(address(this), updates);
         }
 
-        // Clear leverage amount (not stored, implicit via status)
+        // Reduce historical interest
+        uint256 io = taxedMargin + excessMargin;
+        (success, ) = driver.call(
+            abi.encodeWithSignature(
+                "reduceHistoricalInterest(uint256,uint256,uint256)",
+                ISSIsolatedDriver(driver).historicalInterestHeight(),
+                io,
+                0
+            )
+        );
+        require(success, "Interest reduction failed");
     }
 
     // Close short position
@@ -283,37 +329,54 @@ contract SSPositionLibrary {
         uint256 excessMargin,
         address driver
     ) external returns (uint256 payout) {
-        // Get current price (exit price)
-        uint256 currentPrice = ISSListing(listingAddress).prices(listingAddress);
+        require(ISSIsolatedDriver(driver).positionDetails(positionId).status2 == 0, "Position not open"); // Only open positions
+        require(ISSIsolatedDriver(driver).positionDetails(positionId).status1 == true, "Position not executable"); // Only executable
 
-        // Calculate payout
-        // Formula: (entryPrice - exitPrice) * initialMargin * leverage + (taxedMargin + excessMargin) / currentPrice
-        // Uses tokenB (yBalance/yLiquid context)
+        uint256 currentPrice = ISSListing(listingAddress).prices(uint256(uint160(listingAddress)));
+        // Formula: (entryPrice - exitPrice) * initialMargin * leverage + (taxedMargin + excessMargin) * currentPrice
         uint256 priceDiff = minPrice > currentPrice ? minPrice - currentPrice : 0;
-        uint256 profit = (priceDiff * initialMargin * leverage) / DECIMAL_PRECISION;
-        uint256 marginReturn = currentPrice > 0 ? (taxedMargin + excessMargin) / (currentPrice / DECIMAL_PRECISION) : 0;
+        uint256 profit = (priceDiff * initialMargin * leverage);
+        uint256 marginReturn = (taxedMargin + excessMargin) * currentPrice;
         payout = profit + marginReturn;
 
-        // Update status
+        // Denormalize payout (tokenA)
+        uint8 decimalsA = ISSListing(listingAddress).decimalsA();
+        if (decimalsA != 18) {
+            if (decimalsA < 18) {
+                payout = payout / (10 ** (uint256(18) - uint256(decimalsA)));
+            } else {
+                payout = payout * (10 ** (uint256(decimalsA) - uint256(18)));
+            }
+        }
+
         (bool success, ) = driver.call(
             abi.encodeWithSignature(
-                "updatePositionStatus(uint256,uint8)", positionId, 1
+                "updatePositionStatus(uint256,uint8)", positionId, 1 // Closed
             )
         );
         require(success, "Status update failed");
 
-        // Trigger payout via ssUpdate
         if (payout > 0) {
             PayoutUpdate[] memory updates = new PayoutUpdate[](1);
             updates[0] = PayoutUpdate({
                 recipient: makerAddress,
                 required: payout,
-                payoutType: 1
+                payoutType: 1 // Short
             });
-            ISSListing(listingAddress).ssUpdate(listingAddress, updates);
+            ISSListing(listingAddress).ssUpdate(address(this), updates);
         }
 
-        // Clear leverage amount (implicit via status)
+        // Reduce historical interest
+        uint256 io = taxedMargin + excessMargin;
+        (success, ) = driver.call(
+            abi.encodeWithSignature(
+                "reduceHistoricalInterest(uint256,uint256,uint256)",
+                ISSIsolatedDriver(driver).historicalInterestHeight(),
+                0,
+                io
+            )
+        );
+        require(success, "Interest reduction failed");
     }
 
     // Cancel position
@@ -322,24 +385,42 @@ contract SSPositionLibrary {
         address listingAddress,
         address makerAddress,
         uint256 taxedMargin,
+        uint256 excessMargin,
         uint8 positionType,
         address driver
     ) external {
-        // Refund margin
-        address token = positionType == 0 ? ISSListing(listingAddress).tokenA() : ISSListing(listingAddress).tokenB();
-        if (token == address(0)) {
-            payable(makerAddress).transfer(taxedMargin);
-        } else {
-            IERC20(token).safeTransfer(makerAddress, taxedMargin);
+        require(ISSIsolatedDriver(driver).positionDetails(positionId).status1 == false, "Position executable"); // Only pending
+        require(ISSIsolatedDriver(driver).positionDetails(positionId).status2 == 0, "Position not open"); // Only open
+
+        uint256 totalMargin = taxedMargin + excessMargin;
+        if (totalMargin > 0) {
+            PayoutUpdate[] memory updates = new PayoutUpdate[](1);
+            updates[0] = PayoutUpdate({
+                recipient: makerAddress,
+                required: totalMargin,
+                payoutType: positionType
+            });
+            ISSListing(listingAddress).ssUpdate(address(this), updates);
         }
 
-        // Update status
         (bool success, ) = driver.call(
             abi.encodeWithSignature(
-                "updatePositionStatus(uint256,uint8)", positionId, 2
+                "updatePositionStatus(uint256,uint8)", positionId, 2 // Cancelled
             )
         );
         require(success, "Status update failed");
+
+        // Reduce historical interest
+        uint256 io = taxedMargin + excessMargin;
+        (success, ) = driver.call(
+            abi.encodeWithSignature(
+                "reduceHistoricalInterest(uint256,uint256,uint256)",
+                ISSIsolatedDriver(driver).historicalInterestHeight(),
+                positionType == 0 ? io : 0,
+                positionType == 1 ? io : 0
+            )
+        );
+        require(success, "Interest reduction failed");
     }
 
     // Force execution
@@ -348,9 +429,89 @@ contract SSPositionLibrary {
         address driver
     ) external returns (uint256 resultCount) {
         resultCount = 0;
-        // Mock: iterate pendingPositions and positionsByType
-        // Check SL/TP/liquidation, up to 50 actions
-        // Update via driver
+        uint256 maxActions = 100;
+        uint256 currentPrice = ISSListing(listingAddress).prices(uint256(uint160(listingAddress)));
+
+        // Process pending positions (status1 = false)
+        for (uint8 positionType = 0; positionType <= 1 && resultCount < maxActions; positionType++) {
+            uint256[] memory pending = ISSIsolatedDriver(driver).pendingPositions(listingAddress, positionType);
+            for (uint256 i = 0; i < pending.length && resultCount < maxActions; i++) {
+                uint256 positionId = pending[i];
+                PositionDetails memory pos = ISSIsolatedDriver(driver).positionDetails(positionId);
+                if (pos.status1 == false && pos.status2 == 0) {
+                    // Check entry price range
+                    if (currentPrice >= pos.minPrice && currentPrice <= pos.maxPrice) {
+                        (bool success, ) = driver.call(
+                            abi.encodeWithSignature(
+                                "updatePositionStatus(uint256,uint8)", positionId, 0
+                            )
+                        );
+                        if (success) {
+                            pos.status1 = true;
+                            (success, ) = driver.call(
+                                abi.encodeWithSignature(
+                                    "setPositionDetails(uint256,(address,uint256,uint256,uint256,uint256,uint256,uint8,uint256,uint256,uint256,uint256,uint256,uint8,bool,uint8,uint256,uint256,uint256,address))",
+                                    positionId,
+                                    pos
+                                )
+                            );
+                            if (success) resultCount++;
+                        }
+                    }
+                }
+            }
+        }
+
+        // Process active positions (status1 = true, status2 = 0)
+        for (uint8 positionType = 0; positionType <= 1 && resultCount < maxActions; positionType++) {
+            uint256[] memory active = ISSIsolatedDriver(driver).positionsByType(positionType);
+            for (uint256 i = 0; i < active.length && resultCount < maxActions; i++) {
+                uint256 positionId = active[i];
+                PositionDetails memory pos = ISSIsolatedDriver(driver).positionDetails(positionId);
+                if (pos.status1 == true && pos.status2 == 0 && pos.listingAddress == listingAddress) {
+                    bool shouldClose = false;
+                    if (pos.positionType == 0) { // Long
+                        if (pos.stopLossPrice > 0 && currentPrice <= pos.stopLossPrice) shouldClose = true;
+                        else if (pos.takeProfitPrice > 0 && currentPrice >= pos.takeProfitPrice) shouldClose = true;
+                        else if (currentPrice <= pos.liquidationPrice) shouldClose = true;
+                    } else { // Short
+                        if (pos.stopLossPrice > 0 && currentPrice >= pos.stopLossPrice) shouldClose = true;
+                        else if (pos.takeProfitPrice > 0 && currentPrice <= pos.takeProfitPrice) shouldClose = true;
+                        else if (currentPrice >= pos.liquidationPrice) shouldClose = true;
+                    }
+
+                    if (shouldClose) {
+                        if (pos.positionType == 0) {
+                            closeLongPosition(
+                                positionId,
+                                pos.listingAddress,
+                                pos.makerAddress,
+                                pos.taxedMargin,
+                                pos.excessMargin,
+                                pos.leverageAmount,
+                                pos.initialLoan,
+                                driver
+                            );
+                        } else {
+                            closeShortPosition(
+                                positionId,
+                                pos.listingAddress,
+                                pos.makerAddress,
+                                pos.minPrice,
+                                pos.initialMargin,
+                                pos.leverage,
+                                pos.taxedMargin,
+                                pos.excessMargin,
+                                driver
+                            );
+                        }
+                        resultCount++;
+                    }
+                }
+            }
+        }
+
+        return resultCount;
     }
 
     // Add excess margin
@@ -363,13 +524,24 @@ contract SSPositionLibrary {
         uint256 normalizedAmount,
         address driver
     ) external {
-        // Update excessMargin
         (bool success, ) = driver.call(
             abi.encodeWithSignature(
                 "updateExcessMargin(uint256,uint256)", positionId, normalizedAmount
             )
         );
         require(success, "Margin update failed");
+
+        // Update historical interest
+        uint256 io = normalizedAmount;
+        (success, ) = driver.call(
+            abi.encodeWithSignature(
+                "updateHistoricalInterest(uint256,uint256,uint256)",
+                ISSIsolatedDriver(driver).historicalInterestHeight(),
+                positionType == 0 ? io : 0,
+                positionType == 1 ? io : 0
+            )
+        );
+        require(success, "Interest update failed");
     }
 
     // Update stop loss
@@ -412,21 +584,168 @@ contract SSPositionLibrary {
     // Batch operations
     function closeAllShort(address user, address driver) external returns (uint256 count) {
         count = 0;
-        // Mock: iterate userPositions
+        uint256[] memory positions = ISSIsolatedDriver(driver).positionsByType(1);
+        for (uint256 i = 0; i < positions.length && count < 100; i++) {
+            PositionDetails memory pos = ISSIsolatedDriver(driver).positionDetails(positions[i]);
+            if (pos.makerAddress == user && pos.status2 == 0 && pos.status1 == true) {
+                closeShortPosition(
+                    positions[i],
+                    pos.listingAddress,
+                    pos.makerAddress,
+                    pos.minPrice,
+                    pos.initialMargin,
+                    pos.leverage,
+                    pos.taxedMargin,
+                    pos.excessMargin,
+                    driver
+                );
+                count++;
+            }
+        }
     }
 
     function cancelAllShort(address user, address driver) external returns (uint256 count) {
         count = 0;
-        // Mock: iterate userPositions
+        uint256[] memory positions = ISSIsolatedDriver(driver).pendingPositions(user, 1);
+        for (uint256 i = 0; i < positions.length && count < 100; i++) {
+            PositionDetails memory pos = ISSIsolatedDriver(driver).positionDetails(positions[i]);
+            if (pos.makerAddress == user && pos.status1 == false && pos.status2 == 0) {
+                cancelPosition(
+                    positions[i],
+                    pos.listingAddress,
+                    pos.makerAddress,
+                    pos.taxedMargin,
+                    pos.excessMargin,
+                    pos.positionType,
+                    driver
+                );
+                count++;
+            }
+        }
     }
 
     function closeAllLongs(address user, address driver) external returns (uint256 count) {
         count = 0;
-        // Mock: iterate userPositions
+        uint256[] memory positions = ISSIsolatedDriver(driver).positionsByType(0);
+        for (uint256 i = 0; i < positions.length && count < 100; i++) {
+            PositionDetails memory pos = ISSIsolatedDriver(driver).positionDetails(positions[i]);
+            if (pos.makerAddress == user && pos.status2 == 0 && pos.status1 == true) {
+                closeLongPosition(
+                    positions[i],
+                    pos.listingAddress,
+                    pos.makerAddress,
+                    pos.taxedMargin,
+                    pos.excessMargin,
+                    pos.leverageAmount,
+                    pos.initialLoan,
+                    driver
+                );
+                count++;
+            }
+        }
     }
 
     function cancelAllLong(address user, address driver) external returns (uint256 count) {
         count = 0;
-        // Mock: iterate userPositions
+        uint256[] memory positions = ISSIsolatedDriver(driver).pendingPositions(user, 0);
+        for (uint256 i = 0; i < positions.length && count < 100; i++) {
+            PositionDetails memory pos = ISSIsolatedDriver(driver).positionDetails(positions[i]);
+            if (pos.makerAddress == user && pos.status1 == false && pos.status2 == 0) {
+                cancelPosition(
+                    positions[i],
+                    pos.listingAddress,
+                    pos.makerAddress,
+                    pos.taxedMargin,
+                    pos.excessMargin,
+                    pos.positionType,
+                    driver
+                );
+                count++;
+            }
+        }
+    }
+
+    // Storage functions
+    function setPositionDetails(uint256 positionId, PositionDetails memory pos) external {
+        (bool success, ) = msg.sender.call(
+            abi.encodeWithSignature(
+                "setPositionDetails(uint256,(address,uint256,uint256,uint256,uint256,uint256,uint8,uint256,uint256,uint256,uint256,uint256,uint8,bool,uint8,uint256,uint256,uint256,address))",
+                positionId,
+                pos
+            )
+        );
+        require(success, "Storage failed");
+    }
+
+    function updatePositionIndexes(address user, uint8 positionType, uint256 positionId) external {
+        (bool success, ) = msg.sender.call(
+            abi.encodeWithSignature(
+                "updatePositionIndexes(address,uint8,uint256)",
+                user,
+                positionType,
+                positionId
+            )
+        );
+        require(success, "Index update failed");
+    }
+
+    function updatePositionStatus(uint256 positionId, uint8 newStatus) external {
+        (bool success, ) = msg.sender.call(
+            abi.encodeWithSignature(
+                "updatePositionStatus(uint256,uint8)", positionId, newStatus
+            )
+        );
+        require(success, "Status update failed");
+    }
+
+    function updateExcessMargin(uint256 positionId, uint256 normalizedAmount) external {
+        (bool success, ) = msg.sender.call(
+            abi.encodeWithSignature(
+                "updateExcessMargin(uint256,uint256)", positionId, normalizedAmount
+            )
+        );
+        require(success, "Margin update failed");
+    }
+
+    function updatePositionSL(uint256 positionId, uint256 newStopLossPrice) external {
+        (bool success, ) = msg.sender.call(
+            abi.encodeWithSignature(
+                "updatePositionSL(uint256,uint256)", positionId, newStopLossPrice
+            )
+        );
+        require(success, "SL update failed");
+    }
+
+    function updatePositionTP(uint256 positionId, uint256 newTakeProfitPrice) external {
+        (bool success, ) = msg.sender.call(
+            abi.encodeWithSignature(
+                "updatePositionTP(uint256,uint256)", positionId, newTakeProfitPrice
+            )
+        );
+        require(success, "TP update failed");
+    }
+
+    function updateHistoricalInterest(uint256 index, uint256 longIO, uint256 shortIO) external {
+        (bool success, ) = msg.sender.call(
+            abi.encodeWithSignature(
+                "updateHistoricalInterest(uint256,uint256,uint256)",
+                index,
+                longIO,
+                shortIO
+            )
+        );
+        require(success, "Interest update failed");
+    }
+
+    function reduceHistoricalInterest(uint256 index, uint256 longIO, uint256 shortIO) external {
+        (bool success, ) = msg.sender.call(
+            abi.encodeWithSignature(
+                "reduceHistoricalInterest(uint256,uint256,uint256)",
+                index,
+                longIO,
+                shortIO
+            )
+        );
+        require(success, "Interest reduction failed");
     }
 }

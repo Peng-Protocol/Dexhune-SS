@@ -1,19 +1,19 @@
 // SPDX-License-Identifier: BSD-3-Clause
 pragma solidity ^0.8.1;
 
-// Significant changes:
-// - Fully independent, no SSIsolatedDriver import.
-// - Includes ISSListing interface locally for parseEntryPrice.
-// - Handles normalizeAmount, parseEntryPrice, parseUint, splitString.
-// - Size: ~100 lines, reflecting added interface.
-// - Functionality preserved without listingAddress code by assuming ISSListing behavior.
+// Version 0.0.4:
+// - Enhanced parseEntryPrice to use "-" delimiter, reject non-standard input (multiple delimiters, oversized strings).
+// - Local ISSListing interface, no imports.
+// - Added input validation: max 50 chars, numeric or single delimiter.
+// - Maintained normalizeAmount for decimals handling.
+// - Local imports for IERC20Metadata.
 
-import "imports/IERC20Metadata.sol";
+import "./imports/IERC20Metadata.sol";
 
 library SSUtilityLibrary {
     // Interface
     interface ISSListing {
-        function prices(address listingAddress) external view returns (uint256);
+        function prices(uint256 listingId) external view returns (uint256);
     }
 
     // Constants
@@ -21,7 +21,7 @@ library SSUtilityLibrary {
 
     // Normalize amount based on token decimals
     function normalizeAmount(address token, uint256 amount) external view returns (uint256) {
-        if (token == address(0)) return amount; // Native ETH, assume 18 decimals
+        if (token == address(0)) return amount; // Native ETH, 18 decimals
         uint8 decimals = IERC20Metadata(token).decimals();
         if (decimals == 18) return amount;
         return amount * DECIMAL_PRECISION / (10 ** decimals);
@@ -30,27 +30,24 @@ library SSUtilityLibrary {
     // Parse entry price string
     function parseEntryPrice(string memory entryPrice, address listingAddress) external view returns (uint256 minPrice, uint256 maxPrice) {
         bytes memory priceBytes = bytes(entryPrice);
-        require(priceBytes.length > 0, "Empty price");
+        require(priceBytes.length > 0 && priceBytes.length <= 50, "Invalid price length");
+
+        // Validate characters
+        uint256 delimiterCount = 0;
         for (uint256 i = 0; i < priceBytes.length; i++) {
-            if (priceBytes[i] != ',' && (priceBytes[i] < '0' || priceBytes[i] > '9')) {
+            if (priceBytes[i] == '-') {
+                delimiterCount++;
+            } else if (priceBytes[i] < '0' || priceBytes[i] > '9') {
                 revert("Invalid characters");
             }
         }
+        require(delimiterCount <= 1, "Multiple delimiters");
 
-        // Check for comma
-        bool isRange;
-        for (uint256 i = 0; i < priceBytes.length; i++) {
-            if (priceBytes[i] == ',') {
-                isRange = true;
-                break;
-            }
-        }
-
-        if (!isRange) {
+        if (delimiterCount == 0) {
             // Single or market price
             uint256 price;
             if (keccak256(abi.encodePacked(entryPrice)) == keccak256(abi.encodePacked("0"))) {
-                price = ISSListing(listingAddress).prices(listingAddress);
+                price = ISSListing(listingAddress).prices(uint256(uint160(listingAddress)));
             } else {
                 price = parseUint(entryPrice);
             }
@@ -59,7 +56,7 @@ library SSUtilityLibrary {
         }
 
         // Range price
-        (string memory minStr, string memory maxStr) = splitString(entryPrice, ",");
+        (string memory minStr, string memory maxStr) = splitString(entryPrice, "-");
         minPrice = parseUint(minStr);
         maxPrice = parseUint(maxStr);
         require(minPrice > 0 && maxPrice > 0, "Invalid range");
