@@ -1,16 +1,19 @@
 // SPDX-License-Identifier: BSD-3-Clause
 pragma solidity ^0.8.1;
 
-// Version: 0.0.7 (Updated)
+// Version: 0.0.8 (Updated)
 // Changes:
-// - Modified prepLongPayouts to cap amount at yBalance (tokenB) instead of xBalance (new in v0.0.7).
-// - Modified prepShortPayouts to cap amount at xBalance (tokenA) instead of yBalance (new in v0.0.7).
-// - Updated executeLongPayouts to use tokenB and yBalance for long payouts (new in v0.0.7).
-// - Updated executeShortPayouts to use tokenA and xBalance for short payouts (new in v0.0.7).
-// - Adjusted getPayoutParams to return tokenB/yBalance for isLong=true, tokenA/xBalance for isLong=false (new in v0.0.7).
-// - Updated processPayoutOrder to use decimalsB for long, decimalsA for short payouts (new in v0.0.7).
-// - Side effects: Aligns long payouts with tokenB (yBalance) and short payouts with tokenA (xBalance) per requirements.
-// - Note: decimalsA and decimalsB not implemented in SS-ListingTemplate.sol; assumed available externally.
+// - From v0.0.7: Updated processOrder to set UpdateType.value to amountReceived for tax-on-transfer adjustments (new in v0.0.8).
+// - From v0.0.7: Updated processPayoutOrder to set UpdateType.value and PayoutUpdate.required to amountReceived (new in v0.0.8).
+// - From v0.0.7: Added fallback for decimalsA/decimalsB using IERC20.decimals() if not provided by ISSListing (new in v0.0.8).
+// - From v0.0.7: Modified prepLongPayouts to cap amount at yBalance (tokenB) instead of xBalance.
+// - From v0.0.7: Modified prepShortPayouts to cap amount at xBalance (tokenA) instead of yBalance.
+// - From v0.0.7: Updated executeLongPayouts to use tokenB and yBalance for long payouts.
+// - From v0.0.7: Updated executeShortPayouts to use tokenA and xBalance for short payouts.
+// - From v0.0.7: Adjusted getPayoutParams to return tokenB/yBalance for isLong=true, tokenA/xBalance for isLong=false.
+// - From v0.0.7: Updated processPayoutOrder to use decimalsB for long, decimalsA for short payouts.
+// - Side effects: Ensures tax-on-transfer adjustments are reflected in state updates; improves decimals handling robustness.
+// - Note: decimalsA and decimalsB assumed available externally; fallback to IERC20.decimals() added.
 
 import "./imports/SafeERC20.sol";
 
@@ -100,6 +103,15 @@ library SSSettlementLibrary {
             return amount;
         }
         return (amount * (10 ** decimals)) / 1e18;
+    }
+
+    function getDecimals(address token, ISSListing listing, bool isBuy) internal view returns (uint8) {
+        if (token == address(0)) return 18;
+        try listing.decimalsA() returns (uint8 decA) {
+            return isBuy ? decA : listing.decimalsB();
+        } catch {
+            return IERC20(token).decimals();
+        }
     }
 
     function calculateImpactPrice(uint256 xBalance, uint256 yBalance, uint256 totalAmount, bool isBuy) internal pure returns (uint256) {
@@ -236,7 +248,7 @@ library SSSettlementLibrary {
         internal
         returns (ISSListing.UpdateType memory)
     {
-        uint8 decimals = isBuy ? listing.decimalsA() : listing.decimalsB();
+        uint8 decimals = getDecimals(token, listing, isBuy);
         uint256 rawAmount = denormalize(update.amount, decimals);
 
         uint256 preBalance = token == address(0) ? update.recipient.balance : IERC20(token).balanceOf(update.recipient);
@@ -266,7 +278,7 @@ library SSSettlementLibrary {
         address token,
         bool isLong
     ) internal returns (ISSListing.UpdateType memory, ISSListing.PayoutUpdate memory) {
-        uint8 decimals = isLong ? listing.decimalsB() : listing.decimalsA();
+        uint8 decimals = getDecimals(token, listing, !isLong);
         uint256 rawAmount = denormalize(update.amount, decimals);
 
         uint256 preBalance = token == address(0) ? update.recipient.balance : IERC20(token).balanceOf(update.recipient);
@@ -281,7 +293,7 @@ library SSSettlementLibrary {
         ISSListing.PayoutUpdate memory payoutUpdate = ISSListing.PayoutUpdate({
             payoutType: isLong ? 0 : 1,
             recipient: update.recipient,
-            required: 0,
+            required: update.amount,
             price: 0,
             xBalance: 0,
             yBalance: 0,

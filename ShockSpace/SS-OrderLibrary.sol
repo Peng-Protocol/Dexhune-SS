@@ -1,15 +1,17 @@
 // SPDX-License-Identifier: BSD-3-Clause
 pragma solidity ^0.8.1;
 
-// Version: 0.0.1 (Updated)
+// Version: 0.0.3 (Updated)
 // Changes:
-// - Renamed all MFP references to SS for consistency with suite (previous update).
-// - Updated clearOrders to only cancel orders where msg.sender == maker, using makerPendingOrdersView (new in v0.0.1).
-// - Updated clearOrders signature to include caller parameter (new in v0.0.1).
-// - Fixed clearOrders status check to status == 0, aligning with pending orders (new in v0.0.1).
-// - Fixed clearSingleOrder status check to status == 0 || 1, allowing partial fills (new in v0.0.1).
-// - Moved BuyOrderDetails and SellOrderDetails to ISSOrderLibrary interface for type safety (new in v0.0.1).
-// - Fixed clearOrders stack too deep error: Added OrderClearData struct, _processOrderClear, and _executeRefund helpers (new fix).
+// - From v0.0.2: Updated executeBuyOrder and executeSellOrder to handle tax-on-transfer tokens by using post-tax receivedPrincipal and receivedFee (new in v0.0.3).
+// - From v0.0.2: Removed reverts for receivedPrincipal < prep.principal and receivedFee < prep.fee; store receivedPrincipal in updates and use receivedFee in addFees (new in v0.0.3).
+// - From v0.0.2: Side effect: Prevents reverts for tax-on-transfer tokens; ensures actual received amounts are stored and used.
+// - From v0.0.2: Added denormalize function to handle non-18 decimal tokens.
+// - From v0.0.2: Updated clearSingleOrder to denormalize refundAmount before transact.
+// - From v0.0.2: Updated _executeRefund to denormalize pending before transact.
+// - From v0.0.2: Side effects: Corrects refund amounts for ETH and ERC20 tokens with non-18 decimals (e.g., USDC); aligns with MFP-OrderLibrary v0.0.8.
+// - No changes to prepBuyOrder, prepSellOrder.
+// - Retains fixes from v0.0.1: Updated clearOrders to use makerPendingOrdersView, fixed status checks, added OrderClearData struct.
 
 import "./imports/SafeERC20.sol";
 
@@ -110,6 +112,12 @@ library SSOrderLibrary {
         principal = normalized - fee;
     }
 
+    function denormalize(uint256 amount, uint8 decimals) internal pure returns (uint256) {
+        if (decimals == 18) return amount;
+        else if (decimals < 18) return amount / 10**(18 - decimals);
+        else return amount * 10**(decimals - 18);
+    }
+
     function _createOrderUpdate(
         uint8 updateType,
         uint256 orderId,
@@ -182,7 +190,9 @@ library SSOrderLibrary {
         address refundTo
     ) internal {
         if (pending > 0) {
-            listing.transact(proxy, token, pending, refundTo);
+            uint8 decimals = token == address(0) ? 18 : IERC20(token).decimals();
+            uint256 rawAmount = denormalize(pending, decimals);
+            listing.transact(proxy, token, rawAmount, refundTo);
         }
     }
 
@@ -243,13 +253,15 @@ library SSOrderLibrary {
         ISSLiquidity liquidity = ISSLiquidity(liquidityAddress);
 
         uint256 receivedPrincipal = _transferToken(prep.token, listingAddress, prep.principal);
-        require(receivedPrincipal >= prep.principal, "Principal transfer failed");
+        require(receivedPrincipal > 0, "No principal received");
 
         uint256 receivedFee = _transferToken(prep.token, liquidityAddress, prep.fee);
-        require(receivedFee >= prep.fee, "Fee transfer failed");
+
+        // Update principal in updates to reflect post-tax amount
+        prep.updates[0].value = receivedPrincipal;
 
         listing.update(proxy, prep.updates);
-        liquidity.addFees(proxy, true, prep.fee);
+        liquidity.addFees(proxy, true, receivedFee);
 
         ISSListing.UpdateType[] memory historicalUpdate = new ISSListing.UpdateType[](1);
         uint256 xBalance;
@@ -277,13 +289,15 @@ library SSOrderLibrary {
         ISSLiquidity liquidity = ISSLiquidity(liquidityAddress);
 
         uint256 receivedPrincipal = _transferToken(prep.token, listingAddress, prep.principal);
-        require(receivedPrincipal >= prep.principal, "Principal transfer failed");
+        require(receivedPrincipal > 0, "No principal received");
 
         uint256 receivedFee = _transferToken(prep.token, liquidityAddress, prep.fee);
-        require(receivedFee >= prep.fee, "Fee transfer failed");
+
+        // Update principal in updates to reflect post-tax amount
+        prep.updates[0].value = receivedPrincipal;
 
         listing.update(proxy, prep.updates);
-        liquidity.addFees(proxy, false, prep.fee);
+        liquidity.addFees(proxy, false, receivedFee);
 
         ISSListing.UpdateType[] memory historicalUpdate = new ISSListing.UpdateType[](1);
         uint256 xBalance;
@@ -339,7 +353,9 @@ library SSOrderLibrary {
         }
 
         if (refundAmount > 0) {
-            listing.transact(proxy, token, refundAmount, refundTo);
+            uint8 decimals = token == address(0) ? 18 : IERC20(token).decimals();
+            uint256 rawAmount = denormalize(refundAmount, decimals);
+            listing.transact(proxy, token, rawAmount, refundTo);
         }
 
         ISSListing.UpdateType[] memory updates = _createOrderUpdate(isBuy ? 1 : 2, orderId, 0, address(0), address(0), 0, 0);

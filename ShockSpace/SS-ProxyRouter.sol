@@ -1,12 +1,18 @@
 // SPDX-License-Identifier: BSD-3-Clause
 pragma solidity ^0.8.1;
 
-// Version: 0.0.3 (Updated)
+// Version: 0.0.4 (Updated)
 // Changes:
-// - Updated ISSLiquidLibrary: removed listingId from xClaimFees, yClaimFees; pass listingAddress (new in v0.0.2).
-// - Modified claimFees to pass listingAddress instead of listingId (new in v0.0.2).
-// - Added ISSLiquidSlotLibrary for deposit/withdrawal; updated deposit/withdraw to use it; included xPrepOut, yPrepOut in SSLiquidSlotLibrary (new in v0.0.3).
-// - Side effects: Aligns with SSLiquidityTemplate’s claimFees; uses SSLiquidSlotLibrary for deposits/withdrawals.
+// - From v0.0.3: Updated ISSOrderLibrary.clearOrders to include listingAgent and caller; modified clearOrders to pass msg.sender as caller (new in v0.0.4).
+// - From v0.0.3: Updated ISSOrderLibrary.prepBuyOrder/prepSellOrder to return OrderPrep, add proxy and orderId parameters (new in v0.0.4).
+// - From v0.0.3: Updated ISSOrderLibrary.executeBuyOrder/executeSellOrder to accept OrderPrep (new in v0.0.4).
+// - From v0.0.3: Updated ISSOrderLibrary.clearSingleOrder to remove return type (new in v0.0.4).
+// - From v0.0.3: Updated buyOrder/sellOrder to use new prep and execute signatures (new in v0.0.4).
+// - From v0.0.3: Side effect: Aligns with SSOrderLibrary v0.0.3’s interfaces, including tax-on-transfer support and caller-restricted clearOrders.
+// - From v0.0.2: Updated ISSLiquidLibrary: removed listingId from xClaimFees, yClaimFees; pass listingAddress.
+// - From v0.0.2: Modified claimFees to pass listingAddress instead of listingId.
+// - From v0.0.3: Added ISSLiquidSlotLibrary for deposit/withdrawal; updated deposit/withdraw to use it; included xPrepOut, yPrepOut in SSLiquidSlotLibrary.
+// - From v0.0.3: Side effects: Aligns with SSLiquidityTemplate’s claimFees; uses SSLiquidSlotLibrary for deposits/withdrawals.
 
 import "./imports/SafeERC20.sol";
 import "./imports/Ownable.sol";
@@ -45,23 +51,67 @@ interface ISSListing {
 
 interface ISSOrderLibrary {
     struct BuyOrderDetails {
-        uint256 amount;
-        uint256 price;
         address recipient;
+        uint256 amount;
+        uint256 maxPrice;
+        uint256 minPrice;
     }
 
     struct SellOrderDetails {
+        address recipient;
         uint256 amount;
-        uint256 price;
+        uint256 maxPrice;
+        uint256 minPrice;
+    }
+
+    struct OrderPrep {
+        uint256 orderId;
+        uint256 principal;
+        uint256 fee;
+        ISSListing.UpdateType[] updates;
+        address token;
         address recipient;
     }
 
-    function prepBuyOrder(address listingAddress, address listingAgent, BuyOrderDetails memory details) external payable returns (ISSListing.UpdateType memory);
-    function prepSellOrder(address listingAddress, address listingAgent, SellOrderDetails memory details) external payable returns (ISSListing.UpdateType memory);
-    function executeBuyOrder(address listingAddress, address proxy, ISSListing.UpdateType memory update) external;
-    function executeSellOrder(address listingAddress, address proxy, ISSListing.UpdateType memory update) external;
-    function clearSingleOrder(address listingAddress, address proxy, uint256 orderId, bool isBuy) external returns (ISSListing.UpdateType memory);
-    function clearOrders(address listingAddress, address proxy) external returns (ISSListing.UpdateType[] memory);
+    function prepBuyOrder(
+        address listingAddress,
+        BuyOrderDetails memory details,
+        address listingAgent,
+        address proxy,
+        uint256 orderId
+    ) external view returns (OrderPrep memory);
+    function prepSellOrder(
+        address listingAddress,
+        SellOrderDetails memory details,
+        address listingAgent,
+        address proxy,
+        uint256 orderId
+    ) external view returns (OrderPrep memory);
+    function executeBuyOrder(
+        address listingAddress,
+        OrderPrep memory prep,
+        address listingAgent,
+        address proxy
+    ) external;
+    function executeSellOrder(
+        address listingAddress,
+        OrderPrep memory prep,
+        address listingAgent,
+        address proxy
+    ) external;
+    function clearSingleOrder(
+        address listingAddress,
+        uint256 orderId,
+        bool isBuy,
+        address listingAgent,
+        address proxy
+    ) external;
+    function clearOrders(
+        address listingAddress,
+        address listingAgent,
+        address proxy,
+        address caller
+    ) external returns (ISSListing.UpdateType[] memory);
 }
 
 interface ISSSettlementLibrary {
@@ -166,16 +216,20 @@ contract SSProxyRouter is Ownable {
         require(orderLibrary != address(0), "Order library not set");
         require(ISS(listingAgent).isValidListing(listingAddress), "Invalid listing");
 
-        ISSListing.UpdateType memory update = ISSOrderLibrary(orderLibrary).prepBuyOrder{value: msg.value}(listingAddress, listingAgent, details);
-        ISSOrderLibrary(orderLibrary).executeBuyOrder(listingAddress, address(this), update);
+        ISSOrderLibrary.OrderPrep memory prep = ISSOrderLibrary(orderLibrary).prepBuyOrder{value: msg.value}(
+            listingAddress, details, listingAgent, address(this), block.number
+        );
+        ISSOrderLibrary(orderLibrary).executeBuyOrder(listingAddress, prep, listingAgent, address(this));
     }
 
     function sellOrder(address listingAddress, ISSOrderLibrary.SellOrderDetails memory details) external payable {
         require(orderLibrary != address(0), "Order library not set");
         require(ISS(listingAgent).isValidListing(listingAddress), "Invalid listing");
 
-        ISSListing.UpdateType memory update = ISSOrderLibrary(orderLibrary).prepSellOrder{value: msg.value}(listingAddress, listingAgent, details);
-        ISSOrderLibrary(orderLibrary).executeSellOrder(listingAddress, address(this), update);
+        ISSOrderLibrary.OrderPrep memory prep = ISSOrderLibrary(orderLibrary).prepSellOrder{value: msg.value}(
+            listingAddress, details, listingAgent, address(this), block.number
+        );
+        ISSOrderLibrary(orderLibrary).executeSellOrder(listingAddress, prep, listingAgent, address(this));
     }
 
     function buyLiquid(address listingAddress) external {
@@ -246,15 +300,14 @@ contract SSProxyRouter is Ownable {
         require(orderLibrary != address(0), "Order library not set");
         require(ISS(listingAgent).isValidListing(listingAddress), "Invalid listing");
 
-        ISSListing.UpdateType memory update = ISSOrderLibrary(orderLibrary).clearSingleOrder(listingAddress, address(this), orderId, isBuy);
-        ISSListing(listingAddress).update(address(this), _updateArray(update));
+        ISSOrderLibrary(orderLibrary).clearSingleOrder(listingAddress, orderId, isBuy, listingAgent, address(this));
     }
 
     function clearOrders(address listingAddress) external {
         require(orderLibrary != address(0), "Order library not set");
         require(ISS(listingAgent).isValidListing(listingAddress), "Invalid listing");
 
-        ISSListing.UpdateType[] memory updates = ISSOrderLibrary(orderLibrary).clearOrders(listingAddress, address(this));
+        ISSListing.UpdateType[] memory updates = ISSOrderLibrary(orderLibrary).clearOrders(listingAddress, listingAgent, address(this), msg.sender);
         ISSListing(listingAddress).update(address(this), updates);
     }
 
@@ -289,12 +342,6 @@ contract SSProxyRouter is Ownable {
         } else {
             ISSLiquidSlotLibrary(liquidSlotLibrary).yWithdraw(listingAddress, amount, index, listingAgent, address(this));
         }
-    }
-
-    function _updateArray(ISSListing.UpdateType memory update) private pure returns (ISSListing.UpdateType[] memory) {
-        ISSListing.UpdateType[] memory updates = new ISSListing.UpdateType[](1);
-        updates[0] = update;
-        return updates;
     }
 
     receive() external payable {}

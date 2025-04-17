@@ -1,15 +1,18 @@
 // SPDX-License-Identifier: BSD-3-Clause
 pragma solidity ^0.8.1;
 
-// Version: 0.0.11 (Updated)
+// Version: 0.0.12 (Updated)
 // Changes:
-// - Modified prepLongPayoutLiquid to cap amount at yBalance (tokenB) instead of xBalance (new in v0.0.11).
-// - Modified prepShortPayoutLiquid to cap amount at xBalance (tokenA) instead of yBalance (new in v0.0.11).
-// - Updated executeLongPayoutLiquid to use tokenB and yBalance for long payouts (new in v0.0.11).
-// - Updated executeShortPayoutLiquid to use tokenA and xBalance for short payouts (new in v0.0.11).
-// - Updated processPayoutOrder to use decimalsB for long, decimalsA for short payouts (new in v0.0.11).
-// - Side effects: Aligns long payouts with tokenB (yBalance) and short payouts with tokenA (xBalance) per requirements.
-// - Note: decimalsA and decimalsB not implemented in SS-ListingTemplate.sol; assumed available externally.
+// - From v0.0.11: Updated processPayoutOrder to set PayoutUpdate.required to amountReceived for tax-on-transfer adjustments (new in v0.0.12).
+// - From v0.0.11: Added getDecimals function to fallback to IERC20.decimals() if decimalsA/decimalsB are unavailable (new in v0.0.12).
+// - From v0.0.11: Updated processOrder and processPayoutOrder to use getDecimals (new in v0.0.12).
+// - From v0.0.11: Modified prepLongPayoutLiquid to cap amount at yBalance (tokenB) instead of xBalance.
+// - From v0.0.11: Modified prepShortPayoutLiquid to cap amount at xBalance (tokenA) instead of yBalance.
+// - From v0.0.11: Updated executeLongPayoutLiquid to use tokenB and yBalance for long payouts.
+// - From v0.0.11: Updated executeShortPayoutLiquid to use tokenA and xBalance for short payouts.
+// - From v0.0.11: Updated processPayoutOrder to use decimalsB for long, decimalsA for short payouts.
+// - Side effects: Ensures tax-on-transfer adjustments are reflected in payout state updates; improves decimals handling robustness.
+// - Note: decimalsA and decimalsB not implemented in SS-ListingTemplate.sol; fallback to IERC20.decimals() added.
 
 import "./imports/SafeERC20.sol";
 
@@ -138,6 +141,15 @@ library SSLiquidLibrary {
         return (amount * (10 ** decimals)) / 1e18;
     }
 
+    function getDecimals(address token, ISSListing listing, bool isBuy) internal view returns (uint8) {
+        if (token == address(0)) return 18;
+        try listing.decimalsA() returns (uint8 decA) {
+            return isBuy ? decA : listing.decimalsB();
+        } catch {
+            return IERC20(token).decimals();
+        }
+    }
+
     function calculateImpactPrice(uint256 xBalance, uint256 yBalance, uint256 totalAmount, bool isBuy) internal pure returns (uint256) {
         uint256 newXBalance = isBuy ? xBalance - totalAmount : xBalance + totalAmount;
         uint256 newYBalance = isBuy ? yBalance + totalAmount : yBalance - totalAmount;
@@ -157,14 +169,14 @@ library SSLiquidLibrary {
         address token,
         bool isBuy
     ) internal returns (ISSListing.UpdateType memory) {
-        uint8 decimals = isBuy ? listing.decimalsA() : listing.decimalsB();
+        uint8 decimals = getDecimals(token, listing, isBuy);
         uint256 rawAmount = denormalize(update.amount, decimals);
 
         liquidity.updateLiquidity(proxy, isBuy, update.amount);
 
-        uint256 preBalance = IERC20(token).balanceOf(update.recipient);
+        uint256 preBalance = token == address(0) ? update.recipient.balance : IERC20(token).balanceOf(update.recipient);
         listing.transact(proxy, token, rawAmount, update.recipient);
-        uint256 postBalance = IERC20(token).balanceOf(update.recipient);
+        uint256 postBalance = token == address(0) ? update.recipient.balance : IERC20(token).balanceOf(update.recipient);
 
         uint256 amountReceived = normalize(postBalance - preBalance, decimals);
         if (amountReceived < update.amount) {
@@ -187,14 +199,14 @@ library SSLiquidLibrary {
         PreparedPayoutUpdate memory update,
         bool isLong
     ) internal returns (ISSListing.UpdateType memory, ISSListing.PayoutUpdate memory) {
-        uint8 decimals = isLong ? ctx.listing.decimalsB() : ctx.listing.decimalsA();
+        uint8 decimals = getDecimals(ctx.token, ctx.listing, !isLong);
         uint256 rawAmount = denormalize(update.amount, decimals);
 
         ctx.liquidity.updateLiquidity(ctx.proxy, isLong, update.amount);
 
-        uint256 preBalance = IERC20(ctx.token).balanceOf(update.recipient);
+        uint256 preBalance = ctx.token == address(0) ? update.recipient.balance : IERC20(ctx.token).balanceOf(update.recipient);
         ctx.listing.transact(ctx.proxy, ctx.token, rawAmount, update.recipient);
-        uint256 postBalance = IERC20(ctx.token).balanceOf(update.recipient);
+        uint256 postBalance = ctx.token == address(0) ? update.recipient.balance : IERC20(ctx.token).balanceOf(update.recipient);
 
         uint256 amountReceived = normalize(postBalance - preBalance, decimals);
         if (amountReceived < update.amount) {
@@ -204,7 +216,7 @@ library SSLiquidLibrary {
         ISSListing.PayoutUpdate memory payoutUpdate = ISSListing.PayoutUpdate({
             payoutType: isLong ? 0 : 1,
             recipient: update.recipient,
-            required: 0,
+            required: update.amount,
             price: 0,
             xBalance: 0,
             yBalance: 0,
