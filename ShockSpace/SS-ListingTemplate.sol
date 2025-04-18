@@ -335,11 +335,11 @@ contract SSListingTemplate is ReentrancyGuard {
         emit BalancesUpdated(listingId, balances.xBalance, balances.yBalance);
     }
 
-    function decimalsA() external view returns (uint8) {
+    function viewDecimalsA() external view returns (uint8) {
         return decimalsA;
     }
 
-    function decimalsB() external view returns (uint8) {
+    function viewDecimalsB() external view returns (uint8) {
         return decimalsB;
     }
 
