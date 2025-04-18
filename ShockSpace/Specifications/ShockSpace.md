@@ -362,7 +362,7 @@ Both long and short positions share the same order ID scheme.
 
 - closeLongPosition 
 
-Closes the user's long position with profit or loss. Leverage amount is completely erased once payout is calculated. 
+Closes the user's long position with profit or loss. 
 
 Calculates payout as; 
 
@@ -374,7 +374,7 @@ Requires position ID.
 
  
 
-Creates a unique order that instructs the contract to pay the user from yBalance or yLiquid. This is effected using `settleOrders` or `settleLiquid`. 
+Creates a payout order in the SS listing. 
 
 Their pending settlement is in `TOKEN-1`. 
 
@@ -386,9 +386,11 @@ A Short position is similar to a long position but each Short entry is billed `T
 
 Short fees get added to the yFees balance on the Liquidity contract. 
 
+
+
 - closeShortPosition
 
-Similar to `closeLongPosition` but deals with shorts and xBalance or xLiquid. 
+Similar to `closeLongPosition` but deals with shorts.
 
 Closes the user's short position with profit or loss. 
 
