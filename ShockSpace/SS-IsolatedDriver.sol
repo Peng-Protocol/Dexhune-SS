@@ -2,7 +2,7 @@
 pragma solidity ^0.8.1;
 
 // Version 0.0.4:
-// - Removed pullMargin function (per user correction).
+// - Interfaces before contract declaration.
 // - Updated setAgent to ownerOnly.
 // - Fully implemented cancelAll* to cancel pending positions with payouts via ssUpdate.
 // - Added tax-on-transfer checks for margin transfers, storing post-transfer amounts.

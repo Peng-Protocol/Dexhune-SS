@@ -12,11 +12,36 @@ pragma solidity ^0.8.1;
 // - Added tax-on-transfer checks in addExcessMargin.
 // - Updated historical interest for long/short creation, close, cancel.
 // - Clarified status1 (pending/executable), status2 (open/closed/cancelled) usage.
-// - Local ISSListing interface, libraries as separate contracts.
+// - Local ISSListing interface, interface before contract declaration, libraries as separate contracts.
 
 import "./imports/SafeERC20.sol";
 import "./imports/Strings.sol";
 import "./imports/IERC20Metadata.sol";
+
+    // Interfaces
+    interface ISSListing {
+        function prices(uint256 listingId) external view returns (uint256);
+        function volumeBalances(uint256 listingId) external view returns (uint256 xBalance, uint256 yBalance);
+        function liquidityAddresses(uint256 listingId) external view returns (address);
+        function tokenA() external view returns (address);
+        function tokenB() external view returns (address);
+        function ssUpdate(address caller, PayoutUpdate[] calldata updates) external;
+        function decimalsA() external view returns (uint8);
+        function decimalsB() external view returns (uint8);
+    }
+
+    interface ISSUtilityLibrary {
+        function normalizeAmount(address token, uint256 amount) external view returns (uint256);
+        function parseEntryPrice(string memory entryPrice, address listingAddress) external view returns (uint256 minPrice, uint256 maxPrice);
+        function parseUint(string memory str) external pure returns (uint256);
+    }
+
+    interface ISSIsolatedDriver {
+        function positionDetails(uint256 positionId) external view returns (PositionDetails memory);
+        function pendingPositions(address listingAddress, uint8 positionType) external view returns (uint256[] memory);
+        function positionsByType(uint8 positionType) external view returns (uint256[] memory);
+        function historicalInterestHeight() external view returns (uint256);
+    }
 
 contract SSPositionLibrary {
     using SafeERC20 for IERC20;
@@ -53,30 +78,7 @@ contract SSPositionLibrary {
         uint8 payoutType; // 0: Long, 1: Short
     }
 
-    // Interfaces
-    interface ISSListing {
-        function prices(uint256 listingId) external view returns (uint256);
-        function volumeBalances(uint256 listingId) external view returns (uint256 xBalance, uint256 yBalance);
-        function liquidityAddresses(uint256 listingId) external view returns (address);
-        function tokenA() external view returns (address);
-        function tokenB() external view returns (address);
-        function ssUpdate(address caller, PayoutUpdate[] calldata updates) external;
-        function decimalsA() external view returns (uint8);
-        function decimalsB() external view returns (uint8);
-    }
 
-    interface ISSUtilityLibrary {
-        function normalizeAmount(address token, uint256 amount) external view returns (uint256);
-        function parseEntryPrice(string memory entryPrice, address listingAddress) external view returns (uint256 minPrice, uint256 maxPrice);
-        function parseUint(string memory str) external pure returns (uint256);
-    }
-
-    interface ISSIsolatedDriver {
-        function positionDetails(uint256 positionId) external view returns (PositionDetails memory);
-        function pendingPositions(address listingAddress, uint8 positionType) external view returns (uint256[] memory);
-        function positionsByType(uint8 positionType) external view returns (uint256[] memory);
-        function historicalInterestHeight() external view returns (uint256);
-    }
 
     // Enter long position
     function enterLong(

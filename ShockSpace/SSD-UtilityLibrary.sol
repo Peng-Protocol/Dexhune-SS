@@ -10,11 +10,13 @@ pragma solidity ^0.8.1;
 
 import "./imports/IERC20Metadata.sol";
 
-library SSUtilityLibrary {
     // Interface
     interface ISSListing {
         function prices(uint256 listingId) external view returns (uint256);
     }
+
+library SSUtilityLibrary {
+
 
     // Constants
     uint256 private constant DECIMAL_PRECISION = 1e18;

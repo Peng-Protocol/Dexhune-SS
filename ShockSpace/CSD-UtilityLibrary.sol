@@ -12,16 +12,17 @@ pragma solidity ^0.8.1;
 import "./imports/IERC20.sol";
 import "./imports/Strings.sol";
 
+   // Interface
+    interface ISSListing {
+        function prices(address listingAddress) external view returns (uint256);
+    }
+
 contract CSDUtilityLibrary {
     using Strings for string;
 
     // Constants
     uint256 private constant DECIMAL_PRECISION = 1e18;
 
-    // Interface
-    interface ISSListing {
-        function prices(address listingAddress) external view returns (uint256);
-    }
 
     // Normalize amount based on token decimals
     function normalizeAmount(address token, uint256 amount) external view returns (uint256) {

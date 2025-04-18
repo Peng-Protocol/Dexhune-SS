@@ -25,52 +25,7 @@ import "./imports/ReentrancyGuard.sol";
 import "./imports/Ownable.sol";
 import "./imports/Strings.sol";
 
-contract SSCrossDriver is ReentrancyGuard, Ownable {
-    using SafeERC20 for IERC20;
-
-    // Structs
-    struct PositionDetails {
-        address makerAddress;
-        uint256 minPrice;
-        uint256 maxPrice;
-        uint256 initialMargin;
-        uint256 taxedMargin;
-        uint256 excessMargin; // Reference only, not used in calculations
-        uint8 leverage;
-        uint256 leverageAmount;
-        uint256 initialLoan;
-        uint256 liquidationPrice;
-        uint256 stopLossPrice;
-        uint256 takeProfitPrice;
-        uint8 positionType; // 0: Long, 1: Short
-        bool status1; // false: pending, true: executed
-        uint8 status2; // 0: open, 1: closed, 2: cancelled
-        uint256 closePrice;
-        uint256 priceAtEntry;
-        uint256 positionId;
-        address listingAddress;
-    }
-
-    struct HistoricalInterest {
-        uint256 shortIO;
-        uint256 longIO;
-        uint256 timestamp;
-    }
-
-    struct PayoutUpdate {
-        address recipient;
-        uint256 required;
-        uint8 payoutType;
-    }
-
-    struct InterestUpdate {
-        uint256 positionId;
-        uint8 positionType; // 0: Long, 1: Short
-        uint256 marginAmount;
-        bool isAdd; // true: add, false: subtract
-    }
-
-    // Interfaces
+   // Interfaces
     interface ISSListing {
         function prices(address listingAddress) external view returns (uint256);
         function volumeBalances(address listingAddress) external view returns (uint256 xBalance, uint256 yBalance);
@@ -220,6 +175,53 @@ contract SSCrossDriver is ReentrancyGuard, Ownable {
         function parseUint(string memory str) external pure returns (uint256);
         function splitString(string memory str, string memory delimiter) external pure returns (string memory, string memory);
     }
+
+contract SSCrossDriver is ReentrancyGuard, Ownable {
+    using SafeERC20 for IERC20;
+
+    // Structs
+    struct PositionDetails {
+        address makerAddress;
+        uint256 minPrice;
+        uint256 maxPrice;
+        uint256 initialMargin;
+        uint256 taxedMargin;
+        uint256 excessMargin; // Reference only, not used in calculations
+        uint8 leverage;
+        uint256 leverageAmount;
+        uint256 initialLoan;
+        uint256 liquidationPrice;
+        uint256 stopLossPrice;
+        uint256 takeProfitPrice;
+        uint8 positionType; // 0: Long, 1: Short
+        bool status1; // false: pending, true: executed
+        uint8 status2; // 0: open, 1: closed, 2: cancelled
+        uint256 closePrice;
+        uint256 priceAtEntry;
+        uint256 positionId;
+        address listingAddress;
+    }
+
+    struct HistoricalInterest {
+        uint256 shortIO;
+        uint256 longIO;
+        uint256 timestamp;
+    }
+
+    struct PayoutUpdate {
+        address recipient;
+        uint256 required;
+        uint8 payoutType;
+    }
+
+    struct InterestUpdate {
+        uint256 positionId;
+        uint8 positionType; // 0: Long, 1: Short
+        uint256 marginAmount;
+        bool isAdd; // true: add, false: subtract
+    }
+
+ 
 
     // Mappings
     mapping(uint256 => PositionDetails) public positionDetails;

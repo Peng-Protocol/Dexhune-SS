@@ -21,6 +21,38 @@ import "./imports/ReentrancyGuard.sol";
 import "./imports/Ownable.sol";
 import "./imports/Strings.sol";
 
+    // Interfaces
+    interface ISSListing {
+        function prices(address listingAddress) external view returns (uint256);
+        function volumeBalances(address listingAddress) external view returns (uint256 xBalance, uint256 yBalance);
+        function liquidityAddresses(address listingAddress) external view returns (address);
+        function tokenA() external view returns (address);
+        function tokenB() external view returns (address);
+        function ssUpdate(address listingAddress, PayoutUpdate[] calldata updates) external;
+    }
+
+    interface ISSLiquidity {
+        function addFees(bool isX, uint256 amount) external;
+    }
+
+    interface ICSDUtilityLibrary {
+        function normalizeAmount(address token, uint256 amount) external view returns (uint256);
+        function parseEntryPrice(string memory entryPrice, address listingAddress) external view returns (uint256 minPrice, uint256 maxPrice);
+        function parseUint(string memory str) external pure returns (uint256);
+    }
+
+    interface ISSCrossDriver {
+        function positionDetails(uint256 positionId) external view returns (PositionDetails memory);
+        function pendingPositions(address listingAddress, uint8 positionType) external view returns (uint256[] memory);
+        function positionsByType(uint8 positionType) external view returns (uint256[] memory);
+        function makerTokenMargin(address maker, address token) external view returns (uint256);
+        function setPositionDetails(uint256 positionId, PositionDetails memory pos) external;
+        function updatePositionStatus(uint256 positionId, uint8 newStatus) external;
+        function updatePositionIndexes(address user, uint8 positionType, uint256 positionId) external;
+        function updatePendingPositions(address listingAddress, uint8 positionType, uint256 positionId) external;
+        function _queueInterestUpdate(uint256 positionId, uint8 positionType, uint256 marginAmount, bool isAdd) external;
+    } 
+
 contract CSDPositionLibrary {
     using SafeERC20 for IERC20;
 
@@ -54,38 +86,6 @@ contract CSDPositionLibrary {
         address recipient;
         uint256 required;
         uint8 payoutType;
-    }
-
-    // Interfaces
-    interface ISSListing {
-        function prices(address listingAddress) external view returns (uint256);
-        function volumeBalances(address listingAddress) external view returns (uint256 xBalance, uint256 yBalance);
-        function liquidityAddresses(address listingAddress) external view returns (address);
-        function tokenA() external view returns (address);
-        function tokenB() external view returns (address);
-        function ssUpdate(address listingAddress, PayoutUpdate[] calldata updates) external;
-    }
-
-    interface ISSLiquidity {
-        function addFees(bool isX, uint256 amount) external;
-    }
-
-    interface ICSDUtilityLibrary {
-        function normalizeAmount(address token, uint256 amount) external view returns (uint256);
-        function parseEntryPrice(string memory entryPrice, address listingAddress) external view returns (uint256 minPrice, uint256 maxPrice);
-        function parseUint(string memory str) external pure returns (uint256);
-    }
-
-    interface ISSCrossDriver {
-        function positionDetails(uint256 positionId) external view returns (PositionDetails memory);
-        function pendingPositions(address listingAddress, uint8 positionType) external view returns (uint256[] memory);
-        function positionsByType(uint8 positionType) external view returns (uint256[] memory);
-        function makerTokenMargin(address maker, address token) external view returns (uint256);
-        function setPositionDetails(uint256 positionId, PositionDetails memory pos) external;
-        function updatePositionStatus(uint256 positionId, uint8 newStatus) external;
-        function updatePositionIndexes(address user, uint8 positionType, uint256 positionId) external;
-        function updatePendingPositions(address listingAddress, uint8 positionType, uint256 positionId) external;
-        function _queueInterestUpdate(uint256 positionId, uint8 positionType, uint256 marginAmount, bool isAdd) external;
     }
 
     // Helper: Queue payout order
