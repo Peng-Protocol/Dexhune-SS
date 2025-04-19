@@ -12,7 +12,7 @@ LUSD can be acquired without slippage at the dispenser contract.
 
 "Freebaser" contract incentivizes calling "rebase". 
 
-$LUSD is tradable on CFAMM DEXs like Uniswap and is intended as the base asset on Dexhune-P and Shock Space.
+$LUSD is tradable on CFAMM DEXs like Uniswap. 
 
 **Deployment**
 - **[LUSD](https://polygonscan.com/address/0xF0FD398Ca09444F771eC968d9cbF073a744A544c#readContract)**
@@ -57,7 +57,7 @@ Shock Space allows cross paired listings between any (2) tokens while also provi
 Tokens on Polygon POS are directly listed, creating markets that respond to demand and arbitrage.
 
 **G. Micro-positions**
-Positions can be opened with as little as $0.1e-6 or lower!" 
+Positions can be opened with as little as $1e-6 or lower!" 
 
 **Deployment**
 
