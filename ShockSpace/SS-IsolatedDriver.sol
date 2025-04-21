@@ -1,7 +1,26 @@
 // SPDX-License-Identifier: BSD-3-Clause
 pragma solidity ^0.8.1;
 
-// Version 0.0.4:
+// Version 0.0.9:
+// - Updated to ensure compatibility with SSPositionLibrary.sol v0.0.12, which fixed stack depth errors in prepareExecution and executePositions via new helpers (getCurrentPrice, processPendingActions, processActiveActions, finalizeActions, updatePositionStatusHelper, executeClosePosition) and ExecutionContext struct.
+// - Modified ISSPositionLibrary interface to remove enterLong and enterShort, adding prepareEnterLong, prepareEnterShort, and finalizePosition to align with library v0.0.12’s helper-based workflow.
+// - Updated enterLong and enterShort to call prepareEnter* and finalizePosition from SSPositionLibrary, preserving tax-on-transfer checks and historical interest updates.
+// - Verified forceExecution compatibility with library’s optimized prepareExecution and executePositions, no signature changes needed.
+// - Preserved payable transfers and fee handling in prepareEnterLong, prepareEnterShort, and addExcessMargin with tax-on-transfer checks (from v0.0.8).
+// - Preserved historical interest functionality in updateHistoricalInterest and reduceHistoricalInterest, restricted to library calls (from v0.0.8).
+// - Preserved closeLongPosition, closeShortPosition, cancelPosition, and batch operations (closeAll*, cancelAll*) with library delegation (from v0.0.8).
+// - Preserved view functions (PositionsByTypeView, PositionsByAddressView, queryInterest, interest, interestHeight) and owner-only setters (setAgent, set*Library) (from v0.0.8).
+// - Maintained Ownable, ReentrancyGuard, and struct-first ordering (from v0.0.8).
+// - Changelog updated to reflect alignment with prior fixes (tax-on-transfer, historical interest, stack depth resolutions from v0.0.8).
+
+// Version 0.0.8:
+// - Extracted token transfers and normalization from enterLong and enterShort into prepareEnterLong and prepareEnterShort helpers to address stack too deep.
+// - Simplified enterLong and enterShort to validate inputs, call helpers, and forward to SSPositionLibrary, minimizing local variables.
+// - Fixed DeclarationError in updatePositionIndexes by retrieving PositionCore for listingAddress.
+// - Updated to use PositionCore and PositionParams structs from SSPositionLibrary.sol.
+// - Moved structs (PayoutUpdate, PositionAction, PositionCore, PositionParams, HistoricalInterest) before interfaces to avoid identifier errors.
+// - Fixed ParserError in LibrarySet event by renaming 'library' parameter to 'libraryAddress' to avoid reserved keyword.
+// - Updated enterLong and enterShort to match modified SSPositionLibrary function signatures for compatibility.
 // - Interfaces before contract declaration.
 // - Updated setAgent to ownerOnly.
 // - Fully implemented cancelAll* to cancel pending positions with payouts via ssUpdate.
@@ -19,6 +38,50 @@ import "./imports/Strings.sol";
 import "./imports/IERC20Metadata.sol";
 import "./imports/Ownable.sol";
 
+// Structs
+struct PayoutUpdate {
+    address recipient;
+    uint256 required;
+    uint8 payoutType; // 0: Long, 1: Short
+}
+
+struct PositionAction {
+    uint256 positionId;
+    uint8 actionType; // 0: Update status, 1: Close
+}
+
+struct PositionCore {
+    address makerAddress;
+    address listingAddress;
+    uint256 positionId;
+    uint8 positionType; // 0: Long, 1: Short
+    bool status1; // false: pending, true: executable
+    uint8 status2; // 0: open, 1: closed, 2: cancelled
+}
+
+struct PositionParams {
+    uint256 minPrice;
+    uint256 maxPrice;
+    uint256 initialMargin; // Pre-tax margin
+    uint256 taxedMargin; // Post-tax margin
+    uint256 excessMargin; // Additional margin
+    uint8 leverage; // 2-100x
+    uint256 leverageAmount; // Margin * leverage
+    uint256 initialLoan; // Loan at entry
+    uint256 liquidationPrice; // Price to liquidate
+    uint256 stopLossPrice; // SL trigger
+    uint256 takeProfitPrice; // TP trigger
+    uint256 closePrice; // Price at close
+    uint256 priceAtEntry; // Entry price
+}
+
+struct HistoricalInterest {
+    uint256 shortIO; // Total taxed + excess margin for shorts
+    uint256 longIO; // Total taxed + excess margin for longs
+    uint256 timestamp; // Update time
+}
+
+// Interfaces
 interface ISSListing {
     function prices(uint256 listingId) external view returns (uint256);
     function volumeBalances(uint256 listingId) external view returns (uint256 xBalance, uint256 yBalance, uint256 xVolume, uint256 yVolume);
@@ -36,7 +99,7 @@ interface ISSLiquidity {
 }
 
 interface ISSPositionLibrary {
-    function enterLong(
+    function prepareEnterLong(
         address listingAddress,
         string memory entryPrice,
         uint256 initialMargin,
@@ -44,13 +107,19 @@ interface ISSPositionLibrary {
         uint8 leverage,
         uint256 stopLossPrice,
         uint256 takeProfitPrice,
-        address token0,
+        address token,
         uint256 normalizedInitialMargin,
         uint256 normalizedExcessMargin,
         address driver
-    ) external returns (uint256 positionId);
+    ) external view returns (
+        uint256 positionId,
+        uint256 minPrice,
+        uint256 maxPrice,
+        PositionCore memory core,
+        PositionParams memory params
+    );
 
-    function enterShort(
+    function prepareEnterShort(
         address listingAddress,
         string memory entryPrice,
         uint256 initialMargin,
@@ -58,11 +127,24 @@ interface ISSPositionLibrary {
         uint8 leverage,
         uint256 stopLossPrice,
         uint256 takeProfitPrice,
-        address token1,
+        address token,
         uint256 normalizedInitialMargin,
         uint256 normalizedExcessMargin,
         address driver
-    ) external returns (uint256 positionId);
+    ) external view returns (
+        uint256 positionId,
+        uint256 minPrice,
+        uint256 maxPrice,
+        PositionCore memory core,
+        PositionParams memory params
+    );
+
+    function finalizePosition(
+        uint256 positionId,
+        PositionCore memory core,
+        PositionParams memory params,
+        address driver
+    ) external;
 
     function closeLongPosition(
         uint256 positionId,
@@ -97,7 +179,13 @@ interface ISSPositionLibrary {
         address driver
     ) external;
 
-    function forceExecution(
+    function prepareExecution(
+        address listingAddress,
+        address driver
+    ) external view returns (PositionAction[] memory actions);
+
+    function executePositions(
+        PositionAction[] memory actions,
         address listingAddress,
         address driver
     ) external returns (uint256 resultCount);
@@ -153,7 +241,8 @@ interface ISSPositionLibrary {
         address driver
     ) external returns (uint256 count);
 
-    function setPositionDetails(uint256 positionId, PositionDetails memory pos) external;
+    function setPositionCore(uint256 positionId, PositionCore memory core) external;
+    function setPositionParams(uint256 positionId, PositionParams memory params) external;
     function updatePositionIndexes(address user, uint8 positionType, uint256 positionId) external;
     function updatePositionStatus(uint256 positionId, uint8 newStatus) external;
     function updateExcessMargin(uint256 positionId, uint256 normalizedAmount) external;
@@ -173,43 +262,9 @@ interface ISSUtilityLibrary {
 contract SSIsolatedDriver is ReentrancyGuard, Ownable {
     using SafeERC20 for IERC20;
 
-    // Structs
-    struct PositionDetails {
-        address makerAddress;
-        uint256 minPrice;
-        uint256 maxPrice;
-        uint256 initialMargin; // Pre-tax margin
-        uint256 taxedMargin; // Post-tax margin
-        uint256 excessMargin; // Additional margin
-        uint8 leverage; // 2-100x
-        uint256 leverageAmount; // Margin * leverage
-        uint256 initialLoan; // Loan at entry
-        uint256 liquidationPrice; // Price to liquidate
-        uint256 stopLossPrice; // SL trigger
-        uint256 takeProfitPrice; // TP trigger
-        uint8 positionType; // 0: Long, 1: Short
-        bool status1; // false: pending, true: executable
-        uint8 status2; // 0: open, 1: closed, 2: cancelled
-        uint256 closePrice; // Price at close
-        uint256 priceAtEntry; // Entry price
-        uint256 positionId; // Unique ID
-        address listingAddress; // Listing contract
-    }
-
-    struct HistoricalInterest {
-        uint256 shortIO; // Total taxed + excess margin for shorts
-        uint256 longIO; // Total taxed + excess margin for longs
-        uint256 timestamp; // Update time
-    }
-
-    struct PayoutUpdate {
-        address recipient;
-        uint256 required;
-        uint8 payoutType; // 0: Long, 1: Short
-    }
-
     // Mappings
-    mapping(uint256 => PositionDetails) public positionDetails;
+    mapping(uint256 => PositionCore) public positionCore;
+    mapping(uint256 => PositionParams) public positionParams;
     mapping(address => uint256[]) public userPositions;
     mapping(uint8 => uint256[]) public positionsByType; // 0: Long, 1: Short
     mapping(address => mapping(uint8 => uint256[])) public pendingPositions; // listingAddress -> type -> positionIds
@@ -233,7 +288,7 @@ contract SSIsolatedDriver is ReentrancyGuard, Ownable {
     event ExcessMarginAdded(uint256 indexed positionId, uint256 amount);
     event PositionsClosed(uint256 count);
     event PositionsCancelled(uint256 count);
-    event LibrarySet(address indexed library, string libraryType);
+    event LibrarySet(address indexed libraryAddress, string libraryType);
     event HistoricalInterestUpdated(uint256 indexed index, uint256 longIO, uint256 shortIO);
 
     // Set agent (owner-only)
@@ -255,6 +310,88 @@ contract SSIsolatedDriver is ReentrancyGuard, Ownable {
         emit LibrarySet(_utilityLibrary, "UtilityLibrary");
     }
 
+    // Helper: Prepare enterLong
+    function prepareEnterLong(
+        address listingAddress,
+        uint256 initialMargin,
+        uint256 excessMargin,
+        uint8 leverage
+    ) private returns (
+        address token,
+        address liquidityAddress,
+        uint256 normalizedInitialMargin,
+        uint256 normalizedExcessMargin,
+        uint256 fee
+    ) {
+        require(listingAddress != address(0), "Invalid listing");
+        require(initialMargin > 0, "Invalid margin");
+        require(leverage >= 2 && leverage <= 100, "Invalid leverage");
+        require(utilityLibrary != address(0), "UtilityLibrary not set");
+
+        token = ISSListing(listingAddress).tokenA();
+        liquidityAddress = ISSListing(listingAddress).liquidityAddresses(uint256(uint160(listingAddress)));
+        normalizedInitialMargin = ISSUtilityLibrary(utilityLibrary).normalizeAmount(token, initialMargin);
+        normalizedExcessMargin = ISSUtilityLibrary(utilityLibrary).normalizeAmount(token, excessMargin);
+        fee = (leverage - 1) * initialMargin / 100;
+
+        // Transfer margin to listingAddress, fee to liquidityAddress with tax-on-transfer check
+        uint256 totalMargin = initialMargin + excessMargin;
+        if (token == address(0)) {
+            require(msg.value == totalMargin, "Incorrect ETH amount");
+            (bool success, ) = listingAddress.call{value: totalMargin - fee}("");
+            require(success, "ETH transfer failed");
+            ISSLiquidity(liquidityAddress).addFees(true, fee);
+        } else {
+            uint256 balanceBefore = IERC20(token).balanceOf(listingAddress);
+            IERC20(token).safeTransferFrom(msg.sender, listingAddress, totalMargin - fee);
+            uint256 balanceAfter = IERC20(token).balanceOf(listingAddress);
+            require(balanceAfter >= balanceBefore + totalMargin - fee, "Tax-on-transfer issue");
+            IERC20(token).safeTransferFrom(msg.sender, liquidityAddress, fee);
+            ISSLiquidity(liquidityAddress).addFees(true, fee);
+        }
+    }
+
+    // Helper: Prepare enterShort
+    function prepareEnterShort(
+        address listingAddress,
+        uint256 initialMargin,
+        uint256 excessMargin,
+        uint8 leverage
+    ) private returns (
+        address token,
+        address liquidityAddress,
+        uint256 normalizedInitialMargin,
+        uint256 normalizedExcessMargin,
+        uint256 fee
+    ) {
+        require(listingAddress != address(0), "Invalid listing");
+        require(initialMargin > 0, "Invalid margin");
+        require(leverage >= 2 && leverage <= 100, "Invalid leverage");
+        require(utilityLibrary != address(0), "UtilityLibrary not set");
+
+        token = ISSListing(listingAddress).tokenB();
+        liquidityAddress = ISSListing(listingAddress).liquidityAddresses(uint256(uint160(listingAddress)));
+        normalizedInitialMargin = ISSUtilityLibrary(utilityLibrary).normalizeAmount(token, initialMargin);
+        normalizedExcessMargin = ISSUtilityLibrary(utilityLibrary).normalizeAmount(token, excessMargin);
+        fee = (leverage - 1) * initialMargin / 100;
+
+        // Transfer margin to listingAddress, fee to liquidityAddress with tax-on-transfer check
+        uint256 totalMargin = initialMargin + excessMargin;
+        if (token == address(0)) {
+            require(msg.value == totalMargin, "Incorrect ETH amount");
+            (bool success, ) = listingAddress.call{value: totalMargin - fee}("");
+            require(success, "ETH transfer failed");
+            ISSLiquidity(liquidityAddress).addFees(false, fee);
+        } else {
+            uint256 balanceBefore = IERC20(token).balanceOf(listingAddress);
+            IERC20(token).safeTransferFrom(msg.sender, listingAddress, totalMargin - fee);
+            uint256 balanceAfter = IERC20(token).balanceOf(listingAddress);
+            require(balanceAfter >= balanceBefore + totalMargin - fee, "Tax-on-transfer issue");
+            IERC20(token).safeTransferFrom(msg.sender, liquidityAddress, fee);
+            ISSLiquidity(liquidityAddress).addFees(false, fee);
+        }
+    }
+
     // Enter long position
     function enterLong(
         address listingAddress,
@@ -265,39 +402,18 @@ contract SSIsolatedDriver is ReentrancyGuard, Ownable {
         uint256 stopLossPrice,
         uint256 takeProfitPrice
     ) external payable nonReentrant {
-        require(listingAddress != address(0), "Invalid listing");
-        require(initialMargin > 0, "Invalid margin");
-        require(leverage >= 2 && leverage <= 100, "Invalid leverage");
         require(positionLibrary != address(0), "PositionLibrary not set");
-        require(utilityLibrary != address(0), "UtilityLibrary not set");
 
-        address token0 = ISSListing(listingAddress).tokenA();
-        address liquidityAddress = ISSListing(listingAddress).liquidityAddresses(uint256(uint160(listingAddress)));
-        uint256 normalizedInitialMargin = ISSUtilityLibrary(utilityLibrary).normalizeAmount(token0, initialMargin);
-        uint256 normalizedExcessMargin = ISSUtilityLibrary(utilityLibrary).normalizeAmount(token0, excessMargin);
-        uint256 fee = (leverage - 1) * initialMargin / 100;
+        // Prepare transfer and normalization
+        (address token, , uint256 normalizedInitialMargin, uint256 normalizedExcessMargin, ) = prepareEnterLong(
+            listingAddress,
+            initialMargin,
+            excessMargin,
+            leverage
+        );
 
-        // Transfer margin to listingAddress, fee to liquidityAddress with tax-on-transfer check
-        uint256 totalMargin = initialMargin + excessMargin;
-        if (token0 == address(0)) {
-            require(msg.value == totalMargin, "Incorrect ETH amount");
-            (bool success, ) = listingAddress.call{value: totalMargin - fee}("");
-            require(success, "ETH transfer failed");
-            ISSLiquidity(liquidityAddress).addFees(true, fee);
-        } else {
-            uint256 balanceBefore = IERC20(token0).balanceOf(listingAddress);
-            IERC20(token0).safeTransferFrom(msg.sender, listingAddress, totalMargin - fee);
-            uint256 balanceAfter = IERC20(token0).balanceOf(listingAddress);
-            require(balanceAfter >= balanceBefore + totalMargin - fee, "Tax-on-transfer issue");
-            IERC20(token0).safeTransferFrom(msg.sender, liquidityAddress, fee);
-            ISSLiquidity(liquidityAddress).addFees(true, fee);
-        }
-
-        // Store post-transfer amounts
-        positionDetails[positionCount].initialMargin = ISSUtilityLibrary(utilityLibrary).normalizeAmount(token0, initialMargin);
-        positionDetails[positionCount].excessMargin = ISSUtilityLibrary(utilityLibrary).normalizeAmount(token0, excessMargin);
-
-        uint256 positionId = ISSPositionLibrary(positionLibrary).enterLong(
+        // Call position library to prepare position
+        (uint256 positionId, , , PositionCore memory core, PositionParams memory params) = ISSPositionLibrary(positionLibrary).prepareEnterLong(
             listingAddress,
             entryPrice,
             initialMargin,
@@ -305,11 +421,22 @@ contract SSIsolatedDriver is ReentrancyGuard, Ownable {
             leverage,
             stopLossPrice,
             takeProfitPrice,
-            token0,
+            token,
             normalizedInitialMargin,
             normalizedExcessMargin,
             address(this)
         );
+
+        // Store position
+        positionCore[positionId] = core;
+        positionParams[positionId] = params;
+        userPositions[msg.sender].push(positionId);
+        positionsByType[0].push(positionId);
+        pendingPositions[listingAddress][0].push(positionId);
+        positionCount++;
+
+        // Finalize position
+        ISSPositionLibrary(positionLibrary).finalizePosition(positionId, core, params, address(this));
 
         emit PositionCreated(positionId, true);
     }
@@ -324,39 +451,18 @@ contract SSIsolatedDriver is ReentrancyGuard, Ownable {
         uint256 stopLossPrice,
         uint256 takeProfitPrice
     ) external payable nonReentrant {
-        require(listingAddress != address(0), "Invalid listing");
-        require(initialMargin > 0, "Invalid margin");
-        require(leverage >= 2 && leverage <= 100, "Invalid leverage");
         require(positionLibrary != address(0), "PositionLibrary not set");
-        require(utilityLibrary != address(0), "UtilityLibrary not set");
 
-        address token1 = ISSListing(listingAddress).tokenB();
-        address liquidityAddress = ISSListing(listingAddress).liquidityAddresses(uint256(uint160(listingAddress)));
-        uint256 normalizedInitialMargin = ISSUtilityLibrary(utilityLibrary).normalizeAmount(token1, initialMargin);
-        uint256 normalizedExcessMargin = ISSUtilityLibrary(utilityLibrary).normalizeAmount(token1, excessMargin);
-        uint256 fee = (leverage - 1) * initialMargin / 100;
+        // Prepare transfer and normalization
+        (address token, , uint256 normalizedInitialMargin, uint256 normalizedExcessMargin, ) = prepareEnterShort(
+            listingAddress,
+            initialMargin,
+            excessMargin,
+            leverage
+        );
 
-        // Transfer margin to listingAddress, fee to liquidityAddress with tax-on-transfer check
-        uint256 totalMargin = initialMargin + excessMargin;
-        if (token1 == address(0)) {
-            require(msg.value == totalMargin, "Incorrect ETH amount");
-            (bool success, ) = listingAddress.call{value: totalMargin - fee}("");
-            require(success, "ETH transfer failed");
-            ISSLiquidity(liquidityAddress).addFees(false, fee);
-        } else {
-            uint256 balanceBefore = IERC20(token1).balanceOf(listingAddress);
-            IERC20(token1).safeTransferFrom(msg.sender, listingAddress, totalMargin - fee);
-            uint256 balanceAfter = IERC20(token1).balanceOf(listingAddress);
-            require(balanceAfter >= balanceBefore + totalMargin - fee, "Tax-on-transfer issue");
-            IERC20(token1).safeTransferFrom(msg.sender, liquidityAddress, fee);
-            ISSLiquidity(liquidityAddress).addFees(false, fee);
-        }
-
-        // Store post-transfer amounts
-        positionDetails[positionCount].initialMargin = ISSUtilityLibrary(utilityLibrary).normalizeAmount(token1, initialMargin);
-        positionDetails[positionCount].excessMargin = ISSUtilityLibrary(utilityLibrary).normalizeAmount(token1, excessMargin);
-
-        uint256 positionId = ISSPositionLibrary(positionLibrary).enterShort(
+        // Call position library to prepare position
+        (uint256 positionId, , , PositionCore memory core, PositionParams memory params) = ISSPositionLibrary(positionLibrary).prepareEnterShort(
             listingAddress,
             entryPrice,
             initialMargin,
@@ -364,11 +470,22 @@ contract SSIsolatedDriver is ReentrancyGuard, Ownable {
             leverage,
             stopLossPrice,
             takeProfitPrice,
-            token1,
+            token,
             normalizedInitialMargin,
             normalizedExcessMargin,
             address(this)
         );
+
+        // Store position
+        positionCore[positionId] = core;
+        positionParams[positionId] = params;
+        userPositions[msg.sender].push(positionId);
+        positionsByType[1].push(positionId);
+        pendingPositions[listingAddress][1].push(positionId);
+        positionCount++;
+
+        // Finalize position
+        ISSPositionLibrary(positionLibrary).finalizePosition(positionId, core, params, address(this));
 
         emit PositionCreated(positionId, false);
     }
@@ -376,19 +493,20 @@ contract SSIsolatedDriver is ReentrancyGuard, Ownable {
     // Close long position
     function closeLongPosition(uint256 positionId) external nonReentrant {
         require(positionLibrary != address(0), "PositionLibrary not set");
-        PositionDetails storage pos = positionDetails[positionId];
-        require(pos.positionType == 0, "Not a long position");
-        require(pos.status2 == 0, "Position not open"); // Only open positions can be closed
-        require(pos.makerAddress == msg.sender, "Not position maker");
+        PositionCore storage core = positionCore[positionId];
+        PositionParams storage params = positionParams[positionId];
+        require(core.positionType == 0, "Not a long position");
+        require(core.status2 == 0, "Position not open");
+        require(core.makerAddress == msg.sender, "Not position maker");
 
         uint256 payout = ISSPositionLibrary(positionLibrary).closeLongPosition(
             positionId,
-            pos.listingAddress,
-            pos.makerAddress,
-            pos.taxedMargin,
-            pos.excessMargin,
-            pos.leverageAmount,
-            pos.initialLoan,
+            core.listingAddress,
+            core.makerAddress,
+            params.taxedMargin,
+            params.excessMargin,
+            params.leverageAmount,
+            params.initialLoan,
             address(this)
         );
 
@@ -398,20 +516,21 @@ contract SSIsolatedDriver is ReentrancyGuard, Ownable {
     // Close short position
     function closeShortPosition(uint256 positionId) external nonReentrant {
         require(positionLibrary != address(0), "PositionLibrary not set");
-        PositionDetails storage pos = positionDetails[positionId];
-        require(pos.positionType == 1, "Not a short position");
-        require(pos.status2 == 0, "Position not open"); // Only open positions can be closed
-        require(pos.makerAddress == msg.sender, "Not position maker");
+        PositionCore storage core = positionCore[positionId];
+        PositionParams storage params = positionParams[positionId];
+        require(core.positionType == 1, "Not a short position");
+        require(core.status2 == 0, "Position not open");
+        require(core.makerAddress == msg.sender, "Not position maker");
 
         uint256 payout = ISSPositionLibrary(positionLibrary).closeShortPosition(
             positionId,
-            pos.listingAddress,
-            pos.makerAddress,
-            pos.minPrice,
-            pos.initialMargin,
-            pos.leverage,
-            pos.taxedMargin,
-            pos.excessMargin,
+            core.listingAddress,
+            core.makerAddress,
+            params.minPrice,
+            params.initialMargin,
+            params.leverage,
+            params.taxedMargin,
+            params.excessMargin,
             address(this)
         );
 
@@ -421,18 +540,19 @@ contract SSIsolatedDriver is ReentrancyGuard, Ownable {
     // Cancel position
     function cancelPosition(uint256 positionId) external nonReentrant {
         require(positionLibrary != address(0), "PositionLibrary not set");
-        PositionDetails storage pos = positionDetails[positionId];
-        require(pos.status1 == false, "Position executable"); // Only pending positions can be cancelled
-        require(pos.status2 == 0, "Position not open"); // Only open positions can be cancelled
-        require(pos.makerAddress == msg.sender, "Not position maker");
+        PositionCore storage core = positionCore[positionId];
+        PositionParams storage params = positionParams[positionId];
+        require(core.status1 == false, "Position executable");
+        require(core.status2 == 0, "Position not open");
+        require(core.makerAddress == msg.sender, "Not position maker");
 
         ISSPositionLibrary(positionLibrary).cancelPosition(
             positionId,
-            pos.listingAddress,
-            pos.makerAddress,
-            pos.taxedMargin,
-            pos.excessMargin,
-            pos.positionType,
+            core.listingAddress,
+            core.makerAddress,
+            params.taxedMargin,
+            params.excessMargin,
+            core.positionType,
             address(this)
         );
 
@@ -442,7 +562,12 @@ contract SSIsolatedDriver is ReentrancyGuard, Ownable {
     // Force execution
     function forceExecution(address listingAddress) external nonReentrant {
         require(positionLibrary != address(0), "PositionLibrary not set");
-        uint256 resultCount = ISSPositionLibrary(positionLibrary).forceExecution(
+        PositionAction[] memory actions = ISSPositionLibrary(positionLibrary).prepareExecution(
+            listingAddress,
+            address(this)
+        );
+        uint256 resultCount = ISSPositionLibrary(positionLibrary).executePositions(
+            actions,
             listingAddress,
             address(this)
         );
@@ -455,18 +580,20 @@ contract SSIsolatedDriver is ReentrancyGuard, Ownable {
         require(utilityLibrary != address(0), "UtilityLibrary not set");
         require(amount > 0, "Invalid amount");
 
-        PositionDetails storage pos = positionDetails[positionId];
-        require(pos.status2 == 0, "Position not open"); // Only open positions can add margin
+        PositionCore storage core = positionCore[positionId];
+        PositionParams storage params = positionParams[positionId];
+        require(core.status2 == 0, "Position not open");
 
-        address token = pos.positionType == 0 ? ISSListing(pos.listingAddress).tokenA() : ISSListing(pos.listingAddress).tokenB();
-        address listingAddress = pos.listingAddress;
-        uint256 normalizedAmount = ISSUtilityLibrary(utilityLibrary).normalizeAmount(token, amount);
+        address token = core.positionType == 0 ? ISSListing(core.listingAddress).tokenA() : ISSListing(core.listingAddress).tokenB();
+        address listingAddress = core.listingAddress;
+        uint256 normalizedAmount;
 
         // Transfer to listingAddress with tax-on-transfer check
         if (token == address(0)) {
             require(msg.value == amount, "Incorrect ETH amount");
             (bool success, ) = listingAddress.call{value: amount}("");
             require(success, "ETH transfer failed");
+            normalizedAmount = ISSUtilityLibrary(utilityLibrary).normalizeAmount(token, amount);
         } else {
             uint256 balanceBefore = IERC20(token).balanceOf(listingAddress);
             IERC20(token).safeTransferFrom(msg.sender, listingAddress, amount);
@@ -475,15 +602,12 @@ contract SSIsolatedDriver is ReentrancyGuard, Ownable {
             normalizedAmount = ISSUtilityLibrary(utilityLibrary).normalizeAmount(token, balanceAfter - balanceBefore);
         }
 
-        // Store post-transfer amount
-        pos.excessMargin += normalizedAmount;
-
         ISSPositionLibrary(positionLibrary).addExcessMargin(
             positionId,
             amount,
             token,
-            pos.listingAddress,
-            pos.positionType,
+            core.listingAddress,
+            core.positionType,
             normalizedAmount,
             address(this)
         );
@@ -494,18 +618,19 @@ contract SSIsolatedDriver is ReentrancyGuard, Ownable {
     // Update stop loss
     function updateSL(uint256 positionId, uint256 newStopLossPrice) external nonReentrant {
         require(positionLibrary != address(0), "PositionLibrary not set");
-        PositionDetails storage pos = positionDetails[positionId];
-        require(pos.makerAddress == msg.sender, "Not position maker");
-        require(pos.status2 == 0, "Position not open"); // Only open positions can update SL
+        PositionCore storage core = positionCore[positionId];
+        PositionParams storage params = positionParams[positionId];
+        require(core.makerAddress == msg.sender, "Not position maker");
+        require(core.status2 == 0, "Position not open");
 
         ISSPositionLibrary(positionLibrary).updateSL(
             positionId,
             newStopLossPrice,
-            pos.listingAddress,
-            pos.positionType,
-            pos.makerAddress,
-            pos.minPrice,
-            pos.maxPrice,
+            core.listingAddress,
+            core.positionType,
+            core.makerAddress,
+            params.minPrice,
+            params.maxPrice,
             address(this)
         );
 
@@ -515,17 +640,18 @@ contract SSIsolatedDriver is ReentrancyGuard, Ownable {
     // Update take profit
     function updateTP(uint256 positionId, uint256 newTakeProfitPrice) external nonReentrant {
         require(positionLibrary != address(0), "PositionLibrary not set");
-        PositionDetails storage pos = positionDetails[positionId];
-        require(pos.makerAddress == msg.sender, "Not position maker");
-        require(pos.status2 == 0, "Position not open"); // Only open positions can update TP
+        PositionCore storage core = positionCore[positionId];
+        PositionParams storage params = positionParams[positionId];
+        require(core.makerAddress == msg.sender, "Not position maker");
+        require(core.status2 == 0, "Position not open");
 
         ISSPositionLibrary(positionLibrary).updateTP(
             positionId,
             newTakeProfitPrice,
-            pos.positionType,
-            pos.makerAddress,
-            pos.minPrice,
-            pos.maxPrice,
+            core.positionType,
+            core.makerAddress,
+            params.minPrice,
+            params.maxPrice,
             address(this)
         );
 
@@ -561,37 +687,45 @@ contract SSIsolatedDriver is ReentrancyGuard, Ownable {
     }
 
     // Storage update functions
-    function setPositionDetails(uint256 positionId, PositionDetails memory pos) external {
+    function setPositionCore(uint256 positionId, PositionCore memory core) external {
         require(msg.sender == positionLibrary, "Library only");
-        positionDetails[positionId] = pos;
+        positionCore[positionId] = core;
         positionCount++;
+    }
+
+    function setPositionParams(uint256 positionId, PositionParams memory params) external {
+        require(msg.sender == positionLibrary, "Library only");
+        positionParams[positionId] = params;
     }
 
     function updatePositionIndexes(address user, uint8 positionType, uint256 positionId) external {
         require(msg.sender == positionLibrary, "Library only");
+        PositionCore storage core = positionCore[positionId];
         userPositions[user].push(positionId);
-        positionsByType[positionType].push(positionId);
-        pendingPositions[pos.listingAddress][positionType].push(positionId);
+        if (core.status1 == true) {
+            positionsByType[positionType].push(positionId);
+        }
+        pendingPositions[core.listingAddress][positionType].push(positionId);
     }
 
     function updatePositionStatus(uint256 positionId, uint8 newStatus) external {
         require(msg.sender == positionLibrary, "Library only");
-        positionDetails[positionId].status2 = newStatus;
+        positionCore[positionId].status2 = newStatus;
     }
 
     function updateExcessMargin(uint256 positionId, uint256 normalizedAmount) external {
         require(msg.sender == positionLibrary, "Library only");
-        positionDetails[positionId].excessMargin += normalizedAmount;
+        positionParams[positionId].excessMargin += normalizedAmount;
     }
 
     function updatePositionSL(uint256 positionId, uint256 newStopLossPrice) external {
         require(msg.sender == positionLibrary, "Library only");
-        positionDetails[positionId].stopLossPrice = newStopLossPrice;
+        positionParams[positionId].stopLossPrice = newStopLossPrice;
     }
 
     function updatePositionTP(uint256 positionId, uint256 newTakeProfitPrice) external {
         require(msg.sender == positionLibrary, "Library only");
-        positionDetails[positionId].takeProfitPrice = newTakeProfitPrice;
+        positionParams[positionId].takeProfitPrice = newTakeProfitPrice;
     }
 
     function updateHistoricalInterest(uint256 index, uint256 longIO, uint256 shortIO) external {
@@ -637,16 +771,16 @@ contract SSIsolatedDriver is ReentrancyGuard, Ownable {
         uint256 end = start + maxIteration > positions.length ? positions.length : start + maxIteration;
         uint256[] memory result = new uint256[](end - start);
         for (uint256 i = start; i < end; i++) {
-            if (positionDetails[positions[i]].status2 == 0) {
+            if (positionCore[positions[i]].status2 == 0) {
                 result[i - start] = positions[i];
             }
         }
         return result;
     }
 
-    function PositionByIndex(uint256 positionId) external view returns (PositionDetails memory) {
+    function PositionByIndex(uint256 positionId) external view returns (PositionCore memory, PositionParams memory) {
         require(positionId < positionCount, "Invalid position ID");
-        return positionDetails[positionId];
+        return (positionCore[positionId], positionParams[positionId]);
     }
 
     function queryInterest(uint256 step, uint16 maxIteration) external view returns (HistoricalInterest[] memory) {
