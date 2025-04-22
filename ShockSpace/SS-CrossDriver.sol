@@ -1,19 +1,21 @@
 // SPDX-License-Identifier: BSD-3-Clause
 pragma solidity ^0.8.1;
 
-// Version 0.0.5:
-// - Mitigated stack depth issues in callPositionLibrary by splitting into prepareLibraryCall and executeLibraryCall, batching variables into multiple calls.
-// - Updated ICSDPositionLibrary to include prepEnterLong/prepEnterShort (view, returns EnterPrepData) and executeEnterLong/executeEnterShort (processes margins, returns positionId).
-// - Added LibraryCallData struct (listingAddress, entryPrice, leverage, stopLossPrice, takeProfitPrice) for batched library inputs.
-// - Replaced callPositionLibrary with:
-//   - prepareLibraryCall: Initializes LibraryCallData, calls prepEnterLong/prepEnterShort.
-//   - executeLibraryCall: Calls executeEnterLong/executeEnterShort, returns positionId.
-//   - updateDriverState: Incrementally updates userPositions, positionsByType, pendingPositions.
-// - Updated enterLong/enterShort to orchestrate helpers, deferring to library for formulas and updating state incrementally.
-// - Renamed transferAndTrackMargin to transferMargins for clarity.
-// - Preserved functionality: tax-on-transfer checks, margin tracking, PositionCreated event.
-// - Ensured compatibility with CSD-PositionLibrary.sol v0.0.8 (pending update) and CSD-UtilityLibrary.sol v0.0.2.
-// - Checked for compiler errors: stack too deep (mitigated via batched calls, structs), interface mismatch (updated ICSDPositionLibrary), undefined identifiers (ordered structs/helpers).
+// Version 0.0.6:
+// - Updated for compatibility with CSD-PositionLibrary.sol v0.0.7.
+// - Replaced closeLongPosition/closeShortPosition in ICSDPositionLibrary with prepCloseLong/prepCloseShort (view, returns ClosePrepData) and executeCloseLong/executeCloseShort.
+// - Split closeLongPosition/closeShortPosition into:
+//   - prepareClose$: Calls prepCloseLong/prepCloseShort to compute ClosePrepData.
+//   - executeClose$: Calls executeCloseLong/executeCloseShort with ClosePrepData, updates margins.
+// - Removed historicalInterest mapping and historicalInterestHeight; delegated to library.
+// - Removed updateHistoricalInterest/reduceHistoricalInterest functions; library manages internally.
+// - Removed HistoricalInterestUpdated event.
+// - Delegated interest queries (queryInterest, interest, interestHeight) to library.
+// - Optimized stack usage in close$Position (~5 variables: core, params, closePrep, payout, token).
+// - Fixed DeclarationError: Added BatchPrepData struct to resolve undefined identifier in ICSDPositionLibrary for executeCloseAllShort/executeCancelAllShort/executeCloseAllLongs/executeCancelAllLong.
+// - Preserved functionality: enter$, close$, cancel$, forceExecution, batch operations, margin tracking, PositionCreated event.
+// - Ensured compatibility with CSD-PositionLibrary.sol v0.0.7 and CSD-UtilityLibrary.sol v0.0.2.
+// - Checked for compiler errors: stack too deep (mitigated via split calls, struct reuse), interface mismatch (aligned with v0.0.7), undefined identifiers (added BatchPrepData).
 
 import "./imports/SafeERC20.sol";
 import "./imports/IERC20.sol";
@@ -92,12 +94,23 @@ struct EnterPrepData {
     uint256 maxPrice;
 }
 
+struct ClosePrepData {
+    uint256 payout;
+    uint256 marginToReturn;
+    uint256 currentPrice;
+}
+
 struct LibraryCallData {
     address listingAddress;
     string entryPrice;
     uint8 leverage;
     uint256 stopLossPrice;
     uint256 takeProfitPrice;
+}
+
+struct BatchPrepData {
+    uint256[] positionIds;
+    uint256[] totalMargins;
 }
 
 // Interfaces
@@ -162,7 +175,7 @@ interface ICSDPositionLibrary {
         address driver
     ) external returns (uint256 positionId);
 
-    function closeLongPosition(
+    function prepCloseLong(
         uint256 positionId,
         address listingAddress,
         address makerAddress,
@@ -172,9 +185,9 @@ interface ICSDPositionLibrary {
         uint256 initialLoan,
         uint256 totalMargin,
         address driver
-    ) external returns (uint256 payout);
+    ) external view returns (ClosePrepData memory prep);
 
-    function closeShortPosition(
+    function prepCloseShort(
         uint256 positionId,
         address listingAddress,
         address makerAddress,
@@ -184,6 +197,22 @@ interface ICSDPositionLibrary {
         uint256 taxedMargin,
         uint256 excessMargin,
         uint256 totalMargin,
+        address driver
+    ) external view returns (ClosePrepData memory prep);
+
+    function executeCloseLong(
+        uint256 positionId,
+        address listingAddress,
+        address makerAddress,
+        ClosePrepData memory prep,
+        address driver
+    ) external returns (uint256 payout);
+
+    function executeCloseShort(
+        uint256 positionId,
+        address listingAddress,
+        address makerAddress,
+        ClosePrepData memory prep,
         address driver
     ) external returns (uint256 payout);
 
@@ -237,30 +266,16 @@ interface ICSDPositionLibrary {
         address driver
     ) external;
 
-    function closeAllShort(
-        address user,
-        address driver
-    ) external returns (uint256 count);
-
-    function cancelAllShort(
-        address user,
-        address driver
-    ) external returns (uint256 count);
-
-    function closeAllLongs(
-        address user,
-        address driver
-    ) external returns (uint256 count);
-
-    function cancelAllLong(
-        address user,
-        address driver
-    ) external returns (uint256 count);
+    function executeCloseAllShort(address user, BatchPrepData memory prep, address driver) external returns (uint256 count);
+    function executeCancelAllShort(address user, BatchPrepData memory prep, address driver) external returns (uint256 count);
+    function executeCloseAllLongs(address user, BatchPrepData memory prep, address driver) external returns (uint256 count);
+    function executeCancelAllLong(address user, BatchPrepData memory prep, address driver) external returns (uint256 count);
 
     function setPositionCore(uint256 positionId, PositionCore memory core) external;
     function setPositionParams(uint256 positionId, PositionParams memory params) external;
-    function updateHistoricalInterest(uint256 index, uint256 longIO, uint256 shortIO) external;
-    function reduceHistoricalInterest(uint256 index, uint256 longIO, uint256 shortIO) external;
+    function interestHeight() external view returns (uint256);
+    function latestInterest() external view returns (HistoricalInterest memory);
+    function queryInterest(uint256 step, uint16 maxIteration) external view returns (HistoricalInterest[] memory);
 }
 
 interface ICSDUtilityLibrary {
@@ -281,9 +296,7 @@ contract SSCrossDriver is ReentrancyGuard, Ownable {
     mapping(address => mapping(uint8 => uint256[])) public pendingPositions; // listingAddress -> type -> positionIds
     mapping(address => mapping(address => uint256)) public makerTokenMargin; // maker => token => totalMargin
     mapping(address => address[]) public makerMarginTokens; // maker => token[] (tracks non-zero margins)
-    mapping(uint256 => HistoricalInterest) public historicalInterest;
     uint256 public positionCount;
-    uint256 public historicalInterestHeight;
     address public agent;
 
     // Library addresses
@@ -305,7 +318,6 @@ contract SSCrossDriver is ReentrancyGuard, Ownable {
     event PositionsClosed(uint256 count);
     event PositionsCancelled(uint256 count);
     event LibrarySet(address indexed libraryAddress, string libraryType);
-    event HistoricalInterestUpdated(uint256 indexed index, uint256 longIO, uint256 shortIO);
 
     // Modifiers
     modifier onlyAgent() {
@@ -372,28 +384,6 @@ contract SSCrossDriver is ReentrancyGuard, Ownable {
     function updatePendingPositions(address listingAddress, uint8 positionType, uint256 positionId) external {
         require(msg.sender == positionLibrary, "Only position library");
         pendingPositions[listingAddress][positionType].push(positionId);
-    }
-
-    // Update historical interest
-    function updateHistoricalInterest(uint256 index, uint256 longIO, uint256 shortIO) external {
-        require(msg.sender == positionLibrary, "Only position library");
-        HistoricalInterest storage interest = historicalInterest[index];
-        interest.longIO += longIO;
-        interest.shortIO += shortIO;
-        interest.timestamp = block.timestamp;
-        historicalInterestHeight = index + 1;
-        emit HistoricalInterestUpdated(index, interest.longIO, interest.shortIO);
-    }
-
-    // Reduce historical interest
-    function reduceHistoricalInterest(uint256 index, uint256 longIO, uint256 shortIO) external {
-        require(msg.sender == positionLibrary, "Only position library");
-        HistoricalInterest storage interest = historicalInterest[index];
-        interest.longIO = interest.longIO > longIO ? interest.longIO - longIO : 0;
-        interest.shortIO = interest.shortIO > shortIO ? interest.shortIO - shortIO : 0;
-        interest.timestamp = block.timestamp;
-        historicalInterestHeight = index + 1;
-        emit HistoricalInterestUpdated(index, interest.longIO, interest.shortIO);
     }
 
     // Helper: Queue payout order
@@ -573,7 +563,6 @@ contract SSCrossDriver is ReentrancyGuard, Ownable {
         uint8 positionType,
         address listingAddress
     ) internal {
-        // Incremental updates to mappings/arrays
         userPositions[maker].push(positionId);
         positionsByType[positionType].push(positionId);
         pendingPositions[listingAddress][positionType].push(positionId);
@@ -639,17 +628,16 @@ contract SSCrossDriver is ReentrancyGuard, Ownable {
         emit PositionCreated(positionId, false);
     }
 
-    // Close long position
-    function closeLongPosition(uint256 positionId) external nonReentrant {
-        require(positionLibrary != address(0), "PositionLibrary not set");
+    // Prepare close long
+    function prepareCloseLong(uint256 positionId) internal view returns (ClosePrepData memory closePrep, address token) {
         PositionCore storage core = positionCore[positionId];
         PositionParams storage params = positionParams[positionId];
         require(core.positionType == 0, "Not a long position");
         require(core.status2 == 0, "Position not open");
         require(core.makerAddress == msg.sender, "Not position maker");
 
-        address token = ISSListing(core.listingAddress).tokenA();
-        uint256 payout = ICSDPositionLibrary(positionLibrary).closeLongPosition(
+        token = ISSListing(core.listingAddress).tokenA();
+        closePrep = ICSDPositionLibrary(positionLibrary).prepCloseLong(
             positionId,
             core.listingAddress,
             core.makerAddress,
@@ -660,27 +648,45 @@ contract SSCrossDriver is ReentrancyGuard, Ownable {
             makerTokenMargin[core.makerAddress][token],
             address(this)
         );
+    }
+
+    // Execute close long
+    function executeCloseLong(uint256 positionId, ClosePrepData memory closePrep, address token) internal returns (uint256 payout) {
+        PositionCore storage core = positionCore[positionId];
+        PositionParams storage params = positionParams[positionId];
+        payout = ICSDPositionLibrary(positionLibrary).executeCloseLong(
+            positionId,
+            core.listingAddress,
+            core.makerAddress,
+            closePrep,
+            address(this)
+        );
 
         uint256 marginToDeduct = params.taxedMargin + (params.excessMargin > makerTokenMargin[core.makerAddress][token] ? makerTokenMargin[core.makerAddress][token] : params.excessMargin);
         makerTokenMargin[core.makerAddress][token] -= marginToDeduct;
         if (makerTokenMargin[core.makerAddress][token] == 0) {
             _removeToken(core.makerAddress, token);
         }
+    }
 
+    // Close long position
+    function closeLongPosition(uint256 positionId) external nonReentrant {
+        require(positionLibrary != address(0), "PositionLibrary not set");
+        (ClosePrepData memory closePrep, address token) = prepareCloseLong(positionId);
+        uint256 payout = executeCloseLong(positionId, closePrep, token);
         emit PositionClosed(positionId, payout);
     }
 
-    // Close short position
-    function closeShortPosition(uint256 positionId) external nonReentrant {
-        require(positionLibrary != address(0), "PositionLibrary not set");
+    // Prepare close short
+    function prepareCloseShort(uint256 positionId) internal view returns (ClosePrepData memory closePrep, address token) {
         PositionCore storage core = positionCore[positionId];
         PositionParams storage params = positionParams[positionId];
         require(core.positionType == 1, "Not a short position");
         require(core.status2 == 0, "Position not open");
         require(core.makerAddress == msg.sender, "Not position maker");
 
-        address token = ISSListing(core.listingAddress).tokenB();
-        uint256 payout = ICSDPositionLibrary(positionLibrary).closeShortPosition(
+        token = ISSListing(core.listingAddress).tokenB();
+        closePrep = ICSDPositionLibrary(positionLibrary).prepCloseShort(
             positionId,
             core.listingAddress,
             core.makerAddress,
@@ -692,13 +698,32 @@ contract SSCrossDriver is ReentrancyGuard, Ownable {
             makerTokenMargin[core.makerAddress][token],
             address(this)
         );
+    }
+
+    // Execute close short
+    function executeCloseShort(uint256 positionId, ClosePrepData memory closePrep, address token) internal returns (uint256 payout) {
+        PositionCore storage core = positionCore[positionId];
+        PositionParams storage params = positionParams[positionId];
+        payout = ICSDPositionLibrary(positionLibrary).executeCloseShort(
+            positionId,
+            core.listingAddress,
+            core.makerAddress,
+            closePrep,
+            address(this)
+        );
 
         uint256 marginToDeduct = params.taxedMargin + (params.excessMargin > makerTokenMargin[core.makerAddress][token] ? makerTokenMargin[core.makerAddress][token] : params.excessMargin);
         makerTokenMargin[core.makerAddress][token] -= marginToDeduct;
         if (makerTokenMargin[core.makerAddress][token] == 0) {
             _removeToken(core.makerAddress, token);
         }
+    }
 
+    // Close short position
+    function closeShortPosition(uint256 positionId) external nonReentrant {
+        require(positionLibrary != address(0), "PositionLibrary not set");
+        (ClosePrepData memory closePrep, address token) = prepareCloseShort(positionId);
+        uint256 payout = executeCloseShort(positionId, closePrep, token);
         emit PositionClosed(positionId, payout);
     }
 
@@ -838,49 +863,48 @@ contract SSCrossDriver is ReentrancyGuard, Ownable {
     }
 
     function queryInterest(uint256 step, uint16 maxIteration) external view returns (HistoricalInterest[] memory) {
-        require(maxIteration <= 1000, "Max iteration exceeded");
-
-        uint256 start = step * maxIteration;
-        uint256 end = start + maxIteration > historicalInterestHeight ? historicalInterestHeight : start + maxIteration;
-        HistoricalInterest[] memory result = new HistoricalInterest[](end - start);
-        for (uint256 i = start; i < end; i++) {
-            result[i - start] = historicalInterest[i];
-        }
-        return result;
+        require(positionLibrary != address(0), "PositionLibrary not set");
+        return ICSDPositionLibrary(positionLibrary).queryInterest(step, maxIteration);
     }
 
     function interest(uint256 index) external view returns (uint256 shortIO, uint256 longIO, uint256 timestamp) {
-        require(index < historicalInterestHeight, "Invalid index");
-        HistoricalInterest storage hi = historicalInterest[index];
+        require(positionLibrary != address(0), "PositionLibrary not set");
+        HistoricalInterest memory hi = ICSDPositionLibrary(positionLibrary).latestInterest();
+        if (index < ICSDPositionLibrary(positionLibrary).interestHeight()) {
+            HistoricalInterest[] memory interests = ICSDPositionLibrary(positionLibrary).queryInterest(index / 1000, 1000);
+            uint256 idx = index % 1000;
+            return (interests[idx].shortIO, interests[idx].longIO, interests[idx].timestamp);
+        }
         return (hi.shortIO, hi.longIO, hi.timestamp);
     }
 
     function interestHeight() external view returns (uint256) {
-        return historicalInterestHeight;
+        require(positionLibrary != address(0), "PositionLibrary not set");
+        return ICSDPositionLibrary(positionLibrary).interestHeight();
     }
 
     // Batch operations
     function closeAllShort() external nonReentrant {
         require(positionLibrary != address(0), "PositionLibrary not set");
-        uint256 count = ICSDPositionLibrary(positionLibrary).closeAllShort(msg.sender, address(this));
+        uint256 count = ICSDPositionLibrary(positionLibrary).executeCloseAllShort(msg.sender, BatchPrepData(new uint256[](0), new uint256[](0)), address(this));
         emit PositionsClosed(count);
     }
 
     function cancelAllShort() external nonReentrant {
         require(positionLibrary != address(0), "PositionLibrary not set");
-        uint256 count = ICSDPositionLibrary(positionLibrary).cancelAllShort(msg.sender, address(this));
+        uint256 count = ICSDPositionLibrary(positionLibrary).executeCancelAllShort(msg.sender, BatchPrepData(new uint256[](0), new uint256[](0)), address(this));
         emit PositionsCancelled(count);
     }
 
     function closeAllLongs() external nonReentrant {
         require(positionLibrary != address(0), "PositionLibrary not set");
-        uint256 count = ICSDPositionLibrary(positionLibrary).closeAllLongs(msg.sender, address(this));
+        uint256 count = ICSDPositionLibrary(positionLibrary).executeCloseAllLongs(msg.sender, BatchPrepData(new uint256[](0), new uint256[](0)), address(this));
         emit PositionsClosed(count);
     }
 
     function cancelAllLong() external nonReentrant {
         require(positionLibrary != address(0), "PositionLibrary not set");
-        uint256 count = ICSDPositionLibrary(positionLibrary).cancelAllLong(msg.sender, address(this));
+        uint256 count = ICSDPositionLibrary(positionLibrary).executeCancelAllLong(msg.sender, BatchPrepData(new uint256[](0), new uint256[](0)), address(this));
         emit PositionsCancelled(count);
     }
 }
