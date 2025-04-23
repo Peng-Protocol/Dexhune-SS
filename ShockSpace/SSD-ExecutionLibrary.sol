@@ -1,20 +1,19 @@
 // SPDX-License-Identifier: BSD-3-Clause
 pragma solidity ^0.8.1;
 
-// Version 0.0.2:
-// - Fixed DeclarationError: Undeclared identifier for closeLongPosition, closeShortPosition, cancelPosition by adding internal helper functions internalCloseLongPosition, internalCloseShortPosition, internalCancelPosition.
-// - Updated executeClosePosition, closeAllShort, cancelAllShort, closeAllLongs, cancelAllLong to use internal helpers instead of external functions.
-// - Retained changes from v0.0.1:
-//   - Created stateless library for non-position-creation functions moved from SSD-PositionLibrary.sol v0.0.13.
-//   - Includes prepareExecution, executePositions, closeLongPosition, closeShortPosition, cancelPosition, addExcessMargin, updateSL, updateTP, closeAllShort, cancelAllShort, closeAllLongs, cancelAllLong, and helpers (getCurrentPrice, processPendingActions, processActiveActions, finalizeActions, updatePositionStatusHelper, executeClosePosition, prepareCloseLong, prepareCloseShort, denormalizePayout, finalizeClose).
-//   - Introduced ClosePositionParams, LongCloseParams, ShortCloseParams structs to reduce stack usage.
-//   - Added onlyDriver modifier to restrict calls to SSIsolatedDriver.
-//   - Defined ISSExecutionLibrary interface with all external functions.
-//   - Ensured no state variables or constants, using SSDUtilityLibrary.DECIMAL_PRECISION.
-// - Compatible with SS-IsolatedDriver.sol v0.0.10 and SSD-PositionLibrary.sol v0.0.14.
+// Version 0.0.5:
+// - Fixed TypeError: Member "initialLoan" not found in struct LeverageParams:
+//   - Replaced initialLoan with loanInitial in executeClosePosition function.
+// - Retained changes from v0.0.4:
+//   - Added timestamp support for historical interest.
+//   - Updated ISSIsolatedDriver interface to include updateExcessMargin, updatePositionSL, updatePositionTP.
+//   - Refactored PositionParams to modular structs.
+//   - Added internalCloseLongPosition, internalCloseShortPosition, internalCancelPosition helpers.
+//   - Fixed stack depth and shadowing issues.
+// - Compatible with SS-IsolatedDriver.sol v0.0.17, SSD-PositionLibrary.sol v0.0.20, SSD-UtilityLibrary.sol v0.0.6.
+// - Uses SafeERC20 for token transfers.
 
 import "./imports/SafeERC20.sol";
-import "./imports/Strings.sol";
 import "./imports/IERC20Metadata.sol";
 
 // Structs
@@ -38,20 +37,29 @@ struct PositionCore {
     uint8 status2; // 0: open, 1: closed, 2: cancelled
 }
 
-struct PositionParams {
-    uint256 minPrice;
-    uint256 maxPrice;
-    uint256 initialMargin;
-    uint256 taxedMargin;
-    uint256 excessMargin;
-    uint8 leverage;
-    uint256 leverageAmount;
-    uint256 initialLoan;
-    uint256 liquidationPrice;
-    uint256 stopLossPrice;
-    uint256 takeProfitPrice;
-    uint256 closePrice;
+struct PriceParams {
+    uint256 priceMin;
+    uint256 priceMax;
     uint256 priceAtEntry;
+    uint256 priceClose;
+}
+
+struct MarginParams {
+    uint256 marginInitial;
+    uint256 marginTaxed;
+    uint256 marginExcess;
+}
+
+struct LeverageParams {
+    uint8 leverageVal;
+    uint256 leverageAmount;
+    uint256 loanInitial;
+}
+
+struct RiskParams {
+    uint256 priceLiquidation;
+    uint256 priceStopLoss;
+    uint256 priceTakeProfit;
 }
 
 struct CloseParams {
@@ -79,7 +87,7 @@ struct ClosePositionParams {
 
 struct LongCloseParams {
     uint256 leverageAmount;
-    uint256 initialLoan;
+    uint256 loanInitial;
 }
 
 struct ShortCloseParams {
@@ -108,17 +116,27 @@ interface ISSUtilityLibrary {
 
 interface ISSIsolatedDriver {
     function positionCore(uint256 positionId) external view returns (PositionCore memory);
-    function positionParams(uint256 positionId) external view returns (PositionParams memory);
+    function priceParams(uint256 positionId) external view returns (PriceParams memory);
+    function marginParams(uint256 positionId) external view returns (MarginParams memory);
+    function leverageParams(uint256 positionId) external view returns (LeverageParams memory);
+    function riskParams(uint256 positionId) external view returns (RiskParams memory);
     function pendingPositions(address listingAddress, uint8 positionType) external view returns (uint256[] memory);
     function positionsByType(uint8 positionType) external view returns (uint256[] memory);
     function historicalInterestHeight() external view returns (uint256);
+    function historicalInterestTimestamps(uint256 height) external view returns (uint256);
+    function updateHistoricalInterest(uint256 index, uint256 longIO, uint256 shortIO, uint256 timestamp) external;
+    function reduceHistoricalInterest(uint256 index, uint256 longIO, uint256 shortIO, uint256 timestamp) external;
+    function updatePositionStatus(uint256 positionId, uint8 status) external;
+    function updateExcessMargin(uint256 positionId, uint256 amount) external;
+    function updatePositionSL(uint256 positionId, uint256 newStopLossPrice) external;
+    function updatePositionTP(uint256 positionId, uint256 newTakeProfitPrice) external;
 }
 
 interface ISSExecutionLibrary {
     function prepareExecution(
         address listingAddress,
         address driver
-    ) external view returns (PositionAction[] memory actions);
+    ) external view returns (PositionAction[] memory);
     function executePositions(
         PositionAction[] memory actions,
         address listingAddress,
@@ -186,8 +204,11 @@ library SSDExecutionLibrary {
     ) internal returns (uint256 payout) {
         CloseParams memory closeParams;
         PositionCore memory core;
-        PositionParams memory posParams;
-        (closeParams, core, posParams) = prepareCloseLong(params);
+        PriceParams memory priceParams;
+        MarginParams memory marginParams;
+        LeverageParams memory leverageParams;
+        RiskParams memory riskParams;
+        (closeParams, core, priceParams, marginParams, leverageParams, riskParams) = prepareCloseLong(params);
 
         payout = denormalizePayout(closeParams.payout, closeParams.decimals);
         finalizeClose(params, 0, payout);
@@ -200,8 +221,11 @@ library SSDExecutionLibrary {
     ) internal returns (uint256 payout) {
         CloseParams memory closeParams;
         PositionCore memory core;
-        PositionParams memory posParams;
-        (closeParams, core, posParams) = prepareCloseShort(params);
+        PriceParams memory priceParams;
+        MarginParams memory marginParams;
+        LeverageParams memory leverageParams;
+        RiskParams memory riskParams;
+        (closeParams, core, priceParams, marginParams, leverageParams, riskParams) = prepareCloseShort(params);
 
         payout = denormalizePayout(closeParams.payout, closeParams.decimals);
         finalizeClose(params, 1, payout);
@@ -227,7 +251,8 @@ library SSDExecutionLibrary {
             ISSListing(params.listingAddress).ssUpdate(address(this), updates);
         }
 
-        (bool success, ) = params.driver.call(
+        bool success;
+        (success, ) = params.driver.call(
             abi.encodeWithSignature(
                 "updatePositionStatus(uint256,uint8)", params.positionId, 2
             )
@@ -237,10 +262,11 @@ library SSDExecutionLibrary {
         uint256 io = params.taxedMargin + params.excessMargin;
         (success, ) = params.driver.call(
             abi.encodeWithSignature(
-                "reduceHistoricalInterest(uint256,uint256,uint256)",
+                "reduceHistoricalInterest(uint256,uint256,uint256,uint256)",
                 ISSIsolatedDriver(params.driver).historicalInterestHeight(),
                 positionType == 0 ? io : 0,
-                positionType == 1 ? io : 0
+                positionType == 1 ? io : 0,
+                block.timestamp
             )
         );
         require(success, "Interest reduction failed");
@@ -254,13 +280,13 @@ library SSDExecutionLibrary {
     // Helper: Process pending position
     function processPendingPosition(
         PositionCore memory core,
-        PositionParams memory params,
+        PriceParams memory priceParams,
         uint256 currentPrice
     ) internal pure returns (PositionAction memory action) {
         action.positionId = core.positionId;
         action.actionType = 255; // No action
         if (core.status1 == false && core.status2 == 0) {
-            if (currentPrice >= params.minPrice && currentPrice <= params.maxPrice) {
+            if (currentPrice >= priceParams.priceMin && currentPrice <= priceParams.priceMax) {
                 action.actionType = 0; // Update status
             }
         }
@@ -269,7 +295,8 @@ library SSDExecutionLibrary {
     // Helper: Process active position
     function processActivePosition(
         PositionCore memory core,
-        PositionParams memory params,
+        PriceParams memory priceParams,
+        RiskParams memory riskParams,
         uint256 currentPrice,
         address listingAddress
     ) internal pure returns (PositionAction memory action) {
@@ -278,13 +305,13 @@ library SSDExecutionLibrary {
         if (core.status1 == true && core.status2 == 0 && core.listingAddress == listingAddress) {
             bool shouldClose = false;
             if (core.positionType == 0) { // Long
-                if (params.stopLossPrice > 0 && currentPrice <= params.stopLossPrice) shouldClose = true;
-                else if (params.takeProfitPrice > 0 && currentPrice >= params.takeProfitPrice) shouldClose = true;
-                else if (currentPrice <= params.liquidationPrice) shouldClose = true;
+                if (riskParams.priceStopLoss > 0 && currentPrice <= riskParams.priceStopLoss) shouldClose = true;
+                else if (riskParams.priceTakeProfit > 0 && currentPrice >= riskParams.priceTakeProfit) shouldClose = true;
+                else if (currentPrice <= riskParams.priceLiquidation) shouldClose = true;
             } else { // Short
-                if (params.stopLossPrice > 0 && currentPrice >= params.stopLossPrice) shouldClose = true;
-                else if (params.takeProfitPrice > 0 && currentPrice <= params.takeProfitPrice) shouldClose = true;
-                else if (currentPrice >= params.liquidationPrice) shouldClose = true;
+                if (riskParams.priceStopLoss > 0 && currentPrice >= riskParams.priceStopLoss) shouldClose = true;
+                else if (riskParams.priceTakeProfit > 0 && currentPrice <= riskParams.priceTakeProfit) shouldClose = true;
+                else if (currentPrice >= riskParams.priceLiquidation) shouldClose = true;
             }
             if (shouldClose) {
                 action.actionType = 1; // Close
@@ -301,8 +328,8 @@ library SSDExecutionLibrary {
         uint256[] memory pending = ISSIsolatedDriver(context.driver).pendingPositions(context.listingAddress, positionType);
         for (uint256 i = 0; i < pending.length && context.actionCount < context.maxActions; i++) {
             PositionCore memory core = ISSIsolatedDriver(context.driver).positionCore(pending[i]);
-            PositionParams memory params = ISSIsolatedDriver(context.driver).positionParams(pending[i]);
-            PositionAction memory action = processPendingPosition(core, params, context.currentPrice);
+            PriceParams memory priceParams = ISSIsolatedDriver(context.driver).priceParams(pending[i]);
+            PositionAction memory action = processPendingPosition(core, priceParams, context.currentPrice);
             if (action.actionType != 255) {
                 tempActions[context.actionCount] = action;
                 context.actionCount++;
@@ -320,8 +347,9 @@ library SSDExecutionLibrary {
         uint256[] memory active = ISSIsolatedDriver(context.driver).positionsByType(positionType);
         for (uint256 i = 0; i < active.length && context.actionCount < context.maxActions; i++) {
             PositionCore memory core = ISSIsolatedDriver(context.driver).positionCore(active[i]);
-            PositionParams memory params = ISSIsolatedDriver(context.driver).positionParams(active[i]);
-            PositionAction memory action = processActivePosition(core, params, context.currentPrice, context.listingAddress);
+            PriceParams memory priceParams = ISSIsolatedDriver(context.driver).priceParams(active[i]);
+            RiskParams memory riskParams = ISSIsolatedDriver(context.driver).riskParams(active[i]);
+            PositionAction memory action = processActivePosition(core, priceParams, riskParams, context.currentPrice, context.listingAddress);
             if (action.actionType != 255) {
                 tempActions[context.actionCount] = action;
                 context.actionCount++;
@@ -372,7 +400,8 @@ library SSDExecutionLibrary {
         PositionCore memory core,
         address driver
     ) internal returns (bool) {
-        (bool success, ) = driver.call(
+        bool success;
+        (success, ) = driver.call(
             abi.encodeWithSignature(
                 "updatePositionStatus(uint256,uint8)", positionId, 0
             )
@@ -394,28 +423,27 @@ library SSDExecutionLibrary {
     function executeClosePosition(
         PositionAction memory action,
         PositionCore memory core,
-        PositionParams memory params,
         ExecutionContext memory context
     ) internal {
         ClosePositionParams memory closeParams = ClosePositionParams({
             positionId: action.positionId,
             listingAddress: core.listingAddress,
             makerAddress: core.makerAddress,
-            taxedMargin: params.taxedMargin,
-            excessMargin: params.excessMargin,
+            taxedMargin: ISSIsolatedDriver(context.driver).marginParams(action.positionId).marginTaxed,
+            excessMargin: ISSIsolatedDriver(context.driver).marginParams(action.positionId).marginExcess,
             driver: context.driver
         });
         if (core.positionType == 0) {
             LongCloseParams memory longParams = LongCloseParams({
-                leverageAmount: params.leverageAmount,
-                initialLoan: params.initialLoan
+                leverageAmount: ISSIsolatedDriver(context.driver).leverageParams(action.positionId).leverageAmount,
+                loanInitial: ISSIsolatedDriver(context.driver).leverageParams(action.positionId).loanInitial
             });
             internalCloseLongPosition(closeParams, longParams);
         } else {
             ShortCloseParams memory shortParams = ShortCloseParams({
-                minPrice: params.minPrice,
-                initialMargin: params.initialMargin,
-                leverage: params.leverage
+                minPrice: ISSIsolatedDriver(context.driver).priceParams(action.positionId).priceMin,
+                initialMargin: ISSIsolatedDriver(context.driver).marginParams(action.positionId).marginInitial,
+                leverage: ISSIsolatedDriver(context.driver).leverageParams(action.positionId).leverageVal
             });
             internalCloseShortPosition(closeParams, shortParams);
         }
@@ -438,13 +466,12 @@ library SSDExecutionLibrary {
 
         for (uint256 i = 0; i < actions.length; i++) {
             PositionCore memory core = ISSIsolatedDriver(driver).positionCore(actions[i].positionId);
-            PositionParams memory params = ISSIsolatedDriver(driver).positionParams(actions[i].positionId);
             if (actions[i].actionType == 0) {
                 if (updatePositionStatusHelper(actions[i].positionId, core, driver)) {
                     resultCount++;
                 }
             } else if (actions[i].actionType == 1) {
-                executeClosePosition(actions[i], core, params, context);
+                executeClosePosition(actions[i], core, context);
                 resultCount++;
             }
         }
@@ -453,16 +480,26 @@ library SSDExecutionLibrary {
     // Helper: Prepare closeLong
     function prepareCloseLong(
         ClosePositionParams memory params
-    ) internal view returns (CloseParams memory closeParams, PositionCore memory core, PositionParams memory posParams) {
+    ) internal view returns (
+        CloseParams memory closeParams,
+        PositionCore memory core,
+        PriceParams memory priceParams,
+        MarginParams memory marginParams,
+        LeverageParams memory leverageParams,
+        RiskParams memory riskParams
+    ) {
         core = ISSIsolatedDriver(params.driver).positionCore(params.positionId);
-        posParams = ISSIsolatedDriver(params.driver).positionParams(params.positionId);
+        priceParams = ISSIsolatedDriver(params.driver).priceParams(params.positionId);
+        marginParams = ISSIsolatedDriver(params.driver).marginParams(params.positionId);
+        leverageParams = ISSIsolatedDriver(params.driver).leverageParams(params.positionId);
+        riskParams = ISSIsolatedDriver(params.driver).riskParams(params.positionId);
         require(core.status2 == 0, "Position not open");
         require(core.status1 == true, "Position not executable");
 
         closeParams.currentPrice = ISSListing(params.listingAddress).prices(uint256(uint160(params.listingAddress)));
-        uint256 totalValue = params.taxedMargin + params.excessMargin + posParams.leverageAmount;
-        closeParams.payout = closeParams.currentPrice > 0 && totalValue > posParams.initialLoan
-            ? (totalValue / closeParams.currentPrice) - posParams.initialLoan
+        uint256 totalValue = params.taxedMargin + params.excessMargin + leverageParams.leverageAmount;
+        closeParams.payout = closeParams.currentPrice > 0 && totalValue > leverageParams.loanInitial
+            ? (totalValue / closeParams.currentPrice) - leverageParams.loanInitial
             : 0;
         closeParams.decimals = ISSListing(params.listingAddress).decimalsB();
     }
@@ -470,15 +507,25 @@ library SSDExecutionLibrary {
     // Helper: Prepare closeShort
     function prepareCloseShort(
         ClosePositionParams memory params
-    ) internal view returns (CloseParams memory closeParams, PositionCore memory core, PositionParams memory posParams) {
+    ) internal view returns (
+        CloseParams memory closeParams,
+        PositionCore memory core,
+        PriceParams memory priceParams,
+        MarginParams memory marginParams,
+        LeverageParams memory leverageParams,
+        RiskParams memory riskParams
+    ) {
         core = ISSIsolatedDriver(params.driver).positionCore(params.positionId);
-        posParams = ISSIsolatedDriver(params.driver).positionParams(params.positionId);
+        priceParams = ISSIsolatedDriver(params.driver).priceParams(params.positionId);
+        marginParams = ISSIsolatedDriver(params.driver).marginParams(params.positionId);
+        leverageParams = ISSIsolatedDriver(params.driver).leverageParams(params.positionId);
+        riskParams = ISSIsolatedDriver(params.driver).riskParams(params.positionId);
         require(core.status2 == 0, "Position not open");
         require(core.status1 == true, "Position not executable");
 
         closeParams.currentPrice = ISSListing(params.listingAddress).prices(uint256(uint160(params.listingAddress)));
-        uint256 priceDiff = posParams.minPrice > closeParams.currentPrice ? posParams.minPrice - closeParams.currentPrice : 0;
-        uint256 profit = (priceDiff * posParams.initialMargin * posParams.leverage);
+        uint256 priceDiff = priceParams.priceMin > closeParams.currentPrice ? priceParams.priceMin - closeParams.currentPrice : 0;
+        uint256 profit = (priceDiff * marginParams.marginInitial * leverageParams.leverageVal);
         uint256 marginReturn = (params.taxedMargin + params.excessMargin) * closeParams.currentPrice;
         closeParams.payout = profit + marginReturn;
         closeParams.decimals = ISSListing(params.listingAddress).decimalsA();
@@ -502,7 +549,8 @@ library SSDExecutionLibrary {
         uint8 positionType,
         uint256 payout
     ) internal {
-        (bool success, ) = params.driver.call(
+        bool success;
+        (success, ) = params.driver.call(
             abi.encodeWithSignature(
                 "updatePositionStatus(uint256,uint8)", params.positionId, 1
             )
@@ -522,10 +570,11 @@ library SSDExecutionLibrary {
         uint256 io = params.taxedMargin + params.excessMargin;
         (success, ) = params.driver.call(
             abi.encodeWithSignature(
-                "reduceHistoricalInterest(uint256,uint256,uint256)",
+                "reduceHistoricalInterest(uint256,uint256,uint256,uint256)",
                 ISSIsolatedDriver(params.driver).historicalInterestHeight(),
                 positionType == 0 ? io : 0,
-                positionType == 1 ? io : 0
+                positionType == 1 ? io : 0,
+                block.timestamp
             )
         );
         require(success, "Interest reduction failed");
@@ -565,7 +614,8 @@ library SSDExecutionLibrary {
         uint256 normalizedAmount,
         address driver
     ) external onlyDriver(driver) {
-        (bool success, ) = driver.call(
+        bool success;
+        (success, ) = driver.call(
             abi.encodeWithSignature(
                 "updateExcessMargin(uint256,uint256)", positionId, normalizedAmount
             )
@@ -575,10 +625,11 @@ library SSDExecutionLibrary {
         uint256 io = normalizedAmount;
         (success, ) = driver.call(
             abi.encodeWithSignature(
-                "updateHistoricalInterest(uint256,uint256,uint256)",
+                "updateHistoricalInterest(uint256,uint256,uint256,uint256)",
                 ISSIsolatedDriver(driver).historicalInterestHeight(),
                 positionType == 0 ? io : 0,
-                positionType == 1 ? io : 0
+                positionType == 1 ? io : 0,
+                block.timestamp
             )
         );
         require(success, "Interest update failed");
@@ -595,7 +646,8 @@ library SSDExecutionLibrary {
         uint256 maxPrice,
         address driver
     ) external onlyDriver(driver) {
-        (bool success, ) = driver.call(
+        bool success;
+        (success, ) = driver.call(
             abi.encodeWithSignature(
                 "updatePositionSL(uint256,uint256)", positionId, newStopLossPrice
             )
@@ -613,7 +665,8 @@ library SSDExecutionLibrary {
         uint256 maxPrice,
         address driver
     ) external onlyDriver(driver) {
-        (bool success, ) = driver.call(
+        bool success;
+        (success, ) = driver.call(
             abi.encodeWithSignature(
                 "updatePositionTP(uint256,uint256)", positionId, newTakeProfitPrice
             )
@@ -627,20 +680,22 @@ library SSDExecutionLibrary {
         uint256[] memory positions = ISSIsolatedDriver(driver).positionsByType(1);
         for (uint256 i = 0; i < positions.length && count < 100; i++) {
             PositionCore memory core = ISSIsolatedDriver(driver).positionCore(positions[i]);
-            PositionParams memory params = ISSIsolatedDriver(driver).positionParams(positions[i]);
+            MarginParams memory marginParams = ISSIsolatedDriver(driver).marginParams(positions[i]);
+            PriceParams memory priceParams = ISSIsolatedDriver(driver).priceParams(positions[i]);
+            LeverageParams memory leverageParams = ISSIsolatedDriver(driver).leverageParams(positions[i]);
             if (core.makerAddress == user && core.status2 == 0 && core.status1 == true) {
                 ClosePositionParams memory closeParams = ClosePositionParams({
                     positionId: positions[i],
                     listingAddress: core.listingAddress,
                     makerAddress: core.makerAddress,
-                    taxedMargin: params.taxedMargin,
-                    excessMargin: params.excessMargin,
+                    taxedMargin: marginParams.marginTaxed,
+                    excessMargin: marginParams.marginExcess,
                     driver: driver
                 });
                 ShortCloseParams memory shortParams = ShortCloseParams({
-                    minPrice: params.minPrice,
-                    initialMargin: params.initialMargin,
-                    leverage: params.leverage
+                    minPrice: priceParams.priceMin,
+                    initialMargin: marginParams.marginInitial,
+                    leverage: leverageParams.leverageVal
                 });
                 internalCloseShortPosition(closeParams, shortParams);
                 count++;
@@ -654,14 +709,14 @@ library SSDExecutionLibrary {
         uint256[] memory positions = ISSIsolatedDriver(driver).pendingPositions(user, 1);
         for (uint256 i = 0; i < positions.length && count < 100; i++) {
             PositionCore memory core = ISSIsolatedDriver(driver).positionCore(positions[i]);
-            PositionParams memory params = ISSIsolatedDriver(driver).positionParams(positions[i]);
+            MarginParams memory marginParams = ISSIsolatedDriver(driver).marginParams(positions[i]);
             if (core.makerAddress == user && core.status1 == false && core.status2 == 0) {
                 ClosePositionParams memory closeParams = ClosePositionParams({
                     positionId: positions[i],
                     listingAddress: core.listingAddress,
                     makerAddress: core.makerAddress,
-                    taxedMargin: params.taxedMargin,
-                    excessMargin: params.excessMargin,
+                    taxedMargin: marginParams.marginTaxed,
+                    excessMargin: marginParams.marginExcess,
                     driver: driver
                 });
                 internalCancelPosition(closeParams, core.positionType);
@@ -676,19 +731,20 @@ library SSDExecutionLibrary {
         uint256[] memory positions = ISSIsolatedDriver(driver).positionsByType(0);
         for (uint256 i = 0; i < positions.length && count < 100; i++) {
             PositionCore memory core = ISSIsolatedDriver(driver).positionCore(positions[i]);
-            PositionParams memory params = ISSIsolatedDriver(driver).positionParams(positions[i]);
+            MarginParams memory marginParams = ISSIsolatedDriver(driver).marginParams(positions[i]);
+            LeverageParams memory leverageParams = ISSIsolatedDriver(driver).leverageParams(positions[i]);
             if (core.makerAddress == user && core.status2 == 0 && core.status1 == true) {
                 ClosePositionParams memory closeParams = ClosePositionParams({
                     positionId: positions[i],
                     listingAddress: core.listingAddress,
                     makerAddress: core.makerAddress,
-                    taxedMargin: params.taxedMargin,
-                    excessMargin: params.excessMargin,
+                    taxedMargin: marginParams.marginTaxed,
+                    excessMargin: marginParams.marginExcess,
                     driver: driver
                 });
                 LongCloseParams memory longParams = LongCloseParams({
-                    leverageAmount: params.leverageAmount,
-                    initialLoan: params.initialLoan
+                    leverageAmount: leverageParams.leverageAmount,
+                    loanInitial: leverageParams.loanInitial
                 });
                 internalCloseLongPosition(closeParams, longParams);
                 count++;
@@ -702,14 +758,14 @@ library SSDExecutionLibrary {
         uint256[] memory positions = ISSIsolatedDriver(driver).pendingPositions(user, 0);
         for (uint256 i = 0; i < positions.length && count < 100; i++) {
             PositionCore memory core = ISSIsolatedDriver(driver).positionCore(positions[i]);
-            PositionParams memory params = ISSIsolatedDriver(driver).positionParams(positions[i]);
+            MarginParams memory marginParams = ISSIsolatedDriver(driver).marginParams(positions[i]);
             if (core.makerAddress == user && core.status1 == false && core.status2 == 0) {
                 ClosePositionParams memory closeParams = ClosePositionParams({
                     positionId: positions[i],
                     listingAddress: core.listingAddress,
                     makerAddress: core.makerAddress,
-                    taxedMargin: params.taxedMargin,
-                    excessMargin: params.excessMargin,
+                    taxedMargin: marginParams.marginTaxed,
+                    excessMargin: marginParams.marginExcess,
                     driver: driver
                 });
                 internalCancelPosition(closeParams, core.positionType);
