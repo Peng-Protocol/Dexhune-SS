@@ -1,107 +1,166 @@
 // SPDX-License-Identifier: BSD-3-Clause
 pragma solidity ^0.8.1;
 
-// Version 0.0.4:
-// - Enhanced parseEntryPrice to use "-" delimiter, reject non-standard input (multiple delimiters, oversized strings).
-// - Local ISSListing interface, no imports.
-// - Added input validation: max 50 chars, numeric or single delimiter.
-// - Maintained normalizeAmount for decimals handling.
-// - Local imports for IERC20Metadata.
+// Version 0.0.1:
+// - Initial implementation for SSD-PositionLibrary and SSD-ExecutionLibrary.
+// - Includes normalizeAmount for token decimal adjustments.
+// - Provides parseEntryPrice for price range parsing with "-" delimiter.
+// - Includes parseUint for string-to-uint conversion.
+// - Adds splitString for string splitting on "-" delimiter.
+// - Incorporates input validation for robust error handling.
+// - Uses local imports for IERC20 and Strings.
+// - Assumes IERC20 includes decimals() function.
+// - Compatible with SSD-PositionLibrary.sol v0.0.23 and SSD-ExecutionLibrary.sol v0.0.5.
 
-import "./imports/IERC20Metadata.sol";
+import "./imports/IERC20.sol";
+import "./imports/Strings.sol";
 
-    // Interface
-    interface ISSListing {
-        function prices(uint256 listingId) external view returns (uint256);
-    }
+interface ISSListing {
+    function prices(uint256 listingId) external view returns (uint256);
+    function decimalsA() external view returns (uint8);
+    function decimalsB() external view returns (uint8);
+}
 
-library SSUtilityLibrary {
-
+library SSDUtilityLibrary {
+    using Strings for string;
 
     // Constants
-    uint256 private constant DECIMAL_PRECISION = 1e18;
+    uint256 public constant DECIMAL_PRECISION = 1e18;
 
     // Normalize amount based on token decimals
     function normalizeAmount(address token, uint256 amount) external view returns (uint256) {
-        if (token == address(0)) return amount; // Native ETH, 18 decimals
-        uint8 decimals = IERC20Metadata(token).decimals();
-        if (decimals == 18) return amount;
+        if (token == address(0)) {
+            return amount * DECIMAL_PRECISION / 1e18;
+        }
+        uint8 decimals = IERC20(token).decimals();
+        require(decimals <= 18, "Unsupported decimals");
         return amount * DECIMAL_PRECISION / (10 ** decimals);
     }
 
-    // Parse entry price string
-    function parseEntryPrice(string memory entryPrice, address listingAddress) external view returns (uint256 minPrice, uint256 maxPrice) {
-        bytes memory priceBytes = bytes(entryPrice);
-        require(priceBytes.length > 0 && priceBytes.length <= 50, "Invalid price length");
-
-        // Validate characters
-        uint256 delimiterCount = 0;
-        for (uint256 i = 0; i < priceBytes.length; i++) {
-            if (priceBytes[i] == '-') {
-                delimiterCount++;
-            } else if (priceBytes[i] < '0' || priceBytes[i] > '9') {
-                revert("Invalid characters");
-            }
+    // Denormalize amount based on token decimals
+    function denormalizeAmount(address token, uint256 normalizedAmount) external view returns (uint256) {
+        if (token == address(0)) {
+            return normalizedAmount / DECIMAL_PRECISION;
         }
-        require(delimiterCount <= 1, "Multiple delimiters");
-
-        if (delimiterCount == 0) {
-            // Single or market price
-            uint256 price;
-            if (keccak256(abi.encodePacked(entryPrice)) == keccak256(abi.encodePacked("0"))) {
-                price = ISSListing(listingAddress).prices(uint256(uint160(listingAddress)));
-            } else {
-                price = parseUint(entryPrice);
-            }
-            require(price > 0, "Invalid price");
-            return (price, price);
-        }
-
-        // Range price
-        (string memory minStr, string memory maxStr) = splitString(entryPrice, "-");
-        minPrice = parseUint(minStr);
-        maxPrice = parseUint(maxStr);
-        require(minPrice > 0 && maxPrice > 0, "Invalid range");
-        require(minPrice <= maxPrice, "Invalid range order");
-        return (minPrice, maxPrice);
+        uint8 decimals = IERC20(token).decimals();
+        require(decimals <= 18, "Unsupported decimals");
+        return normalizedAmount * (10 ** decimals) / DECIMAL_PRECISION;
     }
 
-    // Parse uint from string
+    // Parse entry price string (e.g., "100-200" or "150")
+    function parseEntryPrice(string memory entryPrice, address listingAddress) 
+        external view returns (uint256 minPrice, uint256 maxPrice) 
+    {
+        require(bytes(entryPrice).length > 0, "Empty price string");
+        (string memory minStr, string memory maxStr) = splitString(entryPrice, "-");
+        
+        minPrice = parseUint(minStr);
+        maxPrice = bytes(maxStr).length > 0 ? parseUint(maxStr) : minPrice;
+        
+        require(minPrice > 0, "Invalid min price");
+        require(maxPrice >= minPrice, "Invalid price range");
+
+        // Adjust for listing decimals
+        uint8 decimals = ISSListing(listingAddress).decimalsB();
+        minPrice = normalizePrice(minPrice, decimals);
+        maxPrice = normalizePrice(maxPrice, decimals);
+    }
+
+    // Normalize price to DECIMAL_PRECISION
+    function normalizePrice(uint256 price, uint8 decimals) internal pure returns (uint256) {
+        if (decimals == 18) {
+            return price;
+        }
+        if (decimals < 18) {
+            return price * (10 ** (18 - uint256(decimals)));
+        }
+        return price / (10 ** (uint256(decimals) - 18));
+    }
+
+    // Parse string to uint
     function parseUint(string memory str) public pure returns (uint256) {
         bytes memory b = bytes(str);
+        require(b.length > 0, "Empty string");
         uint256 result = 0;
+        bool hasDecimal = false;
+        uint256 decimalPlace = 0;
+
         for (uint256 i = 0; i < b.length; i++) {
-            require(b[i] >= '0' && b[i] <= '9', "Invalid digit");
-            result = result * 10 + (uint8(b[i]) - 48);
+            if (b[i] == 0x2E) { // Decimal point
+                require(!hasDecimal, "Multiple decimals");
+                hasDecimal = true;
+                continue;
+            }
+            require(b[i] >= 0x30 && b[i] <= 0x39, "Invalid character");
+            if (hasDecimal) {
+                decimalPlace++;
+                if (decimalPlace > 18) {
+                    continue; // Ignore excessive decimal places
+                }
+            }
+            result = result * 10 + (uint8(b[i]) - 0x30);
         }
-        return result * DECIMAL_PRECISION;
+
+        if (hasDecimal) {
+            result = result * (10 ** (18 - decimalPlace));
+        } else {
+            result = result * DECIMAL_PRECISION;
+        }
+        return result;
     }
 
-    // Split string at delimiter
-    function splitString(string memory str, string memory delimiter) public pure returns (string memory, string memory) {
+    // Split string on delimiter
+    function splitString(string memory str, string memory delimiter) 
+        public pure returns (string memory, string memory) 
+    {
+        require(bytes(str).length > 0, "Empty string");
+        require(keccak256(abi.encodePacked(delimiter)) == keccak256(abi.encodePacked("-")), "Invalid delimiter");
+        
         bytes memory strBytes = bytes(str);
         bytes memory delimBytes = bytes(delimiter);
-        require(delimBytes.length == 1, "Invalid delimiter");
+        uint256 splitIndex = strBytes.length;
 
-        uint256 delimIndex;
-        bool found;
-        for (uint256 i = 0; i < strBytes.length; i++) {
-            if (strBytes[i] == delimBytes[0]) {
-                delimIndex = i;
-                found = true;
+        for (uint256 i = 0; i < strBytes.length - delimBytes.length + 1; i++) {
+            bool isMatch = true;
+            for (uint256 j = 0; j < delimBytes.length; j++) {
+                if (strBytes[i + j] != delimBytes[j]) {
+                    isMatch = false;
+                    break;
+                }
+            }
+            if (isMatch) {
+                splitIndex = i;
                 break;
             }
         }
-        require(found, "Delimiter not found");
 
-        bytes memory part1 = new bytes(delimIndex);
-        bytes memory part2 = new bytes(strBytes.length - delimIndex - 1);
-        for (uint256 i = 0; i < delimIndex; i++) {
-            part1[i] = strBytes[i];
+        if (splitIndex == strBytes.length) {
+            return (str, "");
         }
-        for (uint256 i = delimIndex + 1; i < strBytes.length; i++) {
-            part2[i - delimIndex - 1] = strBytes[i];
+
+        bytes memory first = new bytes(splitIndex);
+        bytes memory second = new bytes(strBytes.length - splitIndex - delimBytes.length);
+        for (uint256 i = 0; i < splitIndex; i++) {
+            first[i] = strBytes[i];
         }
-        return (string(part1), string(part2));
+        for (uint256 i = 0; i < strBytes.length - splitIndex - delimBytes.length; i++) {
+            second[i] = strBytes[splitIndex + delimBytes.length + i];
+        }
+
+        return (string(first), string(second));
+    }
+
+    // Convert price to listing decimals
+    function convertPriceToDecimals(uint256 price, address listingAddress, uint8 targetDecimals) 
+        external view returns (uint256) 
+    {
+        uint8 listingDecimals = ISSListing(listingAddress).decimalsB();
+        if (listingDecimals == targetDecimals) {
+            return price;
+        }
+        if (listingDecimals < targetDecimals) {
+            return price * (10 ** (uint256(targetDecimals) - uint256(listingDecimals)));
+        }
+        return price / (10 ** (uint256(listingDecimals) - uint256(targetDecimals)));
     }
 }
