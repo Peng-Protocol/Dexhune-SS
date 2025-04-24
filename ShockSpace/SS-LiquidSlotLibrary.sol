@@ -38,6 +38,7 @@ interface ISSLiquidity {
     function getYSlotView(uint256 index) external view returns (Slot memory);
     function xExecuteOut(address caller, uint256 index, SSLiquidSlotLibrary.PreparedWithdrawal memory withdrawal) external;
     function yExecuteOut(address caller, uint256 index, SSLiquidSlotLibrary.PreparedWithdrawal memory withdrawal) external;
+    function claimFees(address caller, address _listingAddress, uint256 liquidityIndex, bool isX, uint256 volume) external;
 }
 
 library SSLiquidSlotLibrary {
@@ -181,12 +182,12 @@ library SSLiquidSlotLibrary {
     function xClaimFees(address listingAddress, uint256 liquidityIndex, address listingAgent, address proxy) external {
         require(ISS(listingAgent).isValidListing(listingAddress), "Invalid listing");
         ISSLiquidity liquidity = ISSLiquidity(ISSListing(listingAddress).liquidityAddresses(0));
-        liquidity.claimFees(proxy, liquidityIndex, false, 0); // Claim yFees (tokenB) for xSlots
+        liquidity.claimFees(proxy, listingAddress, liquidityIndex, false, 0); // Claim yFees (tokenB) for xSlots
     }
 
     function yClaimFees(address listingAddress, uint256 liquidityIndex, address listingAgent, address proxy) external {
         require(ISS(listingAgent).isValidListing(listingAddress), "Invalid listing");
         ISSLiquidity liquidity = ISSLiquidity(ISSListing(listingAddress).liquidityAddresses(0));
-        liquidity.claimFees(proxy, liquidityIndex, true, 0); // Claim xFees (tokenA) for ySlots
+        liquidity.claimFees(proxy, listingAddress, liquidityIndex, true, 0); // Claim xFees (tokenA) for ySlots
     }
 }
