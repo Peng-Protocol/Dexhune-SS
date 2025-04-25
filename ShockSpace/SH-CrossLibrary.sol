@@ -12,11 +12,34 @@ pragma solidity ^0.8.1;
 
 import "./imports/SafeERC20.sol";
 
+interface IHopLibrary {
+    struct StalledHop {
+        uint8 stage;
+        address currentListing;
+        uint256 positionId;
+        uint256 minPrice;
+        uint256 maxPrice;
+        address hopMaker;
+        address[] remainingListings;
+        uint256 principalAmount;
+        address startToken;
+        address endToken;
+        uint8 settleType;
+        uint8 hopStatus;
+        uint8 driverType;
+        bool entry;
+        uint8 positionType;
+        uint256 payoutId;
+        uint256[] orderIds;
+    }
+}
+
 interface ISSShockhopper {
-    function updateStalledHop(uint256 hopId, HopLibrary.StalledHop memory hop) external;
+    function updateStalledHop(uint256 hopId, IHopLibrary.StalledHop memory hop) external;
     function updateHopsByAddress(address maker, uint256 hopId) external;
     function updateTotalHops(uint256 hopId) external;
-    function getHopDetails(uint256 hopId) external view returns (HopLibrary.StalledHop memory);
+    function getHopDetails(uint256 hopId) external view returns (IHopLibrary.StalledHop memory);
+    function removeHopByAddress(address maker, uint256 hopId) external;
 }
 
 interface ISSCrossDriver {
@@ -48,24 +71,19 @@ interface ISSCrossDriver {
 }
 
 interface ISSListing {
+    struct PayoutDetails {
+        address makerAddress;
+        address recipientAddress;
+        uint256 required;
+        uint256 filled;
+        uint256 payoutOrderId;
+        uint8 status;
+    }
+
     function tokenA() external view returns (address);
     function tokenB() external view returns (address);
-    function getLongPayout(uint256 orderId) external view returns (
-        address makerAddress,
-        address recipientAddress,
-        uint256 required,
-        uint256 filled,
-        uint256 orderId,
-        uint8 status
-    );
-    function getShortPayout(uint256 orderId) external view returns (
-        address makerAddress,
-        address recipientAddress,
-        uint256 required,
-        uint256 filled,
-        uint256 orderId,
-        uint8 status
-    );
+    function getLongPayout(uint256 orderId) external view returns (PayoutDetails memory);
+    function getShortPayout(uint256 orderId) external view returns (PayoutDetails memory);
     function getNextOrderId(uint256 listingId) external view returns (uint256);
     function getBuyOrder(uint256 orderId) external view returns (
         address makerAddress,
@@ -86,6 +104,7 @@ interface ISSListing {
         uint8 status
     );
     function getListingId() external view returns (uint256);
+    function prices(uint256 listingId) external view returns (uint256);
 }
 
 interface ISSProxyRouter {
@@ -136,16 +155,48 @@ contract CrossLibrary {
         uint256 takeProfitPrice;
     }
 
+    struct HopRequest {
+        uint256 numListings;
+        address[] listingAddresses;
+        uint256[] impactPricePercents;
+        address startToken;
+        address endToken;
+        uint8 settleType; // 0 = market-based, 1 = liquidity-based
+        uint8 driverType; // 0 = CrossDriver, 1 = IsolatedDriver
+        PositionParams1 positionParams1;
+        PositionParams2 positionParams2;
+    }
+
+    struct StalledHop {
+        uint8 stage;
+        address currentListing;
+        uint256 positionId;
+        uint256 minPrice;
+        uint256 maxPrice;
+        address hopMaker;
+        address[] remainingListings;
+        uint256 principalAmount;
+        address startToken;
+        address endToken;
+        uint8 settleType;
+        uint8 hopStatus; // 0 = active, 1 = stalled, 2 = completed
+        uint8 driverType;
+        bool entry;
+        uint8 positionType;
+        uint256 payoutId;
+        uint256[] orderIds; // Order IDs for market-based orders only
+    }
+
     // Entry/exit hop
     function entryExitHop(
-        HopLibrary.HopRequest memory request,
+        HopRequest memory request,
         uint256 hopId,
         address user,
         address shockhopper,
         address crossDriver,
         address proxyRouter
     ) external {
-        HopLibrary.StalledHop memory stalledHop = HopLibrary.StalledHop({
+        StalledHop memory stalledHop = StalledHop({
             stage: 0,
             currentListing: request.listingAddresses[0],
             positionId: 0,
@@ -162,7 +213,7 @@ contract CrossLibrary {
             entry: request.positionParams1.entry,
             positionType: request.positionParams1.positionType,
             payoutId: 0,
-            orderIds: new uint256[](request.numListings) // Initialize orderIds
+            orderIds: new uint256[](request.numListings)
         });
 
         // Validate impactPricePercents
@@ -238,7 +289,28 @@ contract CrossLibrary {
             stalledHop.positionId = positionId;
         }
 
-        ISSShockhopper(shockhopper).updateStalledHop(hopId, stalledHop);
+        // Convert local StalledHop to IHopLibrary.StalledHop for interface compatibility
+        IHopLibrary.StalledHop memory hopForShockhopper = IHopLibrary.StalledHop({
+            stage: stalledHop.stage,
+            currentListing: stalledHop.currentListing,
+            positionId: stalledHop.positionId,
+            minPrice: stalledHop.minPrice,
+            maxPrice: stalledHop.maxPrice,
+            hopMaker: stalledHop.hopMaker,
+            remainingListings: stalledHop.remainingListings,
+            principalAmount: stalledHop.principalAmount,
+            startToken: stalledHop.startToken,
+            endToken: stalledHop.endToken,
+            settleType: stalledHop.settleType,
+            hopStatus: stalledHop.hopStatus,
+            driverType: stalledHop.driverType,
+            entry: stalledHop.entry,
+            positionType: stalledHop.positionType,
+            payoutId: stalledHop.payoutId,
+            orderIds: stalledHop.orderIds
+        });
+
+        ISSShockhopper(shockhopper).updateStalledHop(hopId, hopForShockhopper);
         ISSShockhopper(shockhopper).updateHopsByAddress(user, hopId);
     }
 
@@ -250,62 +322,104 @@ contract CrossLibrary {
         address crossDriver,
         address proxyRouter
     ) external {
-        HopLibrary.StalledHop memory hop = ISSShockhopper(shockhopper).getHopDetails(hopId);
+        IHopLibrary.StalledHop memory hop = ISSShockhopper(shockhopper).getHopDetails(hopId);
         if (hop.hopStatus != 1) return;
 
-        if (hop.entry) {
-            (, , bool status1, ) = ISSCrossDriver(crossDriver).positionCore(hop.positionId);
+        // Convert IHopLibrary.StalledHop to local StalledHop for internal processing
+        StalledHop memory localHop = StalledHop({
+            stage: hop.stage,
+            currentListing: hop.currentListing,
+            positionId: hop.positionId,
+            minPrice: hop.minPrice,
+            maxPrice: hop.maxPrice,
+            hopMaker: hop.hopMaker,
+            remainingListings: hop.remainingListings,
+            principalAmount: hop.principalAmount,
+            startToken: hop.startToken,
+            endToken: hop.endToken,
+            settleType: hop.settleType,
+            hopStatus: hop.hopStatus,
+            driverType: hop.driverType,
+            entry: hop.entry,
+            positionType: hop.positionType,
+            payoutId: hop.payoutId,
+            orderIds: hop.orderIds
+        });
+
+        if (localHop.entry) {
+            (, , bool status1, ) = ISSCrossDriver(crossDriver).positionCore(localHop.positionId);
             if (status1) {
-                hop.hopStatus = 2;
+                localHop.hopStatus = 2;
                 ISSShockhopper(shockhopper).updateTotalHops(hopId);
             }
-        } else if (hop.payoutId != 0) {
+        } else if (localHop.payoutId != 0) {
             // Check payout status
-            ISSListing listing =Dias ISSListing(hop.currentListing);
-            (address maker, , uint256 required, uint256 filled, , uint8 status) = hop.positionType == 0
-                ? listing.getLongPayout(hop.payoutId)
-                : listing.getShortPayout(hop.payoutId);
-            if (maker != address(0) && (status == 3 || required == filled)) {
-                hop.hopStatus = 2;
+            ISSListing listing = ISSListing(localHop.currentListing);
+            ISSListing.PayoutDetails memory payout = localHop.positionType == 0
+                ? listing.getLongPayout(localHop.payoutId)
+                : listing.getShortPayout(localHop.payoutId);
+            if (payout.makerAddress != address(0) && (payout.status == 3 || payout.required == payout.filled)) {
+                localHop.hopStatus = 2;
                 ISSShockhopper(shockhopper).updateTotalHops(hopId);
             }
-        } else if (hop.settleType == 0 && hop.stage < hop.orderIds.length && hop.orderIds[hop.stage] != 0) {
+        } else if (localHop.settleType == 0 && localHop.stage < localHop.orderIds.length && localHop.orderIds[localHop.stage] != 0) {
             // Check order status for market-based hops
-            ISSListing listing = ISSListing(hop.currentListing);
-            (address maker, , , , uint256 pending, , uint8 status) = hop.positionType == 0
-                ? listing.getBuyOrder(hop.orderIds[hop.stage])
-                : listing.getSellOrder(hop.orderIds[hop.stage]);
+            ISSListing listing = ISSListing(localHop.currentListing);
+            (address maker, , , , uint256 pending, , uint8 status) = localHop.positionType == 0
+                ? listing.getBuyOrder(localHop.orderIds[localHop.stage])
+                : listing.getSellOrder(localHop.orderIds[localHop.stage]);
             if (maker != address(0) && (status == 3 || pending == 0)) {
-                if (hop.stage + 1 >= hop.remainingListings.length) {
-                    hop.hopStatus = 2;
+                if (localHop.stage + 1 >= localHop.remainingListings.length) {
+                    localHop.hopStatus = 2;
                     ISSShockhopper(shockhopper).updateTotalHops(hopId);
                 } else {
-                    hop.stage += 1;
-                    hop.currentListing = hop.remainingListings[0];
-                    address[] memory newRemaining = new address[](hop.remainingListings.length - 1);
+                    localHop.stage += 1;
+                    localHop.currentListing = localHop.remainingListings[0];
+                    address[] memory newRemaining = new address[](localHop.remainingListings.length - 1);
                     for (uint256 i = 0; i < newRemaining.length; i++) {
-                        newRemaining[i] = hop.remainingListings[i + 1];
+                        newRemaining[i] = localHop.remainingListings[i + 1];
                     }
-                    hop.remainingListings = newRemaining;
+                    localHop.remainingListings = newRemaining;
                 }
             }
-        } else if (hop.settleType == 1) {
+        } else if (localHop.settleType == 1) {
             // Assume liquidity-based settlement is complete
-            if (hop.stage + 1 >= hop.remainingListings.length) {
-                hop.hopStatus = 2;
+            if (localHop.stage + 1 >= localHop.remainingListings.length) {
+                localHop.hopStatus = 2;
                 ISSShockhopper(shockhopper).updateTotalHops(hopId);
             } else {
-                hop.stage += 1;
-                hop.currentListing = hop.remainingListings[0];
-                address[] memory newRemaining = new address[](hop.remainingListings.length - 1);
+                localHop.stage += 1;
+                localHop.currentListing = localHop.remainingListings[0];
+                address[] memory newRemaining = new address[](localHop.remainingListings.length - 1);
                 for (uint256 i = 0; i < newRemaining.length; i++) {
-                    newRemaining[i] = hop.remainingListings[i + 1];
+                    newRemaining[i] = localHop.remainingListings[i + 1];
                 }
-                hop.remainingListings = newRemaining;
+                localHop.remainingListings = newRemaining;
             }
         }
 
-        ISSShockhopper(shockhopper).updateStalledHop(hopId, hop);
+        // Convert back to IHopLibrary.StalledHop for update
+        IHopLibrary.StalledHop memory hopForShockhopper = IHopLibrary.StalledHop({
+            stage: localHop.stage,
+            currentListing: localHop.currentListing,
+            positionId: localHop.positionId,
+            minPrice: localHop.minPrice,
+            maxPrice: localHop.maxPrice,
+            hopMaker: localHop.hopMaker,
+            remainingListings: localHop.remainingListings,
+            principalAmount: localHop.principalAmount,
+            startToken: localHop.startToken,
+            endToken: localHop.endToken,
+            settleType: localHop.settleType,
+            hopStatus: localHop.hopStatus,
+            driverType: localHop.driverType,
+            entry: localHop.entry,
+            positionType: localHop.positionType,
+            payoutId: localHop.payoutId,
+            orderIds: localHop.orderIds
+        });
+
+        ISSShockhopper(shockhopper).updateStalledHop(hopId, hopForShockhopper);
     }
 
     // Cancel hop
@@ -316,30 +430,137 @@ contract CrossLibrary {
         address crossDriver,
         address proxyRouter
     ) external {
-        HopLibrary.StalledHop memory hop = ISSShockhopper(shockhopper).getHopDetails(hopId);
-        require(hop.hopMaker == user, "Not hop maker");
-        require(hop.hopStatus == 1, "Hop not stalled");
+        IHopLibrary.StalledHop memory hop = ISSShockhopper(shockhopper).getHopDetails(hopId);
+
+        // Convert IHopLibrary.StalledHop to local StalledHop
+        StalledHop memory localHop = StalledHop({
+            stage: hop.stage,
+            currentListing: hop.currentListing,
+            positionId: hop.positionId,
+            minPrice: hop.minPrice,
+            maxPrice: hop.maxPrice,
+            hopMaker: hop.hopMaker,
+            remainingListings: hop.remainingListings,
+            principalAmount: hop.principalAmount,
+            startToken: hop.startToken,
+            endToken: hop.endToken,
+            settleType: hop.settleType,
+            hopStatus: hop.hopStatus,
+            driverType: hop.driverType,
+            entry: hop.entry,
+            positionType: hop.positionType,
+            payoutId: hop.payoutId,
+            orderIds: hop.orderIds
+        });
+
+        require(localHop.hopMaker == user, "Not hop maker");
+        require(localHop.hopStatus == 1, "Hop not stalled");
 
         // Cancel orders for market-based hops only
-        if (hop.settleType == 0) {
-            for (uint256 i = 0; i < hop.orderIds.length; i++) {
-                if (hop.orderIds[i] != 0) {
-                    ISSProxyRouter(proxyRouter).cancelOrder(hop.remainingListings[i], hop.orderIds[i], hop.positionType == 0);
+        if (localHop.settleType == 0) {
+            for (uint256 i = 0; i < localHop.orderIds.length; i++) {
+                if (localHop.orderIds[i] != 0) {
+                    ISSProxyRouter(proxyRouter).cancelOrder(localHop.remainingListings[i], localHop.orderIds[i], localHop.positionType == 0);
                 }
             }
         }
 
         // Cancel position if exists
-        if (hop.positionId != 0) {
-            ISSCrossDriver(crossDriver).cancelPosition(hop.positionId);
+        if (localHop.positionId != 0) {
+            ISSCrossDriver(crossDriver).cancelPosition(localHop.positionId);
         }
 
-        hop.hopStatus = 2;
-        ISSShockhopper(shockhopper).updateStalledHop(hopId, hop);
+        localHop.hopStatus = 2;
+
+        // Convert back to IHopLibrary.StalledHop for update
+        IHopLibrary.StalledHop memory hopForShockhopper = IHopLibrary.StalledHop({
+            stage: localHop.stage,
+            currentListing: localHop.currentListing,
+            positionId: localHop.positionId,
+            minPrice: localHop.minPrice,
+            maxPrice: localHop.maxPrice,
+            hopMaker: localHop.hopMaker,
+            remainingListings: localHop.remainingListings,
+            principalAmount: localHop.principalAmount,
+            startToken: localHop.startToken,
+            endToken: localHop.endToken,
+            settleType: localHop.settleType,
+            hopStatus: localHop.hopStatus,
+            driverType: localHop.driverType,
+            entry: localHop.entry,
+            positionType: localHop.positionType,
+            payoutId: localHop.payoutId,
+            orderIds: localHop.orderIds
+        });
+
+        ISSShockhopper(shockhopper).updateStalledHop(hopId, hopForShockhopper);
         ISSShockhopper(shockhopper).removeHopByAddress(user, hopId);
     }
 
-    // Helper: Enter position
+    // Helper: Calculate margins for position entry
+    function calculateMargins(
+        uint256 amount,
+        uint256 ratio
+    ) internal pure returns (uint256 initialMargin, uint256 excessMargin) {
+        initialMargin = amount * ratio / 100;
+        excessMargin = amount * (100 - ratio) / 100;
+    }
+
+    // Helper: Determine token and normalize amount
+    function getTokenAndAmount(
+        address listingAddress,
+        uint8 positionType,
+        uint256 amount
+    ) internal view returns (address token, uint256 rawAmount) {
+        token = positionType == 0 ? ISSListing(listingAddress).tokenA() : ISSListing(listingAddress).tokenB();
+        rawAmount = denormalizeForToken(amount, token);
+    }
+
+    // Helper: Handle token transfer and approval
+    function handleTokenTransfer(
+        address token,
+        address user,
+        address crossDriver,
+        uint256 rawAmount
+    ) internal {
+        if (token != address(0)) {
+            IERC20(token).safeTransferFrom(user, address(this), rawAmount);
+            IERC20(token).safeApprove(crossDriver, rawAmount);
+        }
+    }
+
+    // Helper: Execute position entry
+    function executePositionEntry(
+        address listingAddress,
+        PositionParams1 memory params1,
+        PositionParams2 memory params2,
+        address crossDriver,
+        uint256 rawAmount
+    ) internal returns (uint256) {
+        if (params1.positionType == 0) {
+            return ISSCrossDriver(crossDriver).enterLong{value: rawAmount}(
+                listingAddress,
+                params2.entryPrice,
+                params1.amount * params1.ratio / 100,
+                params1.amount * (100 - params1.ratio) / 100,
+                params1.leverage,
+                params2.stopLossPrice,
+                params2.takeProfitPrice
+            );
+        } else {
+            return ISSCrossDriver(crossDriver).enterShort{value: rawAmount}(
+                listingAddress,
+                params2.entryPrice,
+                params1.amount * params1.ratio / 100,
+                params1.amount * (100 - params1.ratio) / 100,
+                params1.leverage,
+                params2.stopLossPrice,
+                params2.takeProfitPrice
+            );
+        }
+    }
+
+    // Refactored: Enter position
     function enterPosition(
         address listingAddress,
         PositionParams1 memory params1,
@@ -347,40 +568,62 @@ contract CrossLibrary {
         address crossDriver,
         address user
     ) internal returns (uint256) {
-        uint256 initialMargin = params1.amount * params1.ratio / 100;
-        uint256 excessMargin = params1.amount * (100 - params1.ratio) / 100;
-        address token = params1.positionType == 0 ? ISSListing(listingAddress).tokenA() : ISSListing(listingAddress).tokenB();
-        uint256 rawAmount = denormalizeForToken(params1.amount, token);
+        // Step 1: Calculate margins
+        (uint256 initialMargin, uint256 excessMargin) = calculateMargins(params1.amount, params1.ratio);
 
-        if (token != address(0)) {
-            IERC20(token).safeTransferFrom(user, address(this), rawAmount);
-            IERC20(token).safeApprove(crossDriver, rawAmount);
-        }
+        // Step 2: Get token and normalized amount
+        (address token, uint256 rawAmount) = getTokenAndAmount(listingAddress, params1.positionType, params1.amount);
 
-        if (params1.positionType == 0) {
-            return ISSCrossDriver(crossDriver).enterLong{value: token == address(0) ? rawAmount : 0}(
-                listingAddress,
-                params2.entryPrice,
-                initialMargin,
-                excessMargin,
-                params1.leverage,
-                params2.stopLossPrice,
-                params2.takeProfitPrice
-            );
+        // Step 3: Handle token transfer and approval
+        handleTokenTransfer(token, user, crossDriver, rawAmount);
+
+        // Step 4: Execute position entry
+        return executePositionEntry(listingAddress, params1, params2, crossDriver, token == address(0) ? rawAmount : 0);
+    }
+
+    // Helper: Fetch payout ID
+    function fetchPayoutId(address listingAddress) internal view returns (uint256) {
+        ISSListing listing = ISSListing(listingAddress);
+        uint256 listingId = listing.getListingId();
+        return listing.getNextOrderId(listingId);
+    }
+
+    // Helper: Close position
+    function closePosition(
+        uint256 positionId,
+        uint8 positionType,
+        address crossDriver
+    ) internal {
+        if (positionType == 0) {
+            ISSCrossDriver(crossDriver).closeLongPosition(positionId);
         } else {
-            return ISSCrossDriver(crossDriver).enterShort{value: token == address(0) ? rawAmount : 0}(
-                listingAddress,
-                params2.entryPrice,
-                initialMargin,
-                excessMargin,
-                params1.leverage,
-                params2.stopLossPrice,
-                params2.takeProfitPrice
-            );
+            ISSCrossDriver(crossDriver).closeShortPosition(positionId);
         }
     }
 
-    // Helper: Close position and queue payout
+    // Helper: Settle or liquidate payout
+    function settleOrLiquidatePayout(
+        uint8 positionType,
+        address listingAddress,
+        address proxyRouter,
+        uint8 settleType
+    ) internal {
+        if (positionType == 0) {
+            if (settleType == 0) {
+                ISSProxyRouter(proxyRouter).settleLongPayout(listingAddress);
+            } else {
+                ISSProxyRouter(proxyRouter).liquidLongPayout(listingAddress);
+            }
+        } else {
+            if (settleType == 0) {
+                ISSProxyRouter(proxyRouter).settleShortPayout(listingAddress);
+            } else {
+                ISSProxyRouter(proxyRouter).liquidShortPayout(listingAddress);
+            }
+        }
+    }
+
+    // Refactored: Close position and queue payout
     function closeAndQueuePayout(
         uint256 positionId,
         uint8 positionType,
@@ -389,25 +632,14 @@ contract CrossLibrary {
         address proxyRouter,
         uint8 settleType
     ) internal returns (uint256) {
-        ISSListing listing = ISSListing(listingAddress);
-        uint256 listingId = listing.getListingId();
-        uint256 payoutId = listing.getNextOrderId(listingId);
+        // Step 1: Fetch payout ID
+        uint256 payoutId = fetchPayoutId(listingAddress);
 
-        if (positionType == 0) {
-            ISSCrossDriver(crossDriver).closeLongPosition(positionId);
-            if (settleType == 0) {
-                ISSProxyRouter(proxyRouter).settleLongPayout(listingAddress);
-            } else {
-                ISSProxyRouter(proxyRouter).liquidLongPayout(listingAddress);
-            }
-        } else {
-            ISSCrossDriver(crossDriver).closeShortPosition(positionId);
-            if (settleType == 0) {
-                ISSProxyRouter(proxyRouter).settleShortPayout(listingAddress);
-            } else {
-                ISSProxyRouter(proxyRouter).liquidShortPayout(listingAddress);
-            }
-        }
+        // Step 2: Close position
+        closePosition(positionId, positionType, crossDriver);
+
+        // Step 3: Settle or liquidate payout
+        settleOrLiquidatePayout(positionType, listingAddress, proxyRouter, settleType);
 
         return payoutId;
     }
