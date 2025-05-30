@@ -3,8 +3,8 @@ pragma solidity ^0.8.0;
 
 pragma solidity ^0.8.0;
 
-import "https://github.com/OpenZeppelin/openzeppelin-contracts/blob/v5.0.1/contracts/token/ERC20/IERC20.sol";
-import "https://github.com/OpenZeppelin/openzeppelin-contracts/blob/v5.0.1/contracts/token/ERC721/IERC721.sol";
+import "./imports/IERC20.sol";
+import "./imports/IERC721.sol";
 import "./Ownable.sol";
 
 interface ILUSD {
