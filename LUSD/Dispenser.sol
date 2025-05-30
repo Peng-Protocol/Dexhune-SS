@@ -2,7 +2,7 @@
 /// @title LUSD Dispenser
 
 pragma solidity ^0.8.28;
-import "./Ownable.sol";
+import "./imports/Ownable.sol";
 import "./Normalizer.sol";
 import "./interfaces/IERC20.sol";
 import "./interfaces/IAggregator.sol";
