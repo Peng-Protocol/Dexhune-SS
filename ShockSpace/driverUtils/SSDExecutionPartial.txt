@@ -8,7 +8,6 @@ pragma solidity ^0.8.1;
 // - Compatible with SSDUtilityPartial.sol v0.0.2, SSDPositionPartial.sol v0.0.2, SSIsolatedDriver.sol v0.0.2.
 
 import "./SSDPositionPartial.sol";
-import "./imports/SafeERC20.sol";
 
 contract SSDExecutionPartial is SSDPositionPartial {
     using SafeERC20 for IERC20;

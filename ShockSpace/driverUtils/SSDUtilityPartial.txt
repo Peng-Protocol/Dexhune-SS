@@ -6,8 +6,30 @@ pragma solidity ^0.8.1;
 // - Removed Strings.sol import as it is no longer used.
 // - Compatible with SSDPositionPartial.sol v0.0.2, SSDExecutionPartial.sol v0.0.2, SSIsolatedDriver.sol v0.0.2.
 
-import "../imports/IERC20.sol";
+import "../imports/SafeERC20.sol";
 import "../imports/IERC20Metadata.sol";
+
+  // Interfaces
+    interface ISSListing {
+        function prices(uint256) external view returns (uint256);
+        function volumeBalances(uint256) external view returns (uint256 xBalance, uint256 yBalance);
+        function liquidityAddresses(uint256) external view returns (address);
+        function tokenA() external view returns (address);
+        function tokenB() external view returns (address);
+        function ssUpdate(address caller, PayoutUpdate[] calldata updates) external;
+        function update(address caller, UpdateType[] memory updates) external;
+        function decimalsA() external view returns (uint8);
+        function decimalsB() external view returns (uint8);
+    }
+
+    interface ISSAgent {
+        function getListing(address tokenA, address tokenB) external view returns (address);
+    }
+
+    interface ISSLiquidityTemplate {
+        function liquidityDetailsView() external view returns (uint256 xLiquid, uint256 yLiquid, uint256 xFees, uint256 yFees);
+        function addFees(address caller, bool isX, uint256 fee) external;
+    } 
 
 contract SSDUtilityPartial {
     // Constants
@@ -152,27 +174,6 @@ contract SSDUtilityPartial {
         address recipient;
     }
 
-    // Interfaces
-    interface ISSListing {
-        function prices(uint256) external view returns (uint256);
-        function volumeBalances(uint256) external view returns (uint256 xBalance, uint256 yBalance);
-        function liquidityAddresses(uint256) external view returns (address);
-        function tokenA() external view returns (address);
-        function tokenB() external view returns (address);
-        function ssUpdate(address caller, PayoutUpdate[] calldata updates) external;
-        function update(address caller, UpdateType[] memory updates) external;
-        function decimalsA() external view returns (uint8);
-        function decimalsB() external view returns (uint8);
-    }
-
-    interface ISSAgent {
-        function getListing(address tokenA, address tokenB) external view returns (address);
-    }
-
-    interface ISSLiquidityTemplate {
-        function liquidityDetailsView() external view returns (uint256 xLiquid, uint256 yLiquid, uint256 xFees, uint256 yFees);
-        function addFees(address caller, bool isX, uint256 fee) external;
-    }
 
     // Constructor
     constructor() {
