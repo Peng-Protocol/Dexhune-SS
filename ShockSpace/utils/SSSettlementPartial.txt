@@ -1,0 +1,205 @@
+// SPDX-License-Identifier: BSD-3-Clause
+pragma solidity ^0.8.1;
+
+// Version: 0.0.7
+// Changes:
+// - v0.0.7: Removed ISSAgent.globalizeOrders from _processOrderUpdate, globalization handled by SSListingTemplate.
+// - v0.0.7: Fixed syntax errors from artifact (c4f5e6a7-b8c9-49bc-1234-f56789abcdef0).
+// - v0.0.7: Restored _processOrderUpdate logic to match SSSettlementPartial.txt, excluding globalizeOrders.
+// - v0.0.7: Corrected _processPayoutUpdate status logic (3 : 2) and parameter typing.
+// - v0.0.7: Ensured compatibility with SSListingTemplate.sol (v0.0.5), SSLiquidityTemplate.sol (v0.0.4).
+
+import "./SSOrderPartial.sol";
+
+contract SSSettlementPartial is SSOrderPartial {
+    function _computeImpact(
+        address listing,
+        uint256 amount,
+        bool isBuy
+    ) internal view returns (uint256) {
+        ISSListingTemplate listingContract = ISSListingTemplate(listing);
+        (uint256 xBalance, uint256 yBalance, , ) = listingContract.listingVolumeBalancesView();
+        if (isBuy) {
+            uint256 newY = yBalance + amount;
+            return newY > 0 ? (xBalance * 1e18) / newY : 0;
+        } else {
+            uint256 newX = xBalance + amount;
+            return newX > 0 ? (yBalance * 1e18) / newX : 0;
+        }
+    }
+
+    function _processOrderUpdate(
+        address listing,
+        uint256 orderId,
+        uint256 amount,
+        bool isBuy
+    ) internal returns (uint256 amountReceived) {
+        ISSListingTemplate listingContract = ISSListingTemplate(listing);
+        ISSListingTemplate.UpdateType[] memory updates = new ISSListingTemplate.UpdateType[](1);
+        address tokenAddress = isBuy ? tokenB[listing] : tokenA[listing];
+        uint8 decimals = isBuy ? decimalsB[listing] : decimalsA[listing];
+        uint256 normalizedAmount = listingContract.normalize(amount, decimals);
+        updates[0] = ISSListingTemplate.UpdateType({
+            updateType: isBuy ? 0 : 1,
+            index: orderId,
+            value: normalizedAmount,
+            addr: address(0),
+            recipient: address(0)
+        });
+        address recipient = isBuy ? listingContract.getBuyOrderCore(orderId).recipientAddress : listingContract.getSellOrderCore(orderId).recipientAddress;
+        uint256 preBalance = tokenAddress == address(0) ? address(this).balance : IERC20(tokenAddress).balanceOf(address(this));
+        listingContract.transact(address(this), tokenAddress, amount, recipient);
+        uint256 postBalance = tokenAddress == address(0) ? address(this).balance : IERC20(tokenAddress).balanceOf(address(this));
+        amountReceived = postBalance - preBalance;
+        uint256 normalizedReceived = listingContract.normalize(amountReceived, decimals);
+        listingContract.update(address(this), updates);
+        orderPendingAmounts[listing][orderId] -= normalizedReceived;
+        return amountReceived;
+    }
+
+    function _processPayoutUpdate(
+        address listing,
+        uint256 orderId,
+        uint256 amount,
+        bool isLong
+    ) internal {
+        ISSListingTemplate listingContract = ISSListingTemplate(listing);
+        ISSListingTemplate.PayoutUpdate[] memory payoutUpdates = new ISSListingTemplate.PayoutUpdate[](1);
+        payoutUpdates[0] = ISSListingTemplate.PayoutUpdate({
+            orderId: orderId,
+            amount: amount,
+            status: amount >= payoutPendingAmounts[listing][orderId] ? 3 : 2,
+            isLong: isLong
+        });
+        listingContract.ssUpdate(address(this), payoutUpdates);
+        payoutPendingAmounts[listing][orderId] -= amount;
+    }
+
+    function executeBuyOrders(address listing, uint256 maxIterations) internal onlyValidListing(listing) {
+        ISSListingTemplate listingContract = ISSListingTemplate(listing);
+        uint256[] storage orders = activeBuyOrders[listing];
+        uint256 processed = 0;
+        ISSListingTemplate.UpdateType[] memory updates = new ISSListingTemplate.UpdateType[](1);
+        for (uint256 i = 0; i < orders.length && processed < maxIterations; ) {
+            uint256 orderId = orders[i];
+            (uint256 pending, ) = listingContract.getBuyOrderAmounts(orderId);
+            if (pending == 0) {
+                orders[i] = orders[orders.length - 1];
+                orders.pop();
+                continue;
+            }
+            (uint256 maxPrice, uint256 minPrice) = listingContract.getBuyOrderPricing(orderId);
+            uint256 impactPrice = _computeImpact(listing, pending, true);
+            if (impactPrice > maxPrice || impactPrice < minPrice) {
+                i++;
+                continue;
+            }
+            uint256 amountReceived = _processOrderUpdate(listing, orderId, pending, true);
+            if (amountReceived == 0) {
+                i++;
+                continue;
+            }
+            updates[0] = ISSListingTemplate.UpdateType({
+                updateType: 0,
+                index: orderId,
+                value: amountReceived,
+                addr: listingContract.getBuyOrderCore(orderId).makerAddress,
+                recipient: listingContract.getBuyOrderCore(orderId).recipientAddress
+            });
+            listingContract.update(address(this), updates);
+            processed++;
+            if (orderPendingAmounts[listing][orderId] == 0) {
+                orders[i] = orders[orders.length - 1];
+                orders.pop();
+            } else {
+                i++;
+            }
+        }
+    }
+
+    function executeSellOrders(address listing, uint256 maxIterations) internal onlyValidListing(listing) {
+        ISSListingTemplate listingContract = ISSListingTemplate(listing);
+        uint256[] storage orders = activeSellOrders[listing];
+        uint256 processed = 0;
+        ISSListingTemplate.UpdateType[] memory updates = new ISSListingTemplate.UpdateType[](1);
+        for (uint256 i = 0; i < orders.length && processed < maxIterations; ) {
+            uint256 orderId = orders[i];
+            (uint256 pending, ) = listingContract.getSellOrderAmounts(orderId);
+            if (pending == 0) {
+                orders[i] = orders[orders.length - 1];
+                orders.pop();
+                continue;
+            }
+            (uint256 maxPrice, uint256 minPrice) = listingContract.getSellOrderPricing(orderId);
+            uint256 impactPrice = _computeImpact(listing, pending, false);
+            if (impactPrice > maxPrice || impactPrice < minPrice) {
+                i++;
+                continue;
+            }
+            uint256 amountReceived = _processOrderUpdate(listing, orderId, pending, false);
+            if (amountReceived == 0) {
+                i++;
+                continue;
+            }
+            updates[0] = ISSListingTemplate.UpdateType({
+                updateType: 1,
+                index: orderId,
+                value: amountReceived,
+                addr: listingContract.getSellOrderCore(orderId).makerAddress,
+                recipient: listingContract.getSellOrderCore(orderId).recipientAddress
+            });
+            listingContract.update(address(this), updates);
+            processed++;
+            if (orderPendingAmounts[listing][orderId] == 0) {
+                orders[i] = orders[orders.length - 1];
+                orders.pop();
+            } else {
+                i++;
+            }
+        }
+    }
+
+    function executeLongPayouts(address listing, uint256 maxIterations) internal onlyValidListing(listing) {
+        uint256[] storage orders = activeLongPayouts[listing];
+        uint256 processed = 0;
+        for (uint256 i = 0; i < orders.length && processed < maxIterations; ) {
+            uint256 orderId = orders[i];
+            ISSListingTemplate.LongPayoutStruct memory payout = ISSListingTemplate(listing).getLongPayout(orderId);
+            if (payout.required == 0) {
+                orders[i] = orders[orders.length - 1];
+                orders.pop();
+                continue;
+            }
+            _processPayoutUpdate(listing, orderId, payout.required, true);
+            processed++;
+            if (payoutPendingAmounts[listing][orderId] == 0) {
+                orders[i] = orders[orders.length - 1];
+                orders.pop();
+            } else {
+                i++;
+            }
+        }
+    }
+
+    function executeShortPayouts(address listing, uint256 maxIterations) internal onlyValidListing(listing) {
+        uint256[] storage orders = activeShortPayouts[listing];
+        uint256 processed = 0;
+        for (uint256 i = 0; i < orders.length && processed < maxIterations; ) {
+            uint256 orderId = orders[i];
+            ISSListingTemplate.ShortPayoutStruct memory payout = ISSListingTemplate(listing).getShortPayout(orderId);
+            if (payout.required == 0) {
+                orders[i] = orders[orders.length - 1];
+                orders.pop();
+                continue;
+            }
+            _processPayoutUpdate(listing, orderId, payout.required, false);
+            processed++;
+            if (payoutPendingAmounts[listing][orderId] == 0) {
+                orders[i] = orders[orders.length - 1];
+                orders.pop();
+            } else {
+                i++;
+            }
+        }
+    }
+}
