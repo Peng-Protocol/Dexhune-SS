@@ -1,8 +1,9 @@
 // SPDX-License-Identifier: BSD-3-Clause
 pragma solidity ^0.8.1;
 
-// Version: 0.0.7 (Updated)
+// Version: 0.0.8 (Updated)
 // Changes:
+// - v0.0.8: Renamed state variables tokenA to tokenX, tokenB to tokenY, decimalsA to decimalX, decimalsB to decimalY, set to private to resolve naming conflicts with view functions (lines 68-71).
 // - v0.0.7: Defined ISSListing interface inline, removed import (lines 14-28).
 // - v0.0.7: Reduced PayoutUpdate struct to payoutType, recipient, required (removed price, xBalance, yBalance, xVolume, yVolume) in ssUpdate (lines 140-144).
 // - v0.0.6: Replaced lastDay with LastDayFee struct to store xFees, yFees, timestamp (line 65).
@@ -64,10 +65,10 @@ contract SSListingTemplate is ReentrancyGuard {
 
     mapping(address => bool) public routers;
     bool public routersSet;
-    address public tokenA;
-    address public tokenB;
-    uint8 public decimalsA;
-    uint8 public decimalsB;
+    address private tokenX;
+    address private tokenY;
+    uint8 private decimalX;
+    uint8 private decimalY;
     uint256 public listingId;
     address public agent;
     address public registryAddress;
@@ -248,7 +249,7 @@ contract SSListingTemplate is ReentrancyGuard {
         if (registryAddress == address(0)) return;
         bool isBuy = block.timestamp % 2 == 0;
         uint256[] memory orders = isBuy ? pendingBuyOrders : pendingSellOrders;
-        address token = isBuy ? tokenB : tokenA;
+        address token = isBuy ? tokenY : tokenX;
         if (orders.length == 0) return;
         address[] memory tempMakers = new address[](orders.length);
         uint256 makerCount = 0;
@@ -297,13 +298,13 @@ contract SSListingTemplate is ReentrancyGuard {
     }
 
     function setTokens(address _tokenA, address _tokenB) external {
-        require(tokenA == address(0) && tokenB == address(0), "Tokens already set");
+        require(tokenX == address(0) && tokenY == address(0), "Tokens already set");
         require(_tokenA != _tokenB, "Tokens must be different");
         require(_tokenA != address(0) || _tokenB != address(0), "Both tokens cannot be zero");
-        tokenA = _tokenA;
-        tokenB = _tokenB;
-        decimalsA = _tokenA == address(0) ? 18 : IERC20(_tokenA).decimals();
-        decimalsB = _tokenB == address(0) ? 18 : IERC20(_tokenB).decimals();
+        tokenX = _tokenA;
+        tokenY = _tokenB;
+        decimalX = _tokenA == address(0) ? 18 : IERC20(_tokenA).decimals();
+        decimalY = _tokenB == address(0) ? 18 : IERC20(_tokenB).decimals();
     }
 
     function setAgent(address _agent) external {
@@ -318,9 +319,6 @@ contract SSListingTemplate is ReentrancyGuard {
         registryAddress = _registryAddress;
     }
 
-    
-    }
-
     function globalizeUpdate() internal {
         if (agent == address(0)) return;
         for (uint256 i = 0; i < pendingBuyOrders.length; i++) {
@@ -330,8 +328,8 @@ contract SSListingTemplate is ReentrancyGuard {
             if (order.status == 1 || order.status == 2) {
                 try ISSAgent(agent).globalizeOrders(
                     listingId,
-                    tokenA,
-                    tokenB,
+                    tokenX,
+                    tokenY,
                     orderId,
                     true,
                     order.makerAddress,
@@ -348,8 +346,8 @@ contract SSListingTemplate is ReentrancyGuard {
             if (order.status == 1 || order.status == 2) {
                 try ISSAgent(agent).globalizeOrders(
                     listingId,
-                    tokenA,
-                    tokenB,
+                    tokenX,
+                    tokenY,
                     orderId,
                     false,
                     order.makerAddress,
@@ -547,7 +545,7 @@ contract SSListingTemplate is ReentrancyGuard {
             lastDayFee.timestamp = _floorToMidnight(block.timestamp);
         }
 
-        if (token == tokenA) {
+        if (token == tokenX) {
             require(balances.xBalance >= normalizedAmount, "Insufficient xBalance");
             balances.xBalance -= normalizedAmount;
             balances.xVolume += normalizedAmount;
@@ -557,7 +555,7 @@ contract SSListingTemplate is ReentrancyGuard {
             } else {
                 IERC20(token).safeTransfer(recipient, amount);
             }
-        } else if (token == tokenB) {
+        } else if (token == tokenY) {
             require(balances.yBalance >= normalizedAmount, "Insufficient yBalance");
             balances.yBalance -= normalizedAmount;
             balances.yVolume += normalizedAmount;
@@ -590,19 +588,19 @@ contract SSListingTemplate is ReentrancyGuard {
     }
 
     function tokenA() external view returns (address) {
-        return tokenA;
+        return tokenX;
     }
 
     function tokenB() external view returns (address) {
-        return tokenB;
+        return tokenY;
     }
 
     function decimalsA() external view returns (uint8) {
-        return decimalsA;
+        return decimalX;
     }
 
     function decimalsB() external view returns (uint8) {
-        return decimalsB;
+        return decimalY;
     }
 
     function getListingId() external view returns (uint256) {

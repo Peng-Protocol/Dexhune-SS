@@ -174,7 +174,7 @@ contract SSMainPartial is ReentrancyGuard, Ownable {
     }
 
     mapping(address => bool) public isValidListing;
-    mapping(address => address) public liquidityAddresses;
+    mapping(address => address) public liquidityAddress;
     mapping(address => address) public tokenA;
     mapping(address => address) public tokenB;
     mapping(address => uint8) public decimalsA;

@@ -1,9 +1,9 @@
 // SPDX-License-Identifier: BSD-3-Clause
 pragma solidity ^0.8.1;
 
-// Version 0.0.3:
-// - Fixed shadowing of riskParams in computeParamsHelper, computeParams, and prepareCoreAndParams.
-// - Compatible with SSDUtilityPartial.sol v0.0.4, SSDExecutionPartial.sol v0.0.2, SSIsolatedDriver.sol v0.0.2.
+// Version 0.0.4:
+// - Fixed TypeError: Wrong argument count for liquidityAddressView calls in validateLeverageLimit and finalizePosition.
+// - Compatible with SSDUtilityPartial.sol v0.0.5, SSDExecutionPartial.sol v0.0.7, SSIsolatedDriver.sol v0.0.2.
 
 import "./SSDUtilityPartial.sol";
 
@@ -198,7 +198,7 @@ contract SSDPositionPartial is SSDUtilityPartial {
         uint8 leverageVal,
         uint8 positionType
     ) internal view {
-        address liquidityAddress = ISSListing(listingAddress).liquidityAddressView(uint256(uint160(listingAddress)));
+        address liquidityAddress = ISSListing(listingAddress).liquidityAddressView();
         (uint256 xLiquid, uint256 yLiquid,,) = ISSLiquidityTemplate(liquidityAddress).liquidityDetailsView();
         uint256 limitPercent = 101 - leverageVal;
         uint256 limit = positionType == 0
@@ -391,7 +391,7 @@ contract SSDPositionPartial is SSDUtilityPartial {
             block.timestamp
         );
 
-        address liquidityAddress = ISSListing(coreBase.listingAddress).liquidityAddressView(uint256(uint160(coreBase.listingAddress)));
+        address liquidityAddress = ISSListing(coreBase.listingAddress).liquidityAddressView();
         uint256 fee = (extParams.leverageParams.leverageVal - 1) * coreParams.marginParams.marginInitial / 100;
         if (fee > 0) {
             ISSLiquidityTemplate(liquidityAddress).addFees(address(this), coreBase.positionType == 0, fee);

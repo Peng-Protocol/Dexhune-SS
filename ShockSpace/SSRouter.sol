@@ -1,9 +1,10 @@
 // SPDX-License-Identifier: BSD-3-Clause
 pragma solidity ^0.8.1;
 
-// Version: 0.0.13
+// Version: 0.0.14 (Updated)
 // Changes:
-// - v0.0.13: Fixed TypeError in initializeListing by using distinct local variable names (tokenAAddress, tokenBAddress) to avoid shadowing tokenA and tokenB mappings. Updated liquidityAddresses assignment to call listingTemplate.liquidityAddressView() to match SSListingTemplate.sol (v0.0.8).
+// - v0.0.14: Added payable modifier to createBuyOrder and createSellOrder to fix TypeError for msg.value usage when handling native ETH.
+// - v0.0.13: Fixed TypeError in initializeListing by using distinct local variable names (tokenAAddress, tokenBAddress) to avoid shadowing tokenA and tokenB mappings. Updated liquidityAddress assignment to call listingTemplate.liquidityAddressView() to match SSListingTemplate.sol (v0.0.8).
 // - v0.0.12: Removed setRegistry and registryAddress references, as registry management moved to ISSListingTemplate to align with SSListingTemplate.sol (v0.0.8).
 // - v0.0.11: Removed listingAgent state variable and setListingAgent function, using inherited agent and setAgent from SSMainPartial.sol (v0.0.10). Updated setRegistry to use inherited agent.
 // - v0.0.10: Renamed _listingAgent parameter in setListingAgent to newListingAgent for clarity and consistency with listingAgent state variable.
@@ -16,7 +17,7 @@ pragma solidity ^0.8.1;
 // - v0.0.7: Renamed functions: createBuyOrder, createSellOrder, settleBuyOrders, settleSellOrders, settleBuyLiquid, settleSellLiquid.
 // - v0.0.7: Added liquidity functions (deposit, withdraw, claimFees, changeSlotDepositor) for SSLiquidityTemplate v0.0.4.
 // - v0.0.7: Updated initializeListing to populate mappings, validate listing via ISSAgent.getListing.
-// - Compatible with SSListingTemplate.sol (v0.0.8), SSLiquidityTemplate.sol (v0.0.4), SSSettlementPartial.sol (v0.0.13).
+// Compatible with SSListingTemplate.sol (v0.0.8), SSLiquidityTemplate.sol (v0.0.4), SSSettlementPartial.sol (v0.0.13).
 
 import "./utils/SSSettlementPartial.sol";
 
@@ -31,7 +32,7 @@ contract SSRouter is SSSettlementPartial {
         address tokenBAddress = listingTemplate.tokenB();
         require(ISSAgent(agentAddress).getListing(tokenAAddress, tokenBAddress) == listing, "Invalid listing");
         isValidListing[listing] = true;
-        liquidityAddresses[listing] = listingTemplate.liquidityAddressView();
+        liquidityAddress[listing] = listingTemplate.liquidityAddressView();
         tokenA[listing] = tokenAAddress;
         tokenB[listing] = tokenBAddress;
         decimalsA[listing] = listingTemplate.decimalsA();
@@ -45,14 +46,14 @@ contract SSRouter is SSSettlementPartial {
         uint256 amount,
         uint256 maxPrice,
         uint256 minPrice
-    ) external onlyValidListing(listing) nonReentrant {
+    ) external payable onlyValidListing(listing) nonReentrant {
         OrderPrep memory prep = _handleOrderPrep(listing, msg.sender, recipient, amount, maxPrice, minPrice, true);
         address tokenBAddress = tokenB[listing];
         uint256 preBalance = tokenBAddress == address(0) ? address(this).balance : 0;
         if (tokenBAddress == address(0)) {
             require(msg.value == amount, "Incorrect ETH amount");
         } else {
-            IERC20(tokenBAddress).safeTransferFrom(msg.sender, address(this), amount);
+            IERC20(tokenBAddress).transferFrom(msg.sender, address(this), amount);
         }
         uint256 postBalance = tokenBAddress == address(0) ? address(this).balance : IERC20(tokenBAddress).balanceOf(address(this));
         uint256 amountReceived = postBalance - preBalance;
@@ -66,14 +67,14 @@ contract SSRouter is SSSettlementPartial {
         uint256 amount,
         uint256 maxPrice,
         uint256 minPrice
-    ) external onlyValidListing(listing) nonReentrant {
+    ) external payable onlyValidListing(listing) nonReentrant {
         OrderPrep memory prep = _handleOrderPrep(listing, msg.sender, recipient, amount, maxPrice, minPrice, false);
         address tokenAAddress = tokenA[listing];
         uint256 preBalance = tokenAAddress == address(0) ? address(this).balance : 0;
         if (tokenAAddress == address(0)) {
             require(msg.value == amount, "Incorrect ETH amount");
         } else {
-            IERC20(tokenAAddress).safeTransferFrom(msg.sender, address(this), amount);
+            IERC20(tokenAAddress).transferFrom(msg.sender, address(this), amount);
         }
         uint256 postBalance = tokenAAddress == address(0) ? address(this).balance : IERC20(tokenB[listing]).balanceOf(address(this));
         uint256 amountReceived = postBalance - preBalance;
@@ -91,7 +92,7 @@ contract SSRouter is SSSettlementPartial {
 
     function settleBuyLiquid(address listing, uint256 amount) external onlyValidListing(listing) nonReentrant {
         ISSListingTemplate listingContract = ISSListingTemplate(listing);
-        ISSLiquidityTemplate liquidityContract = ISSLiquidityTemplate(liquidityAddresses[listing]);
+        ISSLiquidityTemplate liquidityContract = ISSLiquidityTemplate(liquidityAddress[listing]);
         require(liquidityContract.routers(address(this)), "Router not registered");
         (uint256 xAmount, uint256 yAmount) = liquidityContract.liquidityAmounts();
         require(yAmount >= amount, "Insufficient liquidity");
@@ -108,7 +109,7 @@ contract SSRouter is SSSettlementPartial {
 
     function settleSellLiquid(address listing, uint256 amount) external onlyValidListing(listing) nonReentrant {
         ISSListingTemplate listingContract = ISSListingTemplate(listing);
-        ISSLiquidityTemplate liquidityContract = ISSLiquidityTemplate(liquidityAddresses[listing]);
+        ISSLiquidityTemplate liquidityContract = ISSLiquidityTemplate(liquidityAddress[listing]);
         require(liquidityContract.routers(address(this)), "Router not registered");
         (uint256 xAmount, uint256 yAmount) = liquidityContract.liquidityAmounts();
         require(xAmount >= amount, "Insufficient liquidity");
@@ -146,27 +147,27 @@ contract SSRouter is SSSettlementPartial {
     }
 
     function deposit(address listing, address token, uint256 amount) external payable onlyValidListing(listing) nonReentrant {
-        ISSLiquidityTemplate liquidityContract = ISSLiquidityTemplate(liquidityAddresses[listing]);
+        ISSLiquidityTemplate liquidityContract = ISSLiquidityTemplate(liquidityAddress[listing]);
         require(liquidityContract.routers(address(this)), "Router not registered");
         require(token == tokenA[listing] || token == tokenB[listing], "Invalid token");
         if (token == address(0)) {
             require(msg.value == amount, "Incorrect ETH amount");
             liquidityContract.deposit{value: amount}(address(this), token, amount);
         } else {
-            IERC20(token).safeTransferFrom(msg.sender, address(this), amount);
+            IERC20(token).transferFrom(msg.sender, address(this), amount);
             IERC20(token).approve(address(liquidityContract), amount);
             liquidityContract.deposit(address(this), token, amount);
         }
     }
 
     function claimFees(address listing, uint256 liquidityIndex, bool isX, uint256 volume) external onlyValidListing(listing) nonReentrant {
-        ISSLiquidityTemplate liquidityContract = ISSLiquidityTemplate(liquidityAddresses[listing]);
+        ISSLiquidityTemplate liquidityContract = ISSLiquidityTemplate(liquidityAddress[listing]);
         require(liquidityContract.routers(address(this)), "Router not registered");
         liquidityContract.claimFees(address(this), listing, liquidityIndex, isX, volume);
     }
 
     function withdraw(address listing, uint256 amount, uint256 index, bool isX) external onlyValidListing(listing) nonReentrant {
-        ISSLiquidityTemplate liquidityContract = ISSLiquidityTemplate(liquidityAddresses[listing]);
+        ISSLiquidityTemplate liquidityContract = ISSLiquidityTemplate(liquidityAddress[listing]);
         require(liquidityContract.routers(address(this)), "Router not registered");
         ISSLiquidityTemplate.PreparedWithdrawal memory withdrawal = isX
             ? liquidityContract.xPrepOut(address(this), amount, index)
@@ -177,7 +178,7 @@ contract SSRouter is SSSettlementPartial {
     }
 
     function changeLiquiditySlotDepositor(address listing, bool isX, uint256 slotIndex, address newDepositor) external onlyValidListing(listing) nonReentrant {
-        ISSLiquidityTemplate liquidityContract = ISSLiquidityTemplate(liquidityAddresses[listing]);
+        ISSLiquidityTemplate liquidityContract = ISSLiquidityTemplate(liquidityAddress[listing]);
         require(liquidityContract.routers(address(this)), "Router not registered");
         require(newDepositor != address(0), "Invalid new depositor");
         liquidityContract.changeSlotDepositor(address(this), isX, slotIndex, newDepositor);
@@ -193,12 +194,12 @@ contract SSRouter is SSSettlementPartial {
         }
     }
 
-    function checkValidListing(address listing) public view returns (bool) {
+    function checkValidListing(address listing) public view {
         ISSListingTemplate listingTemplate = ISSListingTemplate(listing);
         address agentAddress = listingTemplate.agent();
-        if (agentAddress == address(0)) return false;
+        if (agentAddress == address(0)) revert("Agent not set");
         address tokenAAddress = listingTemplate.tokenA();
         address tokenBAddress = listingTemplate.tokenB();
-        return ISSAgent(agentAddress).getListing(tokenAAddress, tokenBAddress) == listing;
+        require(ISSAgent(agentAddress).getListing(tokenAAddress, tokenBAddress) == listing, "Invalid listing");
     }
 }

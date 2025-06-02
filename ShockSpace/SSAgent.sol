@@ -1,8 +1,11 @@
 // SPDX-License-Identifier: BSD-3-Clause
 pragma solidity ^0.8.1;
 
-// Version: 0.0.4 (Updated)
+// Version: 0.0.7
 // Changes:
+// - v0.0.7: Changed isValidListing visibility from internal to public to support both internal use in globalizeLiquidity and external calls.
+// - v0.0.6: Changed isValidListing visibility from external to internal to resolve undeclared identifier error in globalizeLiquidity.
+// - v0.0.5: Moved isValidListing function before globalizeLiquidity to resolve undeclared identifier error.
 // - v0.0.4: Updated globalizeLiquidity to validate caller as liquidity contract by checking listing address and isValidListing.
 // - v0.0.3: Added isValidListing function to check if an address is a valid listing and return its details.
 // - v0.0.2: Removed taxCollector state variable, determineCollector function, taxCollector checks in listToken/listNative, and setCollector call in _initializeLiquidity.
@@ -49,7 +52,7 @@ interface ISSLiquidityLogic {
 }
 
 interface ISSListing {
-    function liquidityAddress() external view returns (address);
+    function liquidityAddressView() external view returns (address);
 }
 
 contract SSAgent is Ownable {
@@ -238,6 +241,25 @@ contract SSAgent is Ownable {
         emit ListingCreated(tokenA, tokenB, listingAddress, liquidityAddress, listingCount);
         listingCount++;
         return (listingAddress, liquidityAddress);
+    }
+
+    function isValidListing(address listingAddress) public view returns (bool isValid, ListingDetails memory details) {
+        isValid = false;
+        for (uint256 i = 0; i < allListings.length; i++) {
+            if (allListings[i] == listingAddress) {
+                isValid = true;
+                (address tokenA, address tokenB) = ISSListingTemplate(listingAddress).getTokens();
+                address liquidityAddress = ISSListing(listingAddress).liquidityAddressView();
+                details = ListingDetails({
+                    listingAddress: listingAddress,
+                    liquidityAddress: liquidityAddress,
+                    tokenA: tokenA,
+                    tokenB: tokenB,
+                    listingId: i
+                });
+                break;
+            }
+        }
     }
 
     function globalizeLiquidity(
@@ -677,24 +699,5 @@ contract SSAgent is Ownable {
 
     function allListedTokensLength() external view returns (uint256) {
         return allListedTokens.length;
-    }
-
-    function isValidListing(address listingAddress) external view returns (bool isValid, ListingDetails memory details) {
-        isValid = false;
-        for (uint256 i = 0; i < allListings.length; i++) {
-            if (allListings[i] == listingAddress) {
-                isValid = true;
-                (address tokenA, address tokenB) = ISSListingTemplate(listingAddress).getTokens();
-                address liquidityAddress = ISSListing(listingAddress).liquidityAddress();
-                details = ListingDetails({
-                    listingAddress: listingAddress,
-                    liquidityAddress: liquidityAddress,
-                    tokenA: tokenA,
-                    tokenB: tokenB,
-                    listingId: i
-                });
-                break;
-            }
-        }
     }
 }

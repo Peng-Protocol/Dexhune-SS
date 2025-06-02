@@ -10,7 +10,7 @@ pragma solidity ^0.8.1;
 // - Added setAgent (owner-only).
 // - Compatible with SSDUtilityPartial.sol v0.0.2, SSDPositionPartial.sol v0.0.2, SSDExecutionPartial.sol v0.0.2.
 
-import "./utils/SSDExecutionPartial.sol";
+import "./driverUtils/SSDExecutionPartial.sol";
 import "./imports/SafeERC20.sol";
 import "./imports/ReentrancyGuard.sol";
 import "./imports/Ownable.sol";
