@@ -1,8 +1,9 @@
 // SPDX-License-Identifier: BSD-3-Clause
 pragma solidity ^0.8.1;
 
-// Version: 0.0.8
+// Version: 0.0.9
 // Changes:
+// - v0.0.9: Fixed TypeError in _clearOrderData by explicitly destructuring tuples from getBuyOrderCore and getSellOrderCore.
 // - v0.0.8: Updated to align with SSMainPartial.sol v0.0.8 and SSListingTemplate.sol v0.0.8.
 // - v0.0.7: Removed ISSAgent.globalizeOrders calls, globalization handled by SSListingTemplate.
 // - v0.0.7: Fixed _clearOrderData array index assignment (removed erroneous activeOrders[i] = i).
@@ -76,7 +77,7 @@ contract SSOrderPartial is SSMainPartial {
         });
         listingContract.update(address(this), updates);
         orderPendingAmounts[listing][orderId] = 0;
-        address maker = isBuy ? listingContract.getBuyOrderCore(orderId).makerAddress : listingContract.getSellOrderCore(orderId).makerAddress;
+        (address maker,,) = isBuy ? listingContract.getBuyOrderCore(orderId) : listingContract.getSellOrderCore(orderId);
         uint256[] storage makerOrders = makerActiveOrders[listing][maker];
         for (uint256 i = 0; i < makerOrders.length; i++) {
             if (makerOrders[i] == orderId) {

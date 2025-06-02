@@ -3,6 +3,10 @@
 */
 
 // Recent Changes:
+// - 2025-06-02: Added UpdateType struct and update function to ISSListing interface for volume balance updates. Version incremented to 0.0.7 for pre-testing.
+// - 2025-05-31: Added positionCount state variable to resolve undeclared identifier error in CSDExecutionPartial.
+// - 2025-05-31: Version incremented to 0.0.6 for pre-testing.
+// - 2025-05-31: Moved PositionCore1, PositionCore2, PriceParams1, PriceParams2, MarginParams1, MarginParams2, ExitParams, and OpenInterest structs and mappings from SSCrossDriver.sol to resolve identifier errors.
 // - 2025-05-30: Updated ISSLiquidityTemplate to include liquidityDetailsView for xLiquid and yLiquid.
 // - 2025-05-30: Version incremented to 0.0.4 for pre-testing.
 // - 2025-05-29: Added ISSAgent interface for listing validation.
@@ -19,7 +23,7 @@ import "../imports/Ownable.sol";
 interface ISSListing {
     function prices(address) external view returns (uint256);
     function volumeBalances(address) external view returns (uint256 xBalance, uint256 yBalance);
-    function liquidityAddresses(address) external view returns (address);
+    function liquidityAddressView(address) external view returns (address);
     function tokenA() external view returns (address);
     function tokenB() external view returns (address);
     function ssUpdate(address caller, PayoutUpdate[] calldata updates) external;
@@ -30,9 +34,6 @@ interface ISSListing {
     }
     function decimalsA() external view returns (uint8);
     function decimalsB() external view returns (uint8);
-}
-
-interface ISSLiquidityTemplate {
     struct UpdateType {
         uint8 updateType;
         uint256 index;
@@ -40,8 +41,18 @@ interface ISSLiquidityTemplate {
         address addr;
         address recipient;
     }
+    function update(address caller, UpdateType[] calldata updates) external;
+}
+
+interface ISSLiquidityTemplate {
+    struct UpdateType {
+        uint8 updateTipo;
+        uint256 index;
+        uint256 value;
+        address addr;
+        address recipient;
+    }
     function addFees(address caller, bool isX, uint256 fee) external;
-    // Fetch xLiquid, yLiquid, and fees from liquidity contract
     function liquidityDetailsView() external view returns (uint256 xLiquid, uint256 yLiquid, uint256 xFees, uint256 yFees);
 }
 
@@ -54,8 +65,63 @@ contract CSDUtilityPartial {
 
     uint256 public constant DECIMAL_PRECISION = 1e18;
     address public agentAddress;
+    uint256 public positionCount;
 
-    // makerTokenMargin[maker][token] represents totalMargin, the sum of taxedMargin and excessMargin provided by the maker for a specific token, tracked for accounting despite transfers to listingAddress.
+    struct PositionCore1 {
+        uint256 positionId;
+        address listingAddress;
+        address makerAddress;
+        uint8 positionType;
+    }
+
+    struct PositionCore2 {
+        bool status1;
+        uint8 status2;
+    }
+
+    struct PriceParams1 {
+        uint256 minEntryPrice;
+        uint256 maxEntryPrice;
+        uint256 minPrice;
+        uint256 priceAtEntry;
+        uint8 leverage;
+    }
+
+    struct PriceParams2 {
+        uint256 liquidationPrice;
+    }
+
+    struct MarginParams1 {
+        uint256 initialMargin;
+        uint256 taxedMargin;
+        uint256 excessMargin;
+        uint256 fee;
+    }
+
+    struct MarginParams2 {
+        uint256 initialLoan;
+    }
+
+    struct ExitParams {
+        uint256 stopLossPrice;
+        uint256 takeProfitPrice;
+        uint256 exitPrice;
+    }
+
+    struct OpenInterest {
+        uint256 leverageAmount;
+        uint256 timestamp;
+    }
+
+    mapping(uint256 => PositionCore1) public positionCore1;
+    mapping(uint256 => PositionCore2) public positionCore2;
+    mapping(uint256 => PriceParams1) public priceParams1;
+    mapping(uint256 => PriceParams2) public priceParams2;
+    mapping(uint256 => MarginParams1) public marginParams1;
+    mapping(uint256 => MarginParams2) public margin2;
+    mapping(uint256 => ExitParams) public exitParams;
+    mapping(uint256 => OpenInterest) public openInterest;
+
     mapping(address => mapping(address => uint256)) public makerTokenMargin;
     mapping(address => address[]) public makerMarginTokens;
 

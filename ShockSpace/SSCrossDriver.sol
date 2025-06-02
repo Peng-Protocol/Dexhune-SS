@@ -3,6 +3,10 @@
 */
 
 // Recent Changes:
+// - 2025-05-31: Fixed TypeError in PositionByIndex by explicitly assigning margin2 mapping to local variable margin2Data. Version incremented to 0.0.6 for pre-testing.
+// - 2025-05-31: Removed positionCount state variable as it is inherited from ASDUtilityPartial to avoid overlapping declarations.
+// - 2025-05-31: Version incremented to 0.0.5 for pre-testing.
+// - 2025-05-31: Removed PositionCore1, PositionCore2, PriceParams1, PriceParams2, MarginParams1, MarginParams2, ExitParams, and OpenInterest structs and mappings, moved to ASDUtilityPartial.sol.
 // - 2025-05-29: Updated updateSL/updateTP to call _updateSL/_updateTP.
 // - 2025-05-29: Removed maker parameter from closeAllLongs, cancelAllLongs, closeAllShorts, cancelAllShorts, using msg.sender.
 // - 2025-05-29: Modified addExcessMargin to accept maker parameter.
@@ -19,66 +23,9 @@
 
 pragma solidity 0.8.1;
 
-import "./utils/CSDExecutionPartial.sol";
+import "./driverUtils/CSDExecutionPartial.sol";
 
 contract SSCrossDriver is ReentrancyGuard, Ownable, CSDExecutionPartial {
-    uint256 public positionCount;
-
-    struct PositionCore1 {
-        uint256 positionId;
-        address listingAddress;
-        address makerAddress;
-        uint8 positionType;
-    }
-
-    struct PositionCore2 {
-        bool status1;
-        uint8 status2;
-    }
-
-    struct PriceParams1 {
-        uint256 minEntryPrice;
-        uint256 maxEntryPrice;
-        uint256 minPrice;
-        uint256 priceAtEntry;
-        uint8 leverage;
-    }
-
-    struct PriceParams2 {
-        uint256 liquidationPrice;
-    }
-
-    struct MarginParams1 {
-        uint256 initialMargin;
-        uint256 taxedMargin;
-        uint256 excessMargin;
-        uint256 fee;
-    }
-
-    struct MarginParams2 {
-        uint256 initialLoan;
-    }
-
-    struct ExitParams {
-        uint256 stopLossPrice;
-        uint256 takeProfitPrice;
-        uint256 exitPrice;
-    }
-
-    struct OpenInterest {
-        uint256 leverageAmount;
-        uint256 timestamp;
-    }
-
-    mapping(uint256 => PositionCore1) public positionCore1;
-    mapping(uint256 => PositionCore2) public positionCore2;
-    mapping(uint256 => PriceParams1) public priceParams1;
-    mapping(uint256 => PriceParams2) public priceParams2;
-    mapping(uint256 => MarginParams1) public marginParams1;
-    mapping(uint256 => MarginParams2) public margin2;
-    mapping(uint256 => ExitParams) public exitParams;
-    mapping(uint256 => OpenInterest) public openInterest;
-
     event StopLossUpdated(uint256 indexed positionId, uint256 newStopLossPrice, uint256 currentPrice, uint256 timestamp);
     event TakeProfitUpdated(uint256 indexed positionId, uint256 newTakeProfitPrice, uint256 currentPrice, uint256 timestamp);
 
@@ -382,17 +329,18 @@ contract SSCrossDriver is ReentrancyGuard, Ownable, CSDExecutionPartial {
         PriceParams1 memory price1,
         PriceParams2 memory price2,
         MarginParams1 memory margin1,
-        MarginParams2 memory margin2,
+        MarginParams2 memory margin2Data,
         ExitParams memory exit
     ) {
         require(positionCore1[positionId].positionId == positionId, "Invalid position");
+        margin2Data = margin2[positionId];
         return (
             positionCore1[positionId],
             positionCore2[positionId],
             priceParams1[positionId],
             priceParams2[positionId],
             marginParams1[positionId],
-            margin2[positionId],
+            margin2Data,
             exitParams[positionId]
         );
     }

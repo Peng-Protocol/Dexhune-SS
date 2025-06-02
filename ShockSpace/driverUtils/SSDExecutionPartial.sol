@@ -1,11 +1,10 @@
 // SPDX-License-Identifier: BSD-3-Clause
 pragma solidity ^0.8.1;
 
-// Version 0.0.2:
-// - Removed maxActions limit in prepareExecution.
-// - Added gasleft() check for graceful degradation.
-// - Added maxIterations parameter to close/cancel functions.
-// - Compatible with SSDUtilityPartial.sol v0.0.2, SSDPositionPartial.sol v0.0.2, SSIsolatedDriver.sol v0.0.2.
+// Version 0.0.6:
+// - Removed unnecessary 'this.' prefix from inherited mapping accesses in prepareCloseLong, prepareCloseShort, and other functions.
+// - Split prepareCloseLong and prepareCloseShort into smaller helper functions to address stack depth concerns.
+// - Compatible with SSDUtilityPartial.sol v0.0.5, SSDPositionPartial.sol v0.0.3, SSIsolatedDriver.sol v0.0.2.
 
 import "./SSDPositionPartial.sol";
 
@@ -22,6 +21,57 @@ contract SSDExecutionPartial is SSDPositionPartial {
     // Helper: Get current price
     function getCurrentPrice(address listingAddress) internal view returns (uint256) {
         return ISSListing(listingAddress).prices(uint256(uint160(listingAddress)));
+    }
+
+    // Helper: Fetch position data for close
+    function fetchPositionData(
+        uint256 positionId
+    ) internal view returns (
+        PositionCoreBase memory coreBase,
+        PositionCoreStatus memory coreStatus,
+        PriceParams memory priceParamsLocal,
+        MarginParams memory marginParams,
+        LeverageParams memory leverageParams,
+        RiskParams memory riskParams
+    ) {
+        coreBase = positionCoreBase[positionId];
+        coreStatus = positionCoreStatus[positionId];
+        priceParamsLocal = priceParams[positionId];
+        marginParams = marginParams[positionId];
+        leverageParams = leverageParams[positionId];
+        riskParams = riskParams[positionId];
+    }
+
+    // Helper: Validate position status
+    function validatePositionStatus(
+        PositionCoreStatus memory coreStatus
+    ) internal pure {
+        require(coreStatus.status2 == 0, "Position not open");
+        require(coreStatus.status1 == true, "Position not executable");
+    }
+
+    // Helper: Compute long payout
+    function computeLongPayout(
+        ClosePositionMargin memory closeMargin,
+        LeverageParams memory leverageParams,
+        uint256 currentPrice
+    ) internal pure returns (uint256) {
+        uint256 totalValue = closeMargin.taxedMargin + closeMargin.excessMargin + leverageParams.leverageAmount;
+        return currentPrice > 0 && totalValue > leverageParams.loanInitial ? (totalValue / currentPrice) - leverageParams.loanInitial : 0;
+    }
+
+    // Helper: Compute short payout
+    function computeShortPayout(
+        ClosePositionMargin memory closeMargin,
+        PriceParams memory priceParamsLocal,
+        MarginParams memory marginParams,
+        LeverageParams memory leverageParams,
+        uint256 currentPrice
+    ) internal pure returns (uint256) {
+        uint256 priceDiff = priceParamsLocal.priceMin > currentPrice ? priceParamsLocal.priceMin - currentPrice : 0;
+        uint256 profit = (priceDiff * marginParams.marginInitial * leverageParams.leverageVal);
+        uint256 marginReturn = (closeMargin.taxedMargin + closeMargin.excessMargin) * currentPrice;
+        return profit + marginReturn;
     }
 
     // Helper: Process pending position
@@ -168,25 +218,16 @@ contract SSDExecutionPartial is SSDPositionPartial {
         CloseParams memory closeParams,
         PositionCoreBase memory coreBase,
         PositionCoreStatus memory coreStatus,
-        PriceParams memory priceParams,
+        PriceParams memory priceParamsLocal,
         MarginParams memory marginParams,
         LeverageParams memory leverageParams,
         RiskParams memory riskParams
     ) {
-        coreBase = positionCoreBase[closeBase.positionId];
-        coreStatus = positionCoreStatus[closeBase.positionId];
-        priceParams = priceParams[closeBase.positionId];
-        marginParams = marginParams[closeBase.positionId];
-        leverageParams = leverageParams[closeBase.positionId];
-        riskParams = riskParams[closeBase.positionId];
-        require(coreStatus.status2 == 0, "Position not open");
-        require(coreStatus.status1 == true, "Position not executable");
+        (coreBase, coreStatus, priceParamsLocal, marginParams, leverageParams, riskParams) = fetchPositionData(closeBase.positionId);
+        validatePositionStatus(coreStatus);
 
         closeParams.currentPrice = ISSListing(closeBase.listingAddress).prices(uint256(uint160(closeBase.listingAddress)));
-        uint256 totalValue = closeMargin.taxedMargin + closeMargin.excessMargin + leverageParams.leverageAmount;
-        closeParams.payout = closeParams.currentPrice > 0 && totalValue > leverageParams.loanInitial
-            ? (totalValue / closeParams.currentPrice) - leverageParams.loanInitial
-            : 0;
+        closeParams.payout = computeLongPayout(closeMargin, leverageParams, closeParams.currentPrice);
         closeParams.decimals = ISSListing(closeBase.listingAddress).decimalsB();
     }
 
@@ -198,25 +239,16 @@ contract SSDExecutionPartial is SSDPositionPartial {
         CloseParams memory closeParams,
         PositionCoreBase memory coreBase,
         PositionCoreStatus memory coreStatus,
-        PriceParams memory priceParams,
+        PriceParams memory priceParamsLocal,
         MarginParams memory marginParams,
         LeverageParams memory leverageParams,
         RiskParams memory riskParams
     ) {
-        coreBase = positionCoreBase[closeBase.positionId];
-        coreStatus = positionCoreStatus[closeBase.positionId];
-        priceParams = priceParams[closeBase.positionId];
-        marginParams = marginParams[closeBase.positionId];
-        leverageParams = leverageParams[closeBase.positionId];
-        riskParams = riskParams[closeBase.positionId];
-        require(coreStatus.status2 == 0, "Position not open");
-        require(coreStatus.status1 == true, "Position not executable");
+        (coreBase, coreStatus, priceParamsLocal, marginParams, leverageParams, riskParams) = fetchPositionData(closeBase.positionId);
+        validatePositionStatus(coreStatus);
 
         closeParams.currentPrice = ISSListing(closeBase.listingAddress).prices(uint256(uint160(closeBase.listingAddress)));
-        uint256 priceDiff = priceParams.priceMin > closeParams.currentPrice ? priceParams.priceMin - closeParams.currentPrice : 0;
-        uint256 profit = (priceDiff * marginParams.marginInitial * leverageParams.leverageVal);
-        uint256 marginReturn = (closeMargin.taxedMargin + closeMargin.excessMargin) * closeParams.currentPrice;
-        closeParams.payout = profit + marginReturn;
+        closeParams.payout = computeShortPayout(closeMargin, priceParamsLocal, marginParams, leverageParams, closeParams.currentPrice);
         closeParams.decimals = ISSListing(closeBase.listingAddress).decimalsA();
     }
 
@@ -265,11 +297,11 @@ contract SSDExecutionPartial is SSDPositionPartial {
         CloseParams memory closeParams;
         PositionCoreBase memory coreBase;
         PositionCoreStatus memory coreStatus;
-        PriceParams memory priceParams;
+        PriceParams memory priceParamsLocal;
         MarginParams memory marginParams;
         LeverageParams memory leverageParams;
         RiskParams memory riskParams;
-        (closeParams, coreBase, coreStatus, priceParams, marginParams, leverageParams, riskParams) = prepareCloseLong(closeBase, closeMargin);
+        (closeParams, coreBase, coreStatus, priceParamsLocal, marginParams, leverageParams, riskParams) = prepareCloseLong(closeBase, closeMargin);
 
         payout = denormalizePayout(closeParams.payout, closeParams.decimals);
         finalizeClose(closeBase, closeMargin, 0, payout);
@@ -284,11 +316,11 @@ contract SSDExecutionPartial is SSDPositionPartial {
         CloseParams memory closeParams;
         PositionCoreBase memory coreBase;
         PositionCoreStatus memory coreStatus;
-        PriceParams memory priceParams;
+        PriceParams memory priceParamsLocal;
         MarginParams memory marginParams;
         LeverageParams memory leverageParams;
         RiskParams memory riskParams;
-        (closeParams, coreBase, coreStatus, priceParams, marginParams, leverageParams, riskParams) = prepareCloseShort(closeBase, closeMargin);
+        (closeParams, coreBase, coreStatus, priceParamsLocal, marginParams, leverageParams, riskParams) = prepareCloseShort(closeBase, closeMargin);
 
         payout = denormalizePayout(closeParams.payout, closeParams.decimals);
         finalizeClose(closeBase, closeMargin, 1, payout);

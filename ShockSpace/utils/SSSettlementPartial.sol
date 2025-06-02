@@ -1,8 +1,14 @@
 // SPDX-License-Identifier: BSD-3-Clause
 pragma solidity ^0.8.1;
 
-// Version: 0.0.7
+// Version: 0.0.12
 // Changes:
+// - v0.0.12: Removed ISSListingTemplate interface to avoid duplication with SSMainPartial.sol (v0.0.8). Imported ISSListingTemplate from SSMainPartial.sol. Updated normalize to pure to match SSMainPartial.sol and SSListingTemplate.sol (v0.0.7).
+// - v0.0.11: Fixed TypeError in executeShortPayouts by updating ISSListingTemplate.ShortPayoutStruct to use 'amount' instead of 'required' to match SSListingTemplate.sol (v0.0.7). Updated executeShortPayouts to use payout.amount.
+// - v0.0.11: Validated ISSListingTemplate interface against SSListingTemplate.sol (v0.0.7) for consistency in LongPayoutStruct, UpdateType, and function signatures.
+// - v0.0.10: Fixed TypeError in executeBuyOrders and executeSellOrders by adding explicit tuple destructuring for getBuyOrderCore/getSellOrderCore to access makerAddress and recipientAddress.
+// - v0.0.9: Fixed ParserError in _processOrderUpdate by correcting tuple destructuring syntax for getBuyOrderCore/getSellOrderCore to include all tuple elements explicitly.
+// - v0.0.8: Fixed TypeError in _processOrderUpdate by adding missing struct fields (structId, maxPrice, minPrice) and explicit tuple destructuring for getBuyOrderCore/getSellOrderCore.
 // - v0.0.7: Removed ISSAgent.globalizeOrders from _processOrderUpdate, globalization handled by SSListingTemplate.
 // - v0.0.7: Fixed syntax errors from artifact (c4f5e6a7-b8c9-49bc-1234-f56789abcdef0).
 // - v0.0.7: Restored _processOrderUpdate logic to match SSSettlementPartial.txt, excluding globalizeOrders.
@@ -41,12 +47,15 @@ contract SSSettlementPartial is SSOrderPartial {
         uint256 normalizedAmount = listingContract.normalize(amount, decimals);
         updates[0] = ISSListingTemplate.UpdateType({
             updateType: isBuy ? 0 : 1,
+            structId: 2,
             index: orderId,
             value: normalizedAmount,
             addr: address(0),
-            recipient: address(0)
+            recipient: address(0),
+            maxPrice: 0,
+            minPrice: 0
         });
-        address recipient = isBuy ? listingContract.getBuyOrderCore(orderId).recipientAddress : listingContract.getSellOrderCore(orderId).recipientAddress;
+        (address makerAddress, address recipient, uint8 status) = isBuy ? listingContract.getBuyOrderCore(orderId) : listingContract.getSellOrderCore(orderId);
         uint256 preBalance = tokenAddress == address(0) ? address(this).balance : IERC20(tokenAddress).balanceOf(address(this));
         listingContract.transact(address(this), tokenAddress, amount, recipient);
         uint256 postBalance = tokenAddress == address(0) ? address(this).balance : IERC20(tokenAddress).balanceOf(address(this));
@@ -66,10 +75,9 @@ contract SSSettlementPartial is SSOrderPartial {
         ISSListingTemplate listingContract = ISSListingTemplate(listing);
         ISSListingTemplate.PayoutUpdate[] memory payoutUpdates = new ISSListingTemplate.PayoutUpdate[](1);
         payoutUpdates[0] = ISSListingTemplate.PayoutUpdate({
-            orderId: orderId,
-            amount: amount,
-            status: amount >= payoutPendingAmounts[listing][orderId] ? 3 : 2,
-            isLong: isLong
+            payoutType: isLong ? 0 : 1,
+            recipient: address(0),
+            required: amount
         });
         listingContract.ssUpdate(address(this), payoutUpdates);
         payoutPendingAmounts[listing][orderId] -= amount;
@@ -99,12 +107,16 @@ contract SSSettlementPartial is SSOrderPartial {
                 i++;
                 continue;
             }
+            (address makerAddress, address recipientAddress, uint8 status) = listingContract.getBuyOrderCore(orderId);
             updates[0] = ISSListingTemplate.UpdateType({
                 updateType: 0,
+                structId: 2,
                 index: orderId,
                 value: amountReceived,
-                addr: listingContract.getBuyOrderCore(orderId).makerAddress,
-                recipient: listingContract.getBuyOrderCore(orderId).recipientAddress
+                addr: makerAddress,
+                recipient: recipientAddress,
+                maxPrice: 0,
+                minPrice: 0
             });
             listingContract.update(address(this), updates);
             processed++;
@@ -141,12 +153,16 @@ contract SSSettlementPartial is SSOrderPartial {
                 i++;
                 continue;
             }
+            (address makerAddress, address recipientAddress, uint8 status) = listingContract.getSellOrderCore(orderId);
             updates[0] = ISSListingTemplate.UpdateType({
                 updateType: 1,
+                structId: 2,
                 index: orderId,
                 value: amountReceived,
-                addr: listingContract.getSellOrderCore(orderId).makerAddress,
-                recipient: listingContract.getSellOrderCore(orderId).recipientAddress
+                addr: makerAddress,
+                recipient: recipientAddress,
+                maxPrice: 0,
+                minPrice: 0
             });
             listingContract.update(address(this), updates);
             processed++;
@@ -187,12 +203,12 @@ contract SSSettlementPartial is SSOrderPartial {
         for (uint256 i = 0; i < orders.length && processed < maxIterations; ) {
             uint256 orderId = orders[i];
             ISSListingTemplate.ShortPayoutStruct memory payout = ISSListingTemplate(listing).getShortPayout(orderId);
-            if (payout.required == 0) {
+            if (payout.amount == 0) {
                 orders[i] = orders[orders.length - 1];
                 orders.pop();
                 continue;
             }
-            _processPayoutUpdate(listing, orderId, payout.required, false);
+            _processPayoutUpdate(listing, orderId, payout.amount, false);
             processed++;
             if (payoutPendingAmounts[listing][orderId] == 0) {
                 orders[i] = orders[orders.length - 1];

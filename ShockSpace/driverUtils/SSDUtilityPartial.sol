@@ -1,35 +1,49 @@
 /* SPDX-License-Identifier: BSD-3-Clause */
 pragma solidity ^0.8.1;
 
-// Version 0.0.3:
-// - Replaced "market" string check in parseEntryPrice with "0" or "0-0" for immediate execution at current price.
-// - Removed Strings.sol import as it is no longer used.
-// - Compatible with SSDPositionPartial.sol v0.0.2, SSDExecutionPartial.sol v0.0.2, SSIsolatedDriver.sol v0.0.2.
+// Version 0.0.5:
+// - Fixed shadowing warning by consolidating 'decimals' declaration in parseEntryPrice.
+// - Compatible with SSDPositionPartial.sol v0.0.3, SSDExecutionPartial.sol v0.0.2, SSIsolatedDriver.sol v0.0.2.
 
 import "../imports/SafeERC20.sol";
 import "../imports/IERC20Metadata.sol";
 
-  // Interfaces
-    interface ISSListing {
-        function prices(uint256) external view returns (uint256);
-        function volumeBalances(uint256) external view returns (uint256 xBalance, uint256 yBalance);
-        function liquidityAddresses(uint256) external view returns (address);
-        function tokenA() external view returns (address);
-        function tokenB() external view returns (address);
-        function ssUpdate(address caller, PayoutUpdate[] calldata updates) external;
-        function update(address caller, UpdateType[] memory updates) external;
-        function decimalsA() external view returns (uint8);
-        function decimalsB() external view returns (uint8);
-    }
+// Structs
+struct PayoutUpdate {
+    address recipient;
+    uint256 required;
+    uint8 payoutType; // 0: Long, 1: Short
+}
 
-    interface ISSAgent {
-        function getListing(address tokenA, address tokenB) external view returns (address);
-    }
+struct UpdateType {
+    uint8 updateType;
+    uint256 index;
+    uint256 value;
+    address addr;
+    address recipient;
+}
 
-    interface ISSLiquidityTemplate {
-        function liquidityDetailsView() external view returns (uint256 xLiquid, uint256 yLiquid, uint256 xFees, uint256 yFees);
-        function addFees(address caller, bool isX, uint256 fee) external;
-    } 
+// Interfaces
+interface ISSListing {
+    function prices(uint256) external view returns (uint256);
+    function volumeBalances(uint256) external view returns (uint256 xBalance, uint256 yBalance);
+    function liquidityAddressView() external view returns (address);
+    function tokenA() external view returns (address);
+    function tokenB() external view returns (address);
+    function ssUpdate(address caller, PayoutUpdate[] calldata updates) external;
+    function update(address caller, UpdateType[] memory updates) external;
+    function decimalsA() external view returns (uint8);
+    function decimalsB() external view returns (uint8);
+}
+
+interface ISSAgent {
+    function getListing(address tokenA, address tokenB) external view returns (address);
+}
+
+interface ISSLiquidityTemplate {
+    function liquidityDetailsView() external view returns (uint256 xLiquid, uint256 yLiquid, uint256 xFees, uint256 yFees);
+    function addFees(address caller, bool isX, uint256 fee) external;
+}
 
 contract SSDUtilityPartial {
     // Constants
@@ -101,12 +115,6 @@ contract SSDUtilityPartial {
         RiskParams riskParams;
     }
 
-    struct PayoutUpdate {
-        address recipient;
-        uint256 required;
-        uint8 payoutType; // 0: Long, 1: Short
-    }
-
     struct PositionAction {
         uint256 positionId;
         uint8 actionType; // 0: Update status, 1: Close
@@ -166,15 +174,6 @@ contract SSDUtilityPartial {
         uint256 maxActions;
     }
 
-    struct UpdateType {
-        uint8 updateType;
-        uint256 index;
-        uint256 value;
-        address addr;
-        address recipient;
-    }
-
-
     // Constructor
     constructor() {
         historicalInterestHeight = 1;
@@ -207,11 +206,11 @@ contract SSDUtilityPartial {
         public view returns (uint256 minPrice, uint256 maxPrice) 
     {
         require(bytes(entryPrice).length > 0, "Empty price string");
+        uint8 decimals = ISSListing(listingAddress).decimalsB(); // Single declaration
         if (keccak256(abi.encodePacked(entryPrice)) == keccak256(abi.encodePacked("0")) || 
             keccak256(abi.encodePacked(entryPrice)) == keccak256(abi.encodePacked("0-0"))) {
             minPrice = ISSListing(listingAddress).prices(uint256(uint160(listingAddress)));
             maxPrice = minPrice;
-            uint8 decimals = ISSListing(listingAddress).decimalsB();
             minPrice = normalizePrice(minPrice, decimals);
             maxPrice = normalizePrice(maxPrice, decimals);
             return (minPrice, maxPrice);
@@ -225,7 +224,6 @@ contract SSDUtilityPartial {
         require(minPrice > 0, "Invalid min price");
         require(maxPrice >= minPrice, "Invalid price range");
 
-        uint8 decimals = ISSListing(listingAddress).decimalsB();
         minPrice = normalizePrice(minPrice, decimals);
         maxPrice = normalizePrice(maxPrice, decimals);
     }

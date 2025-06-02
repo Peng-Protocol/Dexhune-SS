@@ -1,8 +1,9 @@
 // SPDX-License-Identifier: BSD-3-Clause
 pragma solidity ^0.8.1;
 
-// Version: 0.0.3 (Updated)
+// Version: 0.0.4 (Updated)
 // Changes:
+// - v0.0.4: Updated globalizeLiquidity to validate caller as liquidity contract by checking listing address and isValidListing.
 // - v0.0.3: Added isValidListing function to check if an address is a valid listing and return its details.
 // - v0.0.2: Removed taxCollector state variable, determineCollector function, taxCollector checks in listToken/listNative, and setCollector call in _initializeLiquidity.
 // - v0.0.2: Added note to remove taxCollector functionality from SSListingTemplate.sol and SSLiquidityTemplate.sol.
@@ -36,6 +37,7 @@ interface ISSLiquidityTemplate {
     function setListingAddress(address _listingAddress) external;
     function setTokens(address _tokenA, address _tokenB) external;
     function setAgent(address _agent) external;
+    function getListingAddress(uint256) external view returns (address);
 }
 
 interface ISSListingLogic {
@@ -249,7 +251,25 @@ contract SSAgent is Ownable {
         require(tokenA != address(0) && tokenB != address(0), "Invalid tokens");
         require(user != address(0), "Invalid user");
         require(listingId < listingCount, "Invalid listing ID");
-        require(getListing[tokenA][tokenB] == msg.sender, "Not listing contract");
+
+        // Step 1: Get the listing address from the liquidity contract
+        address listingAddress;
+        try ISSLiquidityTemplate(msg.sender).getListingAddress(listingId) returns (address _listingAddress) {
+            listingAddress = _listingAddress;
+        } catch {
+            revert("Failed to retrieve listing address");
+        }
+        require(listingAddress != address(0), "Invalid listing address");
+
+        // Step 2: Verify the listing is valid and retrieve its details
+        (bool isValid, ListingDetails memory details) = isValidListing(listingAddress);
+        require(isValid, "Invalid listing");
+        require(details.listingId == listingId, "Listing ID mismatch");
+        require(details.tokenA == tokenA && details.tokenB == tokenB, "Token mismatch");
+
+        // Step 3: Verify the caller is the liquidity address associated with the listing
+        require(details.liquidityAddress == msg.sender, "Caller is not liquidity contract");
+
         _updateGlobalLiquidity(listingId, tokenA, tokenB, user, amount, isDeposit);
     }
 
@@ -659,7 +679,7 @@ contract SSAgent is Ownable {
         return allListedTokens.length;
     }
 
-function isValidListing(address listingAddress) external view returns (bool isValid, ListingDetails memory details) {
+    function isValidListing(address listingAddress) external view returns (bool isValid, ListingDetails memory details) {
         isValid = false;
         for (uint256 i = 0; i < allListings.length; i++) {
             if (allListings[i] == listingAddress) {
@@ -676,6 +696,5 @@ function isValidListing(address listingAddress) external view returns (bool isVa
                 break;
             }
         }
-    } 
-
+    }
 }

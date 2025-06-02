@@ -3,6 +3,7 @@
 */
 
 // Recent Changes:
+// - 2025-06-01: Extracted shouldClose logic from forceExecution to _shouldClosePosition to reduce stack depth for downstream calls. Version incremented to 0.0.4 for pre-testing.
 // - 2025-05-29: Renamed internal updateSL to _updateSL, updateTP to _updateTP.
 // - 2025-05-29: Version incremented to 0.0.3 for pre-testing.
 // - 2025-05-29: Implemented forceExecution and executeCloseAction.
@@ -61,6 +62,25 @@ contract CSDExecutionPartial is CSDPositionPartial {
         setExitParams(positionId, exitParams[positionId].stopLossPrice, newTakeProfitPrice);
     }
 
+    function _shouldClosePosition(
+        uint256 positionId,
+        uint8 positionType,
+        uint256 currentPrice,
+        uint256 stopLossPrice,
+        uint256 takeProfitPrice,
+        uint256 liquidationPrice
+    ) internal view returns (bool) {
+        if (positionType == 0) {
+            return (stopLossPrice != 0 && currentPrice <= stopLossPrice) ||
+                   (takeProfitPrice != 0 && currentPrice >= takeProfitPrice) ||
+                   (currentPrice <= liquidationPrice);
+        } else {
+            return (stopLossPrice != 0 && currentPrice >= stopLossPrice) ||
+                   (takeProfitPrice != 0 && currentPrice <= takeProfitPrice) ||
+                   (currentPrice >= liquidationPrice);
+        }
+    }
+
     function forceExecution(address listingAddress, uint256 maxIterations) internal onlyDriver {
         uint256 gasLimit = gasleft();
         uint256 currentPrice = ISSListing(listingAddress).prices(listingAddress);
@@ -87,21 +107,18 @@ contract CSDExecutionPartial is CSDPositionPartial {
             }
 
             // Check SL/TP/Liquidation
-            bool shouldClose = false;
             if (core2.status1) {
-                if (core1.positionType == 0) {
-                    if (exit.stopLossPrice != 0 && currentPrice <= exit.stopLossPrice) shouldClose = true;
-                    if (exit.takeProfitPrice != 0 && currentPrice >= exit.takeProfitPrice) shouldClose = true;
-                    if (currentPrice <= price2.liquidationPrice) shouldClose = true;
-                } else {
-                    if (exit.stopLossPrice != 0 && currentPrice >= exit.stopLossPrice) shouldClose = true;
-                    if (exit.takeProfitPrice != 0 && currentPrice <= exit.takeProfitPrice) shouldClose = true;
-                    if (currentPrice >= price2.liquidationPrice) shouldClose = true;
+                bool shouldClose = _shouldClosePosition(
+                    positionId,
+                    core1.positionType,
+                    currentPrice,
+                    exit.stopLossPrice,
+                    exit.takeProfitPrice,
+                    price2.liquidationPrice
+                );
+                if (shouldClose) {
+                    executeCloseAction(positionId, listingAddress);
                 }
-            }
-
-            if (shouldClose) {
-                executeCloseAction(positionId, listingAddress);
             }
 
             processed++;

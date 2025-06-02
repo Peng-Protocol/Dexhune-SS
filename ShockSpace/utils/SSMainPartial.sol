@@ -1,9 +1,14 @@
 // SPDX-License-Identifier: BSD-3-Clause
 pragma solidity ^0.8.1;
 
-// Version: 0.0.8
+// Version: 0.0.12
 // Changes:
+// - v0.0.12: Renamed listingAddress to getListingAddress in ISSLiquidityTemplate to resolve naming conflict with claimFees. Updated ISSListingTemplate.liquidityAddress to liquidityAddressView to match SSListingTemplate.sol (v0.0.8).
+// - v0.0.11: Removed registryAddress mapping, moved to ISSListingTemplate to align with SSListingTemplate.sol (v0.0.8) where registry is typically managed.
+// - v0.0.10: Homogenized agent state variable usage, removed redundant listingAgent from SSRouter.sol, retained agent and setAgent for inheritance chain.
+// - v0.0.9: Added agent state variable and setAgent function to allow setting the agent address, aligning with ISSListingTemplate.agent().
 // - v0.0.8: Updated ISSListingTemplate interface to match SSListingTemplate.sol v0.0.8, revised PayoutUpdate struct, getBuyOrderCore, getSellOrderCore, and renamed viewDecimalsA/B to decimalsA/B.
+// - v0.0.8: Added agent() function to ISSListingTemplate to resolve TypeError in SSRouter.sol.
 // - v0.0.7: Added globalization comment clarifying SSListingTemplate/SSLiquidityTemplate handle globalization.
 // - v0.0.7: Added registryAddress mapping, set manually via SSRouter.setRegistry.
 // - v0.0.7: Updated ISSAgent to include only getListing for listing validation.
@@ -49,6 +54,9 @@ interface ISSListingTemplate {
         uint256 orderId;
         uint8 status;
     }
+    function agent() external view returns (address);
+    function registryAddress() external view returns (address); // Added for registry management
+    function setRegistry(address newRegistry) external; // Added setter for registry
     function update(address caller, UpdateType[] memory updates) external;
     function ssUpdate(address caller, PayoutUpdate[] memory payoutUpdates) external;
     function transact(address caller, address token, uint256 amount, address recipient) external;
@@ -68,7 +76,7 @@ interface ISSListingTemplate {
     function longPayoutByIndexView() external view returns (uint256[] memory);
     function shortPayoutByIndexView() external view returns (uint256[] memory);
     function makerPendingOrdersView(address maker) external view returns (uint256[] memory);
-    function liquidityAddress(uint256) external view returns (address);
+    function liquidityAddressView() external view returns (address);
     function tokenA() external view returns (address);
     function tokenB() external view returns (address);
     function normalize(uint256 amount, uint8 decimals) external pure returns (uint256);
@@ -113,7 +121,7 @@ interface ISSLiquidityTemplate {
     function userIndexView(address user) external view returns (uint256[] memory);
     function getXSlotView(uint256 index) external view returns (Slot memory);
     function getYSlotView(uint256 index) external view returns (Slot memory);
-    function listingAddress() external view returns (address);
+    function getListingAddress() external view returns (address);
     function listingId() external view returns (uint256);
     function tokenA() external view returns (address);
     function tokenB() external view returns (address);
@@ -126,6 +134,8 @@ interface ISSAgent {
 
 contract SSMainPartial is ReentrancyGuard, Ownable {
     using SafeERC20 for IERC20;
+
+    address public agent;
 
     struct OrderPrep {
         address maker;
@@ -169,7 +179,6 @@ contract SSMainPartial is ReentrancyGuard, Ownable {
     mapping(address => address) public tokenB;
     mapping(address => uint8) public decimalsA;
     mapping(address => uint8) public decimalsB;
-    mapping(address => address) public registryAddress;
     mapping(address => mapping(uint256 => uint256)) public orderPendingAmounts;
     mapping(address => mapping(uint256 => uint256)) public payoutPendingAmounts;
     mapping(address => uint256[]) public activeBuyOrders;
@@ -181,5 +190,10 @@ contract SSMainPartial is ReentrancyGuard, Ownable {
     modifier onlyValidListing(address listing) {
         require(isValidListing[listing], "Invalid listing");
         _;
+    }
+
+    function setAgent(address newAgent) external onlyOwner {
+        require(newAgent != address(0), "Invalid agent address");
+        agent = newAgent;
     }
 }

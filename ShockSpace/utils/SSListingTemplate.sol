@@ -19,7 +19,7 @@ import "../imports/ReentrancyGuard.sol";
 interface ISSListing {
     function prices(uint256) external view returns (uint256); // Ignores listingId, returns price
     function volumeBalances(uint256) external view returns (uint256 xBalance, uint256 yBalance); // Ignores listingId
-    function liquidityAddresses(uint256) external view returns (address); // Ignores listingId
+    function liquidityAddressView(uint256) external view returns (address); // Ignores listingId
     function tokenA() external view returns (address);
     function tokenB() external view returns (address);
     function ssUpdate(address caller, PayoutUpdate[] calldata updates) external;
@@ -585,7 +585,7 @@ contract SSListingTemplate is ReentrancyGuard {
         return (volumeBalance.xBalance, volumeBalance.yBalance);
     }
 
-    function liquidityAddresses(uint256) external view returns (address) {
+    function liquidityAddressView(uint256) external view returns (address) {
         return liquidityAddress;
     }
 

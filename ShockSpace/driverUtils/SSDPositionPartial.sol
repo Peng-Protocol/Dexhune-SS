@@ -1,17 +1,9 @@
 // SPDX-License-Identifier: BSD-3-Clause
 pragma solidity ^0.8.1;
 
-// Version 0.0.2:
-// - Updated generatePositionId to use positionIdCounter.
-// - Added transferMarginToListing helper for ISSListing.update.
-// - Added ISSAgent validation in prepareEnterLong/prepareEnterShort.
-// - Added leverage limit validation using liquidityDetailsView.
-// - Added excessMargin <= leverageAmount check.
-// - Added SL/TP validation for longs and shorts.
-// - Stored tokenAddr in positionToken.
-// - Transferred fees via ISSLiquidityTemplate.addFees.
-// - Transferred margins via transferMarginToListing.
-// - Compatible with SSDUtilityPartial.sol v0.0.2, SSDExecutionPartial.sol v0.0.2, SSIsolatedDriver.sol v0.0.2.
+// Version 0.0.3:
+// - Fixed shadowing of riskParams in computeParamsHelper, computeParams, and prepareCoreAndParams.
+// - Compatible with SSDUtilityPartial.sol v0.0.4, SSDExecutionPartial.sol v0.0.2, SSIsolatedDriver.sol v0.0.2.
 
 import "./SSDUtilityPartial.sol";
 
@@ -65,14 +57,14 @@ contract SSDPositionPartial is SSDUtilityPartial {
     ) internal view returns (
         MarginParams memory marginParams,
         LeverageParams memory leverageParams,
-        RiskParams memory riskParams
+        RiskParams memory calcRiskParams
     ) {
         marginParams.marginTaxed = initialMargin - ((leverage - 1) * initialMargin / 100);
         leverageParams.leverageAmount = initialMargin * leverage;
         require(leverageParams.leverageAmount > 0, "Invalid leverage amount");
 
         uint256 marginRatio = (excessMargin + marginParams.marginTaxed) / leverageParams.leverageAmount;
-        riskParams.priceLiquidation = positionType == 0
+        calcRiskParams.priceLiquidation = positionType == 0
             ? (marginRatio < minPrice ? minPrice - marginRatio : 0)
             : minPrice + marginRatio;
 
@@ -134,7 +126,7 @@ contract SSDPositionPartial is SSDUtilityPartial {
         EntryParamsToken memory tokenParams,
         MarginParams memory marginParams,
         LeverageParams memory leverageParams,
-        RiskParams memory riskParams,
+        RiskParams memory calcRiskParams,
         uint256 minPrice
     ) internal view returns (
         PosParamsCore memory coreParams,
@@ -152,7 +144,7 @@ contract SSDPositionPartial is SSDUtilityPartial {
             riskParams.stopLoss,
             riskParams.takeProfit,
             leverageParams,
-            riskParams
+            calcRiskParams
         );
     }
 
@@ -165,7 +157,7 @@ contract SSDPositionPartial is SSDUtilityPartial {
     ) internal view returns (
         MarginParams memory marginParams,
         LeverageParams memory leverageParams,
-        RiskParams memory riskParams
+        RiskParams memory calcRiskParams
     ) {
         return computeParamsHelper(
             baseParams.initMargin,
@@ -206,7 +198,7 @@ contract SSDPositionPartial is SSDUtilityPartial {
         uint8 leverageVal,
         uint8 positionType
     ) internal view {
-        address liquidityAddress = ISSListing(listingAddress).liquidityAddresses(uint256(uint160(listingAddress)));
+        address liquidityAddress = ISSListing(listingAddress).liquidityAddressView(uint256(uint160(listingAddress)));
         (uint256 xLiquid, uint256 yLiquid,,) = ISSLiquidityTemplate(liquidityAddress).liquidityDetailsView();
         uint256 limitPercent = 101 - leverageVal;
         uint256 limit = positionType == 0
@@ -276,14 +268,14 @@ contract SSDPositionPartial is SSDUtilityPartial {
     ) {
         validateListing(baseParams.listingAddr);
         (coreBase, coreStatus) = prepareCore(baseParams, positionId, positionType);
-        (MarginParams memory marginParams, LeverageParams memory leverageParams, RiskParams memory riskParams) = computeParams(
+        (MarginParams memory marginParams, LeverageParams memory leverageParams, RiskParams memory calcRiskParams) = computeParams(
             baseParams,
             riskParams,
             minPrice,
             positionType
         );
         validateLeverageLimit(baseParams.listingAddr, leverageParams.leverageAmount, riskParams.leverageVal, positionType);
-        (coreParams, extParams) = prepareParams(baseParams, riskParams, tokenParams, marginParams, leverageParams, riskParams, minPrice);
+        (coreParams, extParams) = prepareParams(baseParams, riskParams, tokenParams, marginParams, leverageParams, calcRiskParams, minPrice);
         require(coreParams.marginParams.marginExcess <= extParams.leverageParams.leverageAmount, "Excess margin exceeds leverage");
         validateRiskParams(extParams, minPrice, positionType);
     }
@@ -399,7 +391,7 @@ contract SSDPositionPartial is SSDUtilityPartial {
             block.timestamp
         );
 
-        address liquidityAddress = ISSListing(coreBase.listingAddress).liquidityAddresses(uint256(uint160(coreBase.listingAddress)));
+        address liquidityAddress = ISSListing(coreBase.listingAddress).liquidityAddressView(uint256(uint160(coreBase.listingAddress)));
         uint256 fee = (extParams.leverageParams.leverageVal - 1) * coreParams.marginParams.marginInitial / 100;
         if (fee > 0) {
             ISSLiquidityTemplate(liquidityAddress).addFees(address(this), coreBase.positionType == 0, fee);

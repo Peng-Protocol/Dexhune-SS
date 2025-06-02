@@ -492,6 +492,10 @@ contract SSLiquidityTemplate is ReentrancyGuard {
         this.update(msg.sender, updates);
     }
 
+function getListingAddress(uint256) external view returns (address) {
+        return listingAddress;
+    }
+
     function liquidityAmounts() external view returns (uint256 xAmount, uint256 yAmount) {
         LiquidityDetails memory details = liquidityDetail;
         return (details.xLiquid, details.yLiquid);
