@@ -1,28 +1,83 @@
 // SPDX-License-Identifier: BSD-3-Clause
 pragma solidity ^0.8.1;
 
-// Version 0.0.2:
-// - Updated enterLong/enterShort to transfer margins via IERC20.safeTransferFrom and ISSListing.update.
-// - Added ISSAgent validation using tokenA/tokenB from listing.
-// - Updated updateSL/updateTP to use msg.sender, validate against currentPrice/priceAtEntry.
-// - Added maxIterations to close/cancel functions.
-// - Added view functions: positionsByTypeView, positionsByAddressView, positionByIndex, queryInterest.
-// - Added setAgent (owner-only).
-// - Compatible with SSDUtilityPartial.sol v0.0.2, SSDPositionPartial.sol v0.0.2, SSDExecutionPartial.sol v0.0.2.
+// Version 0.0.12:
+// - Fixed TypeError in closeLongPosition, closeShortPosition, and cancelPosition by correcting driverAddr to driver in ClosePositionBase initialization.
+// - Compatible with SSDUtilityPartial.sol v0.0.5, SSDPositionPartial.sol v0.0.5, SSDExecutionPartial.sol v0.0.9.
+// - v0.0.11:
+//   - Fixed ParserError for trailing comma in ClosePositionMargin struct initialization in closeLongPosition.
+//   - Fixed ParserError in event declarations by replacing extra parentheses with semicolons and ensuring consistent uint256 types.
+//   - Compatible with SSDUtilityPartial.sol v0.0.5, SSDPositionPartial.sol v0.0.5, SSDExecutionPartial.sol v0.0.9.
+// - v0.0.10:
+//   - Fixed ParserError in updateEntryCore by adding missing closing parenthesis in function signature.
+//   - Compatible with SSDUtilityPartial.sol v0.0.5, SSDPositionPartial.sol v0.0.5, SSDExecutionPartial.sol v0.0.9.
+// - v0.0.9:
+//   - Fixed TypeError in closeLongPosition by correcting positionCoreStatus.status2 to coreStatus.status2.
+//   - Compatible with SSDUtilityPartial.sol v0.0.5, SSDPositionPartial.sol v0.0.5, SSDExecutionPartial.sol v0.0.9.
+// - v0.0.8:
+//   - Fixed ParserError in prepareBaseParams by correcting return type syntax.
+//   - Compatible with SSDUtilityPartial.sol v0.0.5, SSDPositionPartial.sol v0.0.5, SSDExecutionPartial.sol v0.0.9.
+// - v0.0.7:
+//   - Fixed TypeError in initiateEntry by correcting destructuring assignment for prepareEnterLong/prepareEnterShort return values (positionId, minPrice, maxPrice).
+//   - Compatible with SSDUtilityPartial.sol v0.0.5, SSDPositionPartial.sol v0.0.5, SSDExecutionPartial.sol v0.0.9.
+// - v0.0.6:
+//   - Added makerAddress to PendingEntry struct to fix TypeError in updateEntryIndexes.
+//   - Compatible with SSDUtilityPartial.sol v0.0.5, SSDPositionPartial.sol v0.0.5, SSDExecutionPartial.sol v0.0.9.
+// - v0.0.5:
+//   - Rebuilt position entry to update data incrementally via initiateEntry, updateEntryCore, updateEntryParams, updateEntryIndexes, finalizeEntryTransfer.
+//   - Added pendingEntry mapping for temporary storage.
+//   - Removed redundant SafeERC20 import, inherited via SSDUtilityPartial.sol.
+//   - Compatible with SSDUtilityPartial.sol v0.0.5, SSDPositionPartial.sol v0.0.5, SSDExecutionPartial.sol v0.0.9.
+// - v0.0.4:
+//   - Fixed ParserError at line 143 by removing stray comma in prepareEntryContext call in enterLong and enterShort.
+//   - Compatible with SSDUtilityPartial.sol v0.0.5, SSDPositionPartial.sol v0.0.4, SSDExecutionPartial.sol v0.0.9.
+// - v0.0.3:
+//   - Fixed stack too deep in enterLong/enterShort by introducing EntryContext struct and helper functions (prepareEntryContext, executeEntry).
+//   - Compatible with SSDUtilityPartial.sol v0.0.5, SSDPositionPartial.sol v0.0.4, SSDExecutionPartial.sol v0.0.9.
+// - v0.0.2:
+//   - Updated enterLong/enterShort to transfer margins via IERC20.transferFrom and ISSListing.update.
+//   - Added ISSAgent validation using tokenA/tokenB from listing.
+//   - Updated updateSL/updateTP to use msg.sender, validate against currentPrice/priceAtEntry.
+//   - Added maxIterations to close/cancel functions.
+//   - Added view functions: positionsByTypeView, positionsByAddressView, positionByIndex, queryInterest.
+//   - Added setAgent (owner-only).
+//   - Compatible with SSDUtilityPartial.sol v0.0.2, SSDPositionPartial.sol v0.0.2, SSDExecutionPartial.sol v0.0.2.
 
 import "./driverUtils/SSDExecutionPartial.sol";
-import "./imports/SafeERC20.sol";
 import "./imports/ReentrancyGuard.sol";
 import "./imports/Ownable.sol";
 
 contract SSIsolatedDriver is SSDExecutionPartial, ReentrancyGuard, Ownable {
     using SafeERC20 for IERC20;
 
+    // Context struct to reduce stack usage
+    struct EntryContext {
+        address listingAddr;
+        address tokenAddr;
+        uint256 normInitMargin;
+        uint256 normExtraMargin;
+    }
+
+    // Temporary storage for position entry
+    struct PendingEntry {
+        address listingAddr;
+        address tokenAddr;
+        uint256 positionId;
+        uint8 positionType;
+        uint256 initialMargin;
+        uint256 extraMargin;
+        string entryPriceStr;
+        address makerAddress;
+    }
+
+    // Temporary storage mapping
+    mapping(uint256 => PendingEntry) internal pendingEntries;
+
     // Constructor
-    constructor() Ownable() {
+    constructor() {
         historicalInterestHeight = 1;
         nonce = 0;
-        positionIdCounter = 1;
+        positionIdCounter = 0;
     }
 
     // Helper: Normalize margin amounts
@@ -35,44 +90,232 @@ contract SSIsolatedDriver is SSDExecutionPartial, ReentrancyGuard, Ownable {
         normExtraMargin = normalizeAmount(tokenAddr, extraMargin);
     }
 
+    // Helper: Prepare entry context
+    function prepareEntryContext(
+        address listingAddr,
+        address tokenAddr,
+        uint256 initMargin,
+        uint256 extraMargin
+    ) internal view returns (EntryContext memory context) {
+        (uint256 normInitMargin, uint256 normExtraMargin) = normalizeMargins(
+            tokenAddr,
+            initMargin,
+            extraMargin
+        );
+        return EntryContext({
+            listingAddr: listingAddr,
+            tokenAddr: tokenAddr,
+            normInitMargin: normInitMargin,
+            normExtraMargin: normExtraMargin
+        });
+    }
+
+    // Helper: Prepare base parameters
+    function prepareBaseParams(
+        address listingAddr,
+        string memory entryPriceStr,
+        uint256 initMargin,
+        uint256 extraMargin
+    ) internal pure returns (EntryParamsBase memory baseParams) {
+        baseParams = EntryParamsBase({
+            listingAddr: listingAddr,
+            entryPriceStr: entryPriceStr,
+            initMargin: initMargin,
+            extraMargin: extraMargin
+        });
+        return baseParams;
+    }
+
+    // Helper: Prepare risk parameters
+    function prepareRiskParams(
+        uint8 leverage,
+        uint256 stopLoss,
+        uint256 takeProfit
+    ) internal pure returns (EntryParamsRisk memory riskParams) {
+        return EntryParamsRisk({
+            leverageVal: leverage,
+            stopLoss: stopLoss,
+            takeProfit: takeProfit
+        });
+    }
+
+    // Helper: Prepare token parameters
+    function prepareTokenParams(
+        EntryContext memory context
+    ) internal view returns (EntryParamsToken memory tokenParams) {
+        return EntryParamsToken({
+            tokenAddr: context.tokenAddr,
+            normInitMargin: context.normInitMargin,
+            normExtraMargin: context.normExtraMargin,
+            driverAddr: address(this)
+        });
+    }
+
+    // Helper: Update entry core data
+    function updateEntryCore(
+        uint256 positionId,
+        EntryParamsBase memory baseParams,
+        uint8 positionType
+    ) internal {
+        PendingEntry memory entry = pendingEntries[positionId];
+        PositionCoreBase memory coreBase = PositionCoreBase({
+            makerAddress: msg.sender,
+            listingAddress: entry.listingAddr,
+            positionId: positionId,
+            positionType: positionType
+        });
+        PositionCoreStatus memory coreStatus = PositionCoreStatus({
+            status1: false,
+            status2: 0
+        });
+        updatePositionCore(positionId, coreBase, coreStatus);
+    }
+
+    // Helper: Update entry parameters
+    function updateEntryParams(
+        uint256 positionId,
+        EntryParamsBase memory baseParams,
+        EntryParamsRisk memory riskParams,
+        EntryParamsToken memory tokenParams
+    ) internal {
+        PendingEntry memory entry = pendingEntries[positionId];
+        (uint256 minPrice, uint256 maxPrice) = parseEntryPriceHelper(baseParams);
+        (MarginParams memory marginParams, LeverageParams memory leverageParams, RiskParams memory calcRiskParams) = computeParams(
+            baseParams,
+            riskParams,
+            minPrice,
+            entry.positionType
+        );
+        validateLeverageLimit(baseParams.listingAddr, leverageParams.leverageAmount, riskParams.leverageVal, entry.positionType);
+        PosParamsCore memory coreParams = prepareCoreParams(
+            tokenParams.normInitMargin,
+            marginParams,
+            tokenParams.normExtraMargin,
+            minPrice,
+            tokenParams.tokenAddr
+        );
+        PosParamsExt memory extParams = prepareExtParams(
+            riskParams.leverageVal,
+            riskParams.stopLoss,
+            riskParams.takeProfit,
+            leverageParams,
+            calcRiskParams
+        );
+        updatePositionParamsCore(positionId, coreParams);
+        updatePositionParamsExtended(positionId, extParams);
+        positionToken[positionId] = tokenParams.tokenAddr;
+        updateLiquidityFees(positionId, baseParams.listingAddr, entry.positionType, marginParams.marginInitial, riskParams.leverageVal);
+    }
+
+    // Helper: Update entry indexes
+    function updateEntryIndexes(uint256 positionId) internal {
+        PendingEntry memory entry = pendingEntries[positionId];
+        updateIndexes(entry.makerAddress, entry.positionType, positionId, entry.listingAddr, true);
+    }
+
+    // Helper: Finalize entry transfer
+    function finalizeEntryTransfer(uint256 positionId) internal {
+        PendingEntry memory entry = pendingEntries[positionId];
+        IERC20(entry.tokenAddr).transferFrom(
+            msg.sender,
+            entry.listingAddr,
+            entry.initialMargin + entry.extraMargin
+        );
+        uint256 io = normalizeAmount(entry.tokenAddr, entry.initialMargin + entry.extraMargin);
+        transferMarginToListing(entry.listingAddr, io, entry.positionType);
+        updateHistoricalInterest(
+            historicalInterestHeight,
+            entry.positionType == 0 ? io : 0,
+            entry.positionType == 1 ? io : 0,
+            block.timestamp
+        );
+    }
+
+    // Helper: Initiate entry
+    function initiateEntry(
+        EntryContext memory context,
+        string memory entryPriceStr,
+        uint256 initMargin,
+        uint256 extraMargin,
+        uint8 leverage,
+        uint256 stopLoss,
+        uint256 takeProfit,
+        uint8 positionType
+    ) internal returns (uint256 positionId) {
+        positionId = positionIdCounter++;
+        pendingEntries[positionId] = PendingEntry({
+            listingAddr: context.listingAddr,
+            tokenAddr: context.tokenAddr,
+            positionId: positionId,
+            positionType: positionType,
+            initialMargin: initMargin,
+            extraMargin: extraMargin,
+            entryPriceStr: entryPriceStr,
+            makerAddress: msg.sender
+        });
+        EntryParamsBase memory baseParams = prepareBaseParams(
+            context.listingAddr,
+            entryPriceStr,
+            initMargin,
+            extraMargin
+        );
+        EntryParamsRisk memory riskParams = prepareRiskParams(
+            leverage,
+            stopLoss,
+            takeProfit
+        );
+        EntryParamsToken memory tokenParams = prepareTokenParams(context);
+        validateEntryInputs(baseParams, riskParams);
+        validateListing(baseParams.listingAddr);
+        updateEntryCore(positionId, baseParams, positionType);
+        updateEntryParams(positionId, baseParams, riskParams, tokenParams);
+        updateEntryIndexes(positionId);
+        finalizeEntryTransfer(positionId);
+        uint256 returnedPositionId;
+        uint256 minPrice;
+        uint256 maxPrice;
+        (returnedPositionId, minPrice, maxPrice) = positionType == 0
+            ? prepareEnterLong(baseParams, riskParams, tokenParams)
+            : prepareEnterShort(baseParams, riskParams, tokenParams);
+        require(returnedPositionId == positionId, "Position ID mismatch");
+        emit PositionEntered(
+            positionId,
+            msg.sender,
+            context.listingAddr,
+            positionType,
+            minPrice,
+            maxPrice
+        );
+        delete pendingEntries[positionId];
+    }
+
     // Enter long position
     function enterLong(
         address listingAddr,
         string memory entryPriceStr,
         uint256 initMargin,
         uint256 extraMargin,
-        uint8 leverageVal,
+        uint8 leverage,
         uint256 stopLoss,
         uint256 takeProfit,
         address tokenAddr
     ) external nonReentrant {
-        (uint256 normInitMargin, uint256 normExtraMargin) = normalizeMargins(tokenAddr, initMargin, extraMargin);
-
-        EntryParamsBase memory baseParams = EntryParamsBase({
-            listingAddr: listingAddr,
-            entryPriceStr: entryPriceStr,
-            initMargin: initMargin,
-            extraMargin: extraMargin
-        });
-        EntryParamsRisk memory riskParams = EntryParamsRisk({
-            leverageVal: leverageVal,
-            stopLoss: stopLoss,
-            takeProfit: takeProfit
-        });
-        EntryParamsToken memory tokenParams = EntryParamsToken({
-            tokenAddr: tokenAddr,
-            normInitMargin: normInitMargin,
-            normExtraMargin: normExtraMargin,
-            driverAddr: address(this)
-        });
-
-        (uint256 positionId, uint256 minPrice, uint256 maxPrice, PositionCoreBase memory coreBase, PositionCoreStatus memory coreStatus, PosParamsCore memory coreParams, PosParamsExt memory extParams) =
-            prepareEnterLong(baseParams, riskParams, tokenParams);
-
-        IERC20(tokenAddr).safeTransferFrom(msg.sender, listingAddr, initMargin + extraMargin);
-        finalizePosition(positionId, coreBase, coreStatus, coreParams, extParams);
-
-        emit PositionEntered(positionId, msg.sender, listingAddr, 0, minPrice, maxPrice);
+        EntryContext memory context = prepareEntryContext(
+            listingAddr,
+            tokenAddr,
+            initMargin,
+            extraMargin
+        );
+        initiateEntry(
+            context,
+            entryPriceStr,
+            initMargin,
+            extraMargin,
+            leverage,
+            stopLoss,
+            takeProfit,
+            0 // Long
+        );
     }
 
     // Enter short position
@@ -81,38 +324,27 @@ contract SSIsolatedDriver is SSDExecutionPartial, ReentrancyGuard, Ownable {
         string memory entryPriceStr,
         uint256 initMargin,
         uint256 extraMargin,
-        uint8 leverageVal,
+        uint8 leverage,
         uint256 stopLoss,
         uint256 takeProfit,
         address tokenAddr
     ) external nonReentrant {
-        (uint256 normInitMargin, uint256 normExtraMargin) = normalizeMargins(tokenAddr, initMargin, extraMargin);
-
-        EntryParamsBase memory baseParams = EntryParamsBase({
-            listingAddr: listingAddr,
-            entryPriceStr: entryPriceStr,
-            initMargin: initMargin,
-            extraMargin: extraMargin
-        });
-        EntryParamsRisk memory riskParams = EntryParamsRisk({
-            leverageVal: leverageVal,
-            stopLoss: stopLoss,
-            takeProfit: takeProfit
-        });
-        EntryParamsToken memory tokenParams = EntryParamsToken({
-            tokenAddr: tokenAddr,
-            normInitMargin: normInitMargin,
-            normExtraMargin: normExtraMargin,
-            driverAddr: address(this)
-        });
-
-        (uint256 positionId, uint256 minPrice, uint256 maxPrice, PositionCoreBase memory coreBase, PositionCoreStatus memory coreStatus, PosParamsCore memory coreParams, PosParamsExt memory extParams) =
-            prepareEnterShort(baseParams, riskParams, tokenParams);
-
-        IERC20(tokenAddr).safeTransferFrom(msg.sender, listingAddr, initMargin + extraMargin);
-        finalizePosition(positionId, coreBase, coreStatus, coreParams, extParams);
-
-        emit PositionEntered(positionId, msg.sender, listingAddr, 1, minPrice, maxPrice);
+        EntryContext memory context = prepareEntryContext(
+            listingAddr,
+            tokenAddr,
+            initMargin,
+            extraMargin
+        );
+        initiateEntry(
+            context,
+            entryPriceStr,
+            initMargin,
+            extraMargin,
+            leverage,
+            stopLoss,
+            takeProfit,
+            1 // Short
+        );
     }
 
     // Close long position
@@ -201,7 +433,7 @@ contract SSIsolatedDriver is SSDExecutionPartial, ReentrancyGuard, Ownable {
         require(coreStatus.status2 == 0, "Position not open");
 
         uint256 normalizedAmount = normalizeAmount(token, amount);
-        IERC20(token).safeTransferFrom(msg.sender, coreBase.listingAddress, amount);
+        IERC20(token).transferFrom(msg.sender, coreBase.listingAddress, amount);
 
         addExcessMarginInternal(
             positionId,

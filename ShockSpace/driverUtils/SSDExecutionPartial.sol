@@ -1,8 +1,12 @@
 // SPDX-License-Identifier: BSD-3-Clause
 pragma solidity ^0.8.1;
 
-// Version 0.0.7:
-// - Fixed TypeError: Indexed expression in fetchPositionData by renaming local marginParams to marginParamsLocal to avoid shadowing.
+// Version 0.0.9:
+// - Fixed TypeError in fetchPositionData by renaming local riskParams to riskParamsLocal to avoid shadowing the riskParams mapping (line ~43).
+// - Updated prepareCloseLong, prepareCloseShort, internalCloseLongPosition, internalCloseShortPosition to use riskParamsLocal for consistency.
+// - Compatible with SSDUtilityPartial.sol v0.0.5, SSDPositionPartial.sol v0.0.4, SSIsolatedDriver.sol v0.0.2.
+// - v0.0.8: Fixed TypeError in fetchPositionData by renaming local leverageParams to leverageParamsLocal to avoid shadowing the leverageParams mapping (line ~40).
+// - v0.0.7: Fixed TypeError in fetchPositionData by renaming local marginParams to marginParamsLocal to avoid shadowing.
 // - Compatible with SSDUtilityPartial.sol v0.0.5, SSDPositionPartial.sol v0.0.4, SSIsolatedDriver.sol v0.0.2.
 
 import "./SSDPositionPartial.sol";
@@ -30,15 +34,15 @@ contract SSDExecutionPartial is SSDPositionPartial {
         PositionCoreStatus memory coreStatus,
         PriceParams memory priceParamsLocal,
         MarginParams memory marginParamsLocal,
-        LeverageParams memory leverageParams,
-        RiskParams memory riskParams
+        LeverageParams memory leverageParamsLocal,
+        RiskParams memory riskParamsLocal
     ) {
         coreBase = positionCoreBase[positionId];
         coreStatus = positionCoreStatus[positionId];
         priceParamsLocal = priceParams[positionId];
         marginParamsLocal = marginParams[positionId];
-        leverageParams = leverageParams[positionId];
-        riskParams = riskParams[positionId];
+        leverageParamsLocal = leverageParams[positionId];
+        riskParamsLocal = riskParams[positionId];
     }
 
     // Helper: Validate position status
@@ -219,14 +223,14 @@ contract SSDExecutionPartial is SSDPositionPartial {
         PositionCoreStatus memory coreStatus,
         PriceParams memory priceParamsLocal,
         MarginParams memory marginParamsLocal,
-        LeverageParams memory leverageParams,
-        RiskParams memory riskParams
+        LeverageParams memory leverageParamsLocal,
+        RiskParams memory riskParamsLocal
     ) {
-        (coreBase, coreStatus, priceParamsLocal, marginParamsLocal, leverageParams, riskParams) = fetchPositionData(closeBase.positionId);
+        (coreBase, coreStatus, priceParamsLocal, marginParamsLocal, leverageParamsLocal, riskParamsLocal) = fetchPositionData(closeBase.positionId);
         validatePositionStatus(coreStatus);
 
         closeParams.currentPrice = ISSListing(closeBase.listingAddress).prices(uint256(uint160(closeBase.listingAddress)));
-        closeParams.payout = computeLongPayout(closeMargin, leverageParams, closeParams.currentPrice);
+        closeParams.payout = computeLongPayout(closeMargin, leverageParamsLocal, closeParams.currentPrice);
         closeParams.decimals = ISSListing(closeBase.listingAddress).decimalsB();
     }
 
@@ -240,14 +244,14 @@ contract SSDExecutionPartial is SSDPositionPartial {
         PositionCoreStatus memory coreStatus,
         PriceParams memory priceParamsLocal,
         MarginParams memory marginParamsLocal,
-        LeverageParams memory leverageParams,
-        RiskParams memory riskParams
+        LeverageParams memory leverageParamsLocal,
+        RiskParams memory riskParamsLocal
     ) {
-        (coreBase, coreStatus, priceParamsLocal, marginParamsLocal, leverageParams, riskParams) = fetchPositionData(closeBase.positionId);
+        (coreBase, coreStatus, priceParamsLocal, marginParamsLocal, leverageParamsLocal, riskParamsLocal) = fetchPositionData(closeBase.positionId);
         validatePositionStatus(coreStatus);
 
         closeParams.currentPrice = ISSListing(closeBase.listingAddress).prices(uint256(uint160(closeBase.listingAddress)));
-        closeParams.payout = computeShortPayout(closeMargin, priceParamsLocal, marginParamsLocal, leverageParams, closeParams.currentPrice);
+        closeParams.payout = computeShortPayout(closeMargin, priceParamsLocal, marginParamsLocal, leverageParamsLocal, closeParams.currentPrice);
         closeParams.decimals = ISSListing(closeBase.listingAddress).decimalsA();
     }
 
@@ -298,9 +302,9 @@ contract SSDExecutionPartial is SSDPositionPartial {
         PositionCoreStatus memory coreStatus;
         PriceParams memory priceParamsLocal;
         MarginParams memory marginParamsLocal;
-        LeverageParams memory leverageParams;
-        RiskParams memory riskParams;
-        (closeParams, coreBase, coreStatus, priceParamsLocal, marginParamsLocal, leverageParams, riskParams) = prepareCloseLong(closeBase, closeMargin);
+        LeverageParams memory leverageParamsLocal;
+        RiskParams memory riskParamsLocal;
+        (closeParams, coreBase, coreStatus, priceParamsLocal, marginParamsLocal, leverageParamsLocal, riskParamsLocal) = prepareCloseLong(closeBase, closeMargin);
 
         payout = denormalizePayout(closeParams.payout, closeParams.decimals);
         finalizeClose(closeBase, closeMargin, 0, payout);
@@ -317,9 +321,9 @@ contract SSDExecutionPartial is SSDPositionPartial {
         PositionCoreStatus memory coreStatus;
         PriceParams memory priceParamsLocal;
         MarginParams memory marginParamsLocal;
-        LeverageParams memory leverageParams;
-        RiskParams memory riskParams;
-        (closeParams, coreBase, coreStatus, priceParamsLocal, marginParamsLocal, leverageParams, riskParams) = prepareCloseShort(closeBase, closeMargin);
+        LeverageParams memory leverageParamsLocal;
+        RiskParams memory riskParamsLocal;
+        (closeParams, coreBase, coreStatus, priceParamsLocal, marginParamsLocal, leverageParamsLocal, riskParamsLocal) = prepareCloseShort(closeBase, closeMargin);
 
         payout = denormalizePayout(closeParams.payout, closeParams.decimals);
         finalizeClose(closeBase, closeMargin, 1, payout);
@@ -527,7 +531,7 @@ contract SSDExecutionPartial is SSDPositionPartial {
                 });
                 LongCloseParams memory longParams = LongCloseParams({
                     leverageAmount: leverageParams.leverageAmount,
-                    loanInitial: leverageParams.leverageInitial
+                    loanInitial: leverageParams.loanInitial
                 });
                 internalCloseLongPosition(closeBase, closeMargin, longParams);
                 count++;

@@ -1,9 +1,13 @@
 // SPDX-License-Identifier: BSD-3-Clause
 pragma solidity ^0.8.1;
 
-// Version 0.0.4:
-// - Fixed TypeError: Wrong argument count for liquidityAddressView calls in validateLeverageLimit and finalizePosition.
-// - Compatible with SSDUtilityPartial.sol v0.0.5, SSDExecutionPartial.sol v0.0.7, SSIsolatedDriver.sol v0.0.2.
+// Version 0.0.5:
+// - Split finalizePosition into modular functions: updateHistoricalInterest, updateLiquidityFees.
+// - Adjusted prepareEnterLong/prepareEnterShort to return only positionId, minPrice, maxPrice.
+// - Compatible with SSDUtilityPartial.sol v0.0.5, SSDExecutionPartial.sol v0.0.9, SSIsolatedDriver.sol v0.0.5.
+// - v0.0.4:
+//   - Fixed TypeError: Wrong argument count for liquidityAddressView calls in validateLeverageLimit and finalizePosition.
+//   - Compatible with SSDUtilityPartial.sol v0.0.5, SSDExecutionPartial.sol v0.0.7, SSIsolatedDriver.sol v0.0.2.
 
 import "./SSDUtilityPartial.sol";
 
@@ -251,6 +255,36 @@ contract SSDPositionPartial is SSDUtilityPartial {
         ISSListing(listingAddress).update(address(this), updates);
     }
 
+    // Update historical interest
+    function updateHistoricalInterest(
+        uint256 index,
+        uint256 longIO,
+        uint256 shortIO,
+        uint256 timestamp
+    ) internal {
+        longIOByHeight[index] += longIO;
+        shortIOByHeight[index] += shortIO;
+        if (longIO > 0 || shortIO > 0) {
+            historicalInterestTimestamps[index] = timestamp;
+            historicalInterestHeight++;
+        }
+    }
+
+    // Update liquidity fees
+    function updateLiquidityFees(
+        uint256 positionId,
+        address listingAddress,
+        uint8 positionType,
+        uint256 marginInitial,
+        uint8 leverageVal
+    ) internal {
+        address liquidityAddress = ISSListing(listingAddress).liquidityAddressView();
+        uint256 fee = (leverageVal - 1) * marginInitial / 100;
+        if (fee > 0) {
+            ISSLiquidityTemplate(liquidityAddress).addFees(address(this), positionType == 0, fee);
+        }
+    }
+
     // Prepare core and extended params
     function prepareCoreAndParams(
         EntryParamsBase memory baseParams,
@@ -288,17 +322,11 @@ contract SSDPositionPartial is SSDUtilityPartial {
     ) internal returns (
         uint256 positionId,
         uint256 minPrice,
-        uint256 maxPrice,
-        PositionCoreBase memory coreBase,
-        PositionCoreStatus memory coreStatus,
-        PosParamsCore memory coreParams,
-        PosParamsExt memory extParams
+        uint256 maxPrice
     ) {
         validateEntryInputs(baseParams, riskParams);
         (minPrice, maxPrice) = parseEntryPriceHelper(baseParams);
         positionId = generatePositionId(baseParams, 0);
-        (coreBase, coreStatus, coreParams, extParams) = prepareCoreAndParams(baseParams, riskParams, tokenParams, minPrice, maxPrice, positionId, 0);
-        positionToken[positionId] = tokenParams.tokenAddr;
     }
 
     // Prepare enterShort
@@ -309,17 +337,11 @@ contract SSDPositionPartial is SSDUtilityPartial {
     ) internal returns (
         uint256 positionId,
         uint256 minPrice,
-        uint256 maxPrice,
-        PositionCoreBase memory coreBase,
-        PositionCoreStatus memory coreStatus,
-        PosParamsCore memory coreParams,
-        PosParamsExt memory extParams
+        uint256 maxPrice
     ) {
         validateEntryInputs(baseParams, riskParams);
         (minPrice, maxPrice) = parseEntryPriceHelper(baseParams);
         positionId = generatePositionId(baseParams, 1);
-        (coreBase, coreStatus, coreParams, extParams) = prepareCoreAndParams(baseParams, riskParams, tokenParams, minPrice, maxPrice, positionId, 1);
-        positionToken[positionId] = tokenParams.tokenAddr;
     }
 
     // Update position core
@@ -353,49 +375,5 @@ contract SSDPositionPartial is SSDUtilityPartial {
         } else {
             positionsByType[positionType].push(positionId);
         }
-    }
-
-    // Update historical interest
-    function updateHistoricalInterest(
-        uint256 index,
-        uint256 longIO,
-        uint256 shortIO,
-        uint256 timestamp
-    ) internal {
-        longIOByHeight[index] += longIO;
-        shortIOByHeight[index] += shortIO;
-        if (longIO > 0 || shortIO > 0) {
-            historicalInterestTimestamps[index] = timestamp;
-            historicalInterestHeight++;
-        }
-    }
-
-    // Finalize position
-    function finalizePosition(
-        uint256 positionId,
-        PositionCoreBase memory coreBase,
-        PositionCoreStatus memory coreStatus,
-        PosParamsCore memory coreParams,
-        PosParamsExt memory extParams
-    ) internal {
-        updatePositionCore(positionId, coreBase, coreStatus);
-        updatePositionParamsCore(positionId, coreParams);
-        updatePositionParamsExtended(positionId, extParams);
-        updateIndexes(coreBase.makerAddress, coreBase.positionType, positionId, coreBase.listingAddress, true);
-
-        uint256 io = coreParams.marginParams.marginTaxed + coreParams.marginParams.marginExcess;
-        updateHistoricalInterest(
-            historicalInterestHeight,
-            coreBase.positionType == 0 ? io : 0,
-            coreBase.positionType == 1 ? io : 0,
-            block.timestamp
-        );
-
-        address liquidityAddress = ISSListing(coreBase.listingAddress).liquidityAddressView();
-        uint256 fee = (extParams.leverageParams.leverageVal - 1) * coreParams.marginParams.marginInitial / 100;
-        if (fee > 0) {
-            ISSLiquidityTemplate(liquidityAddress).addFees(address(this), coreBase.positionType == 0, fee);
-        }
-        transferMarginToListing(coreBase.listingAddress, io, coreBase.positionType);
     }
 }
