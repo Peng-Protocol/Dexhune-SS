@@ -1,8 +1,9 @@
 // SPDX-License-Identifier: BSD-3-Clause
 pragma solidity ^0.8.1;
 
-// Version: 0.0.9
+// Version: 0.0.10
 // Changes:
+// - v0.0.10: Fixed DeclarationError in _handleOrderPrep by replacing decimalsA/decimalsB mappings with ISSListingTemplate.decimalsA()/decimalsB() calls, aligning with SSMainPartial.sol v0.0.15 (line 28).
 // - v0.0.9: Fixed TypeError in _clearOrderData by explicitly destructuring tuples from getBuyOrderCore and getSellOrderCore.
 // - v0.0.8: Updated to align with SSMainPartial.sol v0.0.8 and SSListingTemplate.sol v0.0.8.
 // - v0.0.7: Removed ISSAgent.globalizeOrders calls, globalization handled by SSListingTemplate.
@@ -25,8 +26,9 @@ contract SSOrderPartial is SSMainPartial {
         require(maker != address(0), "Invalid maker");
         require(recipient != address(0), "Invalid recipient");
         require(amount > 0, "Invalid amount");
-        uint8 decimals = isBuy ? decimalsB[listing] : decimalsA[listing];
-        uint256 normalizedAmount = ISSListingTemplate(listing).normalize(amount, decimals);
+        ISSListingTemplate listingContract = ISSListingTemplate(listing);
+        uint8 decimals = isBuy ? listingContract.decimalsB() : listingContract.decimalsA();
+        uint256 normalizedAmount = listingContract.normalize(amount, decimals);
         return OrderPrep(maker, recipient, normalizedAmount, maxPrice, minPrice);
     }
 

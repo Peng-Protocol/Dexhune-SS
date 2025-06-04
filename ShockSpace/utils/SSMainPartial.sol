@@ -1,10 +1,13 @@
 // SPDX-License-Identifier: BSD-3-Clause
 pragma solidity ^0.8.1;
 
-// Version: 0.0.12
+// Version: 0.0.15
 // Changes:
+// - v0.0.15: Fixed DeclarationError by moving checkValidListing from SSRouter.sol to SSMainPartial.sol as a private view function. Updated onlyValidListing modifier to call checkValidListing directly, removing SSRouter dependency (lines 180-190).
+// - v0.0.14: Removed isValidListing mapping, updated onlyValidListing modifier to call SSRouter.checkValidListing for runtime validation before order creation and settlement (lines 100-110).
+// - v0.0.13: Removed redundant mappings (liquidityAddress, tokenA, tokenB, decimalsA, decimalsB) to fetch data from ISSListingTemplate (lines 100-110).
 // - v0.0.12: Renamed listingAddress to getListingAddress in ISSLiquidityTemplate to resolve naming conflict with claimFees. Updated ISSListingTemplate.liquidityAddress to liquidityAddressView to match SSListingTemplate.sol (v0.0.8).
-// - v0.0.11: Removed registryAddress mapping, moved to ISSListingTemplate to align with SSListingTemplate.sol (v0.0.8) where registry is typically managed.
+// - v0.0.11: Removed registryAddress mapping, moved to ISSListingTemplate to align with SSListingTemplate.sol (v0.0.8).
 // - v0.0.10: Homogenized agent state variable usage, removed redundant listingAgent from SSRouter.sol, retained agent and setAgent for inheritance chain.
 // - v0.0.9: Added agent state variable and setAgent function to allow setting the agent address, aligning with ISSListingTemplate.agent().
 // - v0.0.8: Updated ISSListingTemplate interface to match SSListingTemplate.sol v0.0.8, revised PayoutUpdate struct, getBuyOrderCore, getSellOrderCore, and renamed viewDecimalsA/B to decimalsA/B.
@@ -55,8 +58,8 @@ interface ISSListingTemplate {
         uint8 status;
     }
     function agent() external view returns (address);
-    function registryAddress() external view returns (address); // Added for registry management
-    function setRegistry(address newRegistry) external; // Added setter for registry
+    function registryAddress() external view returns (address);
+    function setRegistry(address newRegistry) external;
     function update(address caller, UpdateType[] memory updates) external;
     function ssUpdate(address caller, PayoutUpdate[] memory payoutUpdates) external;
     function transact(address caller, address token, uint256 amount, address recipient) external;
@@ -173,12 +176,6 @@ contract SSMainPartial is ReentrancyGuard, Ownable {
         uint256 amount;
     }
 
-    mapping(address => bool) public isValidListing;
-    mapping(address => address) public liquidityAddress;
-    mapping(address => address) public tokenA;
-    mapping(address => address) public tokenB;
-    mapping(address => uint8) public decimalsA;
-    mapping(address => uint8) public decimalsB;
     mapping(address => mapping(uint256 => uint256)) public orderPendingAmounts;
     mapping(address => mapping(uint256 => uint256)) public payoutPendingAmounts;
     mapping(address => uint256[]) public activeBuyOrders;
@@ -187,8 +184,17 @@ contract SSMainPartial is ReentrancyGuard, Ownable {
     mapping(address => uint256[]) public activeShortPayouts;
     mapping(address => mapping(address => uint256[])) public makerActiveOrders;
 
+    function checkValidListing(address listing) private view {
+        ISSListingTemplate listingTemplate = ISSListingTemplate(listing);
+        address agentAddress = listingTemplate.agent();
+        if (agentAddress == address(0)) revert("Agent not set");
+        address tokenAAddress = listingTemplate.tokenA();
+        address tokenBAddress = listingTemplate.tokenB();
+        require(ISSAgent(agentAddress).getListing(tokenAAddress, tokenBAddress) == listing, "Invalid listing");
+    }
+
     modifier onlyValidListing(address listing) {
-        require(isValidListing[listing], "Invalid listing");
+        checkValidListing(listing);
         _;
     }
 

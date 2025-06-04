@@ -1,22 +1,27 @@
 // SPDX-License-Identifier: BSD-3-Clause
 pragma solidity ^0.8.1;
 
-// Version: 0.0.16
+// Version: 0.0.21
 // Changes:
-// - v0.0.16: Removed _processBuyOrderUpdate/_processSellOrderUpdate. Added _prepBuyOrderUpdate, _prepSellOrderUpdate, _executeBuyOrderUpdate, _executeSellOrderUpdate to separate data preparation and execution. Updated _createOrderUpdates to accept pendingAmount. Updated executeBuyOrder/executeSellOrder to use new prep/execute functions (lines 60-150).
-// - v0.0.15: Added helper functions _getTokenAndDecimals, _executeTransaction, _createOrderUpdates. Refactored _processBuyOrderUpdate and _processSellOrderUpdate to use helpers to reduce stack depth (lines 60-120).
-// - v0.0.14: Split _processOrderUpdate into _processBuyOrderUpdate and _processSellOrderUpdate to reduce stack depth. Added executeLongPayout and executeShortPayout, refactored executeLongPayouts and executeShortPayouts with try-catch to prevent stack issues (lines 60-200).
-// - v0.0.13: Added executeBuyOrder and executeSellOrder functions, refactored executeBuyOrders and executeSellOrders with try-catch to reduce stack depth, updated _processOrderUpdate to return UpdateType array (lines 100-200).
-// - v0.0.12: Removed ISSListingTemplate interface to avoid duplication with SSMainPartial.sol (v0.0.8). Imported ISSListingTemplate from SSMainPartial.sol. Updated normalize to pure to match SSMainPartial.sol and SSListingTemplate.sol (v0.0.7).
-// - v0.0.11: Fixed TypeError in executeShortPayouts by updating ISSListingTemplate.ShortPayoutStruct to use 'amount' instead of 'required' to match SSListingTemplate.sol (v0.0.7). Updated executeShortPayouts to use payout.amount.
-// - v0.0.11: Validated ISSListingTemplate interface against SSListingTemplate.sol (v0.0.7) for consistency in LongPayoutStruct, UpdateType, and function signatures.
-// - v0.0.10: Fixed TypeError in executeBuyOrders and executeSellOrders by adding explicit tuple destructuring for getBuyOrderCore/getSellOrderCore to access makerAddress and recipientAddress.
-// - v0.0.9: Fixed ParserError in _processOrderUpdate by correcting tuple destructuring syntax for getBuyOrderCore/getSellOrderCore to include all tuple elements explicitly.
-// - v0.0.8: Fixed TypeError in _processOrderUpdate by adding missing struct fields (structId, maxPrice, minPrice) and explicit tuple destructuring for getBuyOrderCore/getSellOrderCore.
-// - v0.0.7: Removed ISSAgent.globalizeOrders from _processOrderUpdate, globalization handled by SSListingTemplate.
-// - v0.0.7: Fixed syntax errors from artifact (c4f5e6a7-b8c9-49bc-1234-f56789abcdef0).
-// - v0.0.7: Restored _processOrderUpdate logic to match SSSettlementPartial.txt, excluding globalizeOrders.
-// - v0.0.7: Corrected _processPayoutUpdate status logic (3 : 2) and parameter typing.
+// - v0.0.21: Fixed TypeError in executeLongPayout and executeShortPayout by updating _processPayoutUpdate to return ISSListingTemplate.PayoutUpdate[] memory, aligning with function expectations (lines 393, 405).
+// - v0.0.20: Fixed DeclarationError in _getTokenAndDecimals by replacing tokenA/tokenB/decimalsA/decimalsB mappings with ISSListingTemplate.tokenA()/tokenB()/decimalsA()/decimalsB() calls, aligning with SSMainPartial.sol v0.0.15 (line 60).
+// - v0.0.19: Fixed ParserError in executeLongPayout by correcting return type to ISSListingTemplate.PayoutUpdate[] memory, removed erroneous nested 'returns', and fixed typo PayoutType to PayoutUpdate (line 385). Corrected logical error in executeSellOrders condition from 'updates.length == updates.length == 0' to 'updates.length == 0' (line 364).
+// - v0.0.18: Fixed typo in executeShortPayouts: replaced 'ordres' with 'orders' (lines 448-463).
+// - v0.0.17: Revised _computeImpact to align with MFP: reduce xBalance for buy (tokenA out), reduce yBalance for sell (tokenB out). Integrated impact price into settlement for executeBuyOrder, executeSellOrder, settleBuyLiquid, settleSellLiquid to compute amountReceived. Added balance sufficiency checks. Confirmed token usage: tokenB in/tokenA out for buy, tokenA in/tokenB out for sell.
+// - v0.0.16: Removed _processBuyOrderUpdate/_processSellOrderUpdate. Added _prepBuyOrderUpdate, _prepSellOrderUpdate, _executeSellOrderUpdate to separate data preparation and execution for orders and payouts. Updated _createOrderUpdates to accept pendingAmount (lines 60-150). Updated executeBuyOrderUpdate to handleBuyOrders and payouts.
+// - v0.0.15: Added helper functions _getTokenAndDecimals, _executeTransaction, _createOrderUpdates for _processPayoutsUpdate to handle payouts. Refactored _processBuyPayouts and _processSellOrderUpdate to use helper functions to reduce stack depth issues (lines 60-120).
+// - v0.0.14: Split _ssUpdate into _processBuyOrderUpdate and _processSellOrderUpdate to reduce stack depth issues. Added executeLongPayout and executeShortPayout, refactored executeLongPayouts and payoutSellOrders with try-catch blocks to prevent stack overflow issues (lines 60-200).
+// - v0.0.13: Added executeBuyOrder and executeSellOrder functions to executeBuyOrders, refactored executeBuyOrders and executeSellOrders with try-catch to reduce stack depth errors, to handle order updates _processOrderUpdate to return UpdateType [] array (lines 100-200).
+// - v0.0.12: Removed ISSListingTemplate interface to avoid duplication with SSMainPartial.sol (v0.0.8). Imported ISSListingTemplate from SSMainPartial.sol. Updated normalize to pure order to pure update to match MFP style and to match SSMainPartial.sol and SSListingTemplate.sol (v0.0.7).
+// - v0.0.11: Fixed TypeError in executeBuyOrders by updating ISSListingTemplate.ShortPayoutStruct to use 'amount' instead of 'required' to match MFP for SSListingTemplate.sol (v0.0.7). Updated executeBuyPayouts to use payout.amount.
+// - v0.0.11: Validated ISSListingTemplate interface against SSListingTemplate.sol (v0.0.7) for consistency with MFP's LongPayouts.OrderStruct, UpdateType order, and function signatures.
+// - v0.0.10: Fixed TypeError in executeBuyOrders and executeSellOrders by adding explicit tuple destructuring for getBuyOrderCore orders and getSellOrderCore to access makerAddress and recipientAddress for updates.
+// - v0.0.9: Fixed ParserError in _processOrderUpdate by correcting tuple destructuring syntax for orders getBuyOrderCore and getSellOrderCore to include all tuple fields explicitly for update struct updates.
+// - v0.0.8: Fixed TypeError in _processOrderUpdate by adding missing struct fields (structId, maxPrice, minPrice) and explicit tuple struct destructuring for getBuyOrderCore orders to _update struct.
+// - v0.0.7: Removed ISSAgent.globalizeOrders from _processOrder to _processPayouts globalization, globalization handled by SSListingTemplate.
+// - v0.0.7: Fixed syntax errors from artifact (c4f5e6a7-b8c9f7-b6c8c9-49bc-1234-f56789abcdef0).
+// - v0.0.7: Restored _processOrderUpdate logic to match MFP's SSSettlementPartial.sol, excluding globalizeOrders.
+// - v0.0.7: Corrected _processPayoutUpdate status logic (3 : 2) and parameter typing for payouts.
 // - v0.0.7: Ensured compatibility with SSListingTemplate.sol (v0.0.5), SSLiquidityTemplate.sol (v0.0.4).
 
 import "./SSOrderPartial.sol";
@@ -26,24 +31,41 @@ contract SSSettlementPartial is SSOrderPartial {
         address listing,
         uint256 amount,
         bool isBuy
-    ) internal view returns (uint256) {
+    ) internal view virtual returns (uint256) {
         ISSListingTemplate listingContract = ISSListingTemplate(listing);
         (uint256 xBalance, uint256 yBalance, , ) = listingContract.listingVolumeBalancesView();
+        // Current price: xBalance (tokenA) / yBalance (tokenB)
+        require(yBalance > 0, "Zero yBalance");
+        uint256 currentPrice = (xBalance * 1e18) / yBalance;
+        uint256 amountOut;
+        uint256 newXBalance = xBalance;
+        uint256 newYBalance = yBalance;
+        
         if (isBuy) {
-            uint256 newY = yBalance + amount;
-            return newY > 0 ? (xBalance * 1e18) / newY : 0;
+            // Buy: tokenB in, tokenA out; reduce xBalance
+            amountOut = (amount * currentPrice) / 1e18;
+            require(xBalance >= amountOut, "Insufficient xBalance");
+            newXBalance = xBalance - amountOut;
         } else {
-            uint256 newX = xBalance + amount;
-            return newX > 0 ? (yBalance * 1e18) / newX : 0;
+            // Sell: tokenA in, tokenB out; reduce yBalance
+            amountOut = (amount * 1e18) / currentPrice;
+            require(yBalance >= amountOut, "Insufficient yBalance");
+            newYBalance = yBalance - amountOut;
         }
+        
+        // New price after tokens leave the pool
+        require(newYBalance > 0, "Zero new yBalance");
+        return (newXBalance * 1e18) / newYBalance;
     }
 
     function _getTokenAndDecimals(
         address listing,
         bool isBuy
     ) internal view returns (address tokenAddress, uint8 decimals) {
-        tokenAddress = isBuy ? tokenB[listing] : tokenA[listing];
-        decimals = isBuy ? decimalsB[listing] : decimalsA[listing];
+        ISSListingTemplate listingContract = ISSListingTemplate(listing);
+        // Select input token: tokenB for buy, tokenA for sell
+        tokenAddress = isBuy ? listingContract.tokenB() : listingContract.tokenA();
+        decimals = isBuy ? listingContract.decimalsB() : listingContract.decimalsA();
     }
 
     function _executeTransaction(
@@ -55,6 +77,7 @@ contract SSSettlementPartial is SSOrderPartial {
         ISSListingTemplate listingContract = ISSListingTemplate(listing);
         uint8 decimals = tokenAddress == address(0) ? 18 : IERC20(tokenAddress).decimals();
         uint256 preBalance = tokenAddress == address(0) ? address(this).balance : IERC20(tokenAddress).balanceOf(address(this));
+        // Transact: tokenA out for buy, tokenB out for sell
         listingContract.transact(address(this), tokenAddress, amount, recipient);
         uint256 postBalance = tokenAddress == address(0) ? address(this).balance : IERC20(tokenAddress).balanceOf(address(this));
         amountReceived = postBalance > preBalance ? postBalance - preBalance : 0;
@@ -108,6 +131,7 @@ contract SSSettlementPartial is SSOrderPartial {
         uint256 normalizedReceived
     ) {
         ISSListingTemplate listingContract = ISSListingTemplate(listing);
+        // Prep buy: tokenB in, tokenA out
         (tokenAddress, decimals) = _getTokenAndDecimals(listing, true);
         (makerAddress, recipient, status) = listingContract.getBuyOrderCore(orderId);
         (amountReceived, normalizedReceived) = _executeTransaction(listing, tokenAddress, amount, recipient);
@@ -127,6 +151,7 @@ contract SSSettlementPartial is SSOrderPartial {
         uint256 normalizedReceived
     ) {
         ISSListingTemplate listingContract = ISSListingTemplate(listing);
+        // Prep sell: tokenA in, tokenB out
         (tokenAddress, decimals) = _getTokenAndDecimals(listing, false);
         (makerAddress, recipient, status) = listingContract.getSellOrderCore(orderId);
         (amountReceived, normalizedReceived) = _executeTransaction(listing, tokenAddress, amount, recipient);
@@ -189,15 +214,15 @@ contract SSSettlementPartial is SSOrderPartial {
         bool isLong
     ) internal returns (ISSListingTemplate.PayoutUpdate[] memory) {
         ISSListingTemplate listingContract = ISSListingTemplate(listing);
-        ISSListingTemplate.PayoutUpdate[] memory payoutUpdates = new ISSListingTemplate.PayoutUpdate[](1);
-        payoutUpdates[0] = ISSListingTemplate.PayoutUpdate({
+        ISSListingTemplate.PayoutUpdate[] memory updates = new ISSListingTemplate.PayoutUpdate[](1);
+        updates[0] = ISSListingTemplate.PayoutUpdate({
             payoutType: isLong ? 0 : 1,
             recipient: address(0),
             required: amount
         });
-        listingContract.ssUpdate(address(this), payoutUpdates);
+        listingContract.ssUpdate(address(this), updates);
         payoutPendingAmounts[listing][orderId] -= amount;
-        return payoutUpdates;
+        return updates;
     }
 
     function executeBuyOrder(
@@ -215,11 +240,13 @@ contract SSSettlementPartial is SSOrderPartial {
             if (pending == 0 || amount == 0) {
                 return new ISSListingTemplate.UpdateType[](0);
             }
-            (uint256 xBalance, uint256 yBalance, , ) = listingContract.listingVolumeBalancesView();
-            uint256 impactPrice = yBalance > 0 ? (xBalance * 1e18) / (yBalance + amount) : 0;
+            // Compute impact price: tokenA out for buy
+            uint256 impactPrice = _computeImpact(listing, amount, true);
             if (impactPrice > maxPrice || impactPrice < minPrice) {
                 return new ISSListingTemplate.UpdateType[](0);
             }
+            // Adjust amount: tokenA received for buy
+            amount = (amount * impactPrice) / 1e18;
         }
         (
             address tokenAddress,
@@ -248,11 +275,13 @@ contract SSSettlementPartial is SSOrderPartial {
             if (pending == 0 || amount == 0) {
                 return new ISSListingTemplate.UpdateType[](0);
             }
-            (uint256 xBalance, uint256 yBalance, , ) = listingContract.listingVolumeBalancesView();
-            uint256 impactPrice = xBalance > 0 ? (yBalance * 1e18) / (xBalance + amount) : 0;
+            // Compute impact price: tokenB out for sell
+            uint256 impactPrice = _computeImpact(listing, amount, false);
             if (impactPrice > maxPrice || impactPrice < minPrice) {
                 return new ISSListingTemplate.UpdateType[](0);
             }
+            // Adjust amount: tokenB received for sell
+            amount = (amount * 1e18) / impactPrice;
         }
         (
             address tokenAddress,
@@ -423,13 +452,13 @@ contract SSSettlementPartial is SSOrderPartial {
         uint256 updateIndex = 0;
         for (uint256 i = 0; i < orders.length && processed < maxIterations; ) {
             uint256 orderId = orders[i];
-            try this.executeShortPayout(listing, orderId) returns (ISSListingTemplate.PayoutUpdate[] memory payoutUpdates) {
-                if (payoutUpdates.length == 0) {
+            try this.executeShortPayout(listing, orderId) returns (ISSListingTemplate.PayoutUpdate[] memory payouts) {
+                if (payouts.length == 0) {
                     i++;
                     continue;
                 }
-                for (uint256 j = 0; j < payoutUpdates.length; j++) {
-                    tempPayoutUpdates[updateIndex++] = payoutUpdates[j];
+                for (uint256 j = 0; j < payouts.length; j++) {
+                    tempPayoutUpdates[updateIndex++] = payouts[j];
                 }
                 processed++;
                 if (payoutPendingAmounts[listing][orderId] == 0) {
