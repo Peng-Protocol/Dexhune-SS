@@ -1,47 +1,36 @@
-// SPDX-License-Identifier: BSD-3-Clause
+/* SPDX-License-Identifier: BSD-3-Clause */
 pragma solidity ^0.8.1;
 
-// Version 0.0.12:
-// - Fixed TypeError in closeLongPosition, closeShortPosition, and cancelPosition by correcting driverAddr to driver in ClosePositionBase initialization.
+// Version 0.0.15:
+// - Removed atomicity requirement, allowing partial data in pendingEntries if steps fail.
+// - Refactored initiateEntry into helpers handling single structs/tasks: prepareEntryBase, prepareEntryRisk, prepareEntryToken, validateEntryBase, validateEntryRisk, updateEntryCore, updateEntryParams, updateEntryIndexes, finalizeEntry.
+// - Ensured no helper handles multiple structs to reduce stack depth.
 // - Compatible with SSDUtilityPartial.sol v0.0.5, SSDPositionPartial.sol v0.0.5, SSDExecutionPartial.sol v0.0.9.
+// - v0.0.14:
+//   - Refactored initiateEntry to reduce stack depth by splitting struct handling into separate helpers.
+//   - Used PendingEntry for temporary storage of all parameters.
+// - v0.0.13:
+//   - Refactored initiateEntry into modular helpers (initiateEntryBase, initiateEntryParams, initiateEntryIndexes, initiateEntryFinalize).
+//   - Fixed Stack too deep error in initiateEntry by reducing local variables.
+// - v0.0.12:
+//   - Fixed TypeError in closeLongPosition, closeShortPosition, and cancelPosition by correcting driverAddr to driver.
 // - v0.0.11:
-//   - Fixed ParserError for trailing comma in ClosePositionMargin struct initialization in closeLongPosition.
-//   - Fixed ParserError in event declarations by replacing extra parentheses with semicolons and ensuring consistent uint256 types.
-//   - Compatible with SSDUtilityPartial.sol v0.0.5, SSDPositionPartial.sol v0.0.5, SSDExecutionPartial.sol v0.0.9.
+//   - Fixed ParserError for trailing comma in ClosePositionMargin struct initialization.
+//   - Fixed ParserError in event declarations by replacing extra parentheses with semicolons.
 // - v0.0.10:
-//   - Fixed ParserError in updateEntryCore by adding missing closing parenthesis in function signature.
-//   - Compatible with SSDUtilityPartial.sol v0.0.5, SSDPositionPartial.sol v0.0.5, SSDExecutionPartial.sol v0.0.9.
+//   - Fixed ParserError in updateEntryCore by adding missing closing parenthesis.
 // - v0.0.9:
 //   - Fixed TypeError in closeLongPosition by correcting positionCoreStatus.status2 to coreStatus.status2.
-//   - Compatible with SSDUtilityPartial.sol v0.0.5, SSDPositionPartial.sol v0.0.5, SSDExecutionPartial.sol v0.0.9.
 // - v0.0.8:
 //   - Fixed ParserError in prepareBaseParams by correcting return type syntax.
-//   - Compatible with SSDUtilityPartial.sol v0.0.5, SSDPositionPartial.sol v0.0.5, SSDExecutionPartial.sol v0.0.9.
 // - v0.0.7:
-//   - Fixed TypeError in initiateEntry by correcting destructuring assignment for prepareEnterLong/prepareEnterShort return values (positionId, minPrice, maxPrice).
-//   - Compatible with SSDUtilityPartial.sol v0.0.5, SSDPositionPartial.sol v0.0.5, SSDExecutionPartial.sol v0.0.9.
+//   - Fixed TypeError in initiateEntry by correcting destructuring for prepareEnterLong/prepareEnterShort.
 // - v0.0.6:
 //   - Added makerAddress to PendingEntry struct to fix TypeError in updateEntryIndexes.
-//   - Compatible with SSDUtilityPartial.sol v0.0.5, SSDPositionPartial.sol v0.0.5, SSDExecutionPartial.sol v0.0.9.
 // - v0.0.5:
 //   - Rebuilt position entry to update data incrementally via initiateEntry, updateEntryCore, updateEntryParams, updateEntryIndexes, finalizeEntryTransfer.
 //   - Added pendingEntry mapping for temporary storage.
-//   - Removed redundant SafeERC20 import, inherited via SSDUtilityPartial.sol.
-//   - Compatible with SSDUtilityPartial.sol v0.0.5, SSDPositionPartial.sol v0.0.5, SSDExecutionPartial.sol v0.0.9.
-// - v0.0.4:
-//   - Fixed ParserError at line 143 by removing stray comma in prepareEntryContext call in enterLong and enterShort.
-//   - Compatible with SSDUtilityPartial.sol v0.0.5, SSDPositionPartial.sol v0.0.4, SSDExecutionPartial.sol v0.0.9.
-// - v0.0.3:
-//   - Fixed stack too deep in enterLong/enterShort by introducing EntryContext struct and helper functions (prepareEntryContext, executeEntry).
-//   - Compatible with SSDUtilityPartial.sol v0.0.5, SSDPositionPartial.sol v0.0.4, SSDExecutionPartial.sol v0.0.9.
-// - v0.0.2:
-//   - Updated enterLong/enterShort to transfer margins via IERC20.transferFrom and ISSListing.update.
-//   - Added ISSAgent validation using tokenA/tokenB from listing.
-//   - Updated updateSL/updateTP to use msg.sender, validate against currentPrice/priceAtEntry.
-//   - Added maxIterations to close/cancel functions.
-//   - Added view functions: positionsByTypeView, positionsByAddressView, positionByIndex, queryInterest.
-//   - Added setAgent (owner-only).
-//   - Compatible with SSDUtilityPartial.sol v0.0.2, SSDPositionPartial.sol v0.0.2, SSDExecutionPartial.sol v0.0.2.
+//   - Removed redundant SafeERC20 import.
 
 import "./driverUtils/SSDExecutionPartial.sol";
 import "./imports/ReentrancyGuard.sol";
@@ -68,6 +57,11 @@ contract SSIsolatedDriver is SSDExecutionPartial, ReentrancyGuard, Ownable {
         uint256 extraMargin;
         string entryPriceStr;
         address makerAddress;
+        uint8 leverageVal;
+        uint256 stopLoss;
+        uint256 takeProfit;
+        uint256 normInitMargin;
+        uint256 normExtraMargin;
     }
 
     // Temporary storage mapping
@@ -110,59 +104,90 @@ contract SSIsolatedDriver is SSDExecutionPartial, ReentrancyGuard, Ownable {
         });
     }
 
-    // Helper: Prepare base parameters
-    function prepareBaseParams(
-        address listingAddr,
+    // Helper: Prepare base entry data
+    function prepareEntryBase(
+        EntryContext memory context,
         string memory entryPriceStr,
         uint256 initMargin,
-        uint256 extraMargin
-    ) internal pure returns (EntryParamsBase memory baseParams) {
-        baseParams = EntryParamsBase({
-            listingAddr: listingAddr,
+        uint256 extraMargin,
+        uint8 positionType
+    ) internal returns (uint256 positionId) {
+        positionId = positionIdCounter++;
+        pendingEntries[positionId] = PendingEntry({
+            listingAddr: context.listingAddr,
+            tokenAddr: context.tokenAddr,
+            positionId: positionId,
+            positionType: positionType,
+            initialMargin: initMargin,
+            extraMargin: extraMargin,
             entryPriceStr: entryPriceStr,
-            initMargin: initMargin,
-            extraMargin: extraMargin
+            makerAddress: msg.sender,
+            leverageVal: 0,
+            stopLoss: 0,
+            takeProfit: 0,
+            normInitMargin: context.normInitMargin,
+            normExtraMargin: context.normExtraMargin
         });
-        return baseParams;
+        return positionId;
     }
 
     // Helper: Prepare risk parameters
-    function prepareRiskParams(
+    function prepareEntryRisk(
+        uint256 positionId,
         uint8 leverage,
         uint256 stopLoss,
         uint256 takeProfit
-    ) internal pure returns (EntryParamsRisk memory riskParams) {
-        return EntryParamsRisk({
-            leverageVal: leverage,
-            stopLoss: stopLoss,
-            takeProfit: takeProfit
-        });
+    ) internal {
+        PendingEntry storage entry = pendingEntries[positionId];
+        require(entry.positionId == positionId, "Invalid position ID");
+        entry.leverageVal = leverage;
+        entry.stopLoss = stopLoss;
+        entry.takeProfit = takeProfit;
     }
 
     // Helper: Prepare token parameters
-    function prepareTokenParams(
-        EntryContext memory context
-    ) internal view returns (EntryParamsToken memory tokenParams) {
-        return EntryParamsToken({
-            tokenAddr: context.tokenAddr,
-            normInitMargin: context.normInitMargin,
-            normExtraMargin: context.normExtraMargin,
-            driverAddr: address(this)
-        });
+    function prepareEntryToken(uint256 positionId) internal view {
+        PendingEntry storage entry = pendingEntries[positionId];
+        require(entry.positionId == positionId, "Invalid position ID");
+        // Token params already stored in entry (tokenAddr, normInitMargin, normExtraMargin)
     }
 
-    // Helper: Update entry core data
-    function updateEntryCore(
-        uint256 positionId,
-        EntryParamsBase memory baseParams,
-        uint8 positionType
-    ) internal {
-        PendingEntry memory entry = pendingEntries[positionId];
+    // Helper: Validate base parameters
+    function validateEntryBase(uint256 positionId) internal view {
+        PendingEntry storage entry = pendingEntries[positionId];
+        require(entry.positionId == positionId, "Invalid position ID");
+        EntryParamsBase memory baseParams = EntryParamsBase({
+            listingAddr: entry.listingAddr,
+            entryPriceStr: entry.entryPriceStr,
+            initMargin: entry.initialMargin,
+            extraMargin: entry.extraMargin
+        });
+        require(baseParams.initMargin > 0, "Invalid margin");
+        require(baseParams.listingAddr != address(0), "Invalid listing");
+        validateListing(baseParams.listingAddr);
+    }
+
+    // Helper: Validate risk parameters
+    function validateEntryRisk(uint256 positionId) internal view {
+        PendingEntry storage entry = pendingEntries[positionId];
+        require(entry.positionId == positionId, "Invalid position ID");
+        EntryParamsRisk memory riskParams = EntryParamsRisk({
+            leverageVal: entry.leverageVal,
+            stopLoss: entry.stopLoss,
+            takeProfit: entry.takeProfit
+        });
+        require(riskParams.leverageVal >= 2 && riskParams.leverageVal <= 100, "Invalid leverage");
+    }
+
+    // Helper: Update entry core
+    function updateEntryCore(uint256 positionId) internal {
+        PendingEntry storage entry = pendingEntries[positionId];
+        require(entry.positionId == positionId, "Invalid position ID");
         PositionCoreBase memory coreBase = PositionCoreBase({
-            makerAddress: msg.sender,
+            makerAddress: entry.makerAddress,
             listingAddress: entry.listingAddr,
             positionId: positionId,
-            positionType: positionType
+            positionType: entry.positionType
         });
         PositionCoreStatus memory coreStatus = PositionCoreStatus({
             status1: false,
@@ -172,13 +197,26 @@ contract SSIsolatedDriver is SSDExecutionPartial, ReentrancyGuard, Ownable {
     }
 
     // Helper: Update entry parameters
-    function updateEntryParams(
-        uint256 positionId,
-        EntryParamsBase memory baseParams,
-        EntryParamsRisk memory riskParams,
-        EntryParamsToken memory tokenParams
-    ) internal {
-        PendingEntry memory entry = pendingEntries[positionId];
+    function updateEntryParams(uint256 positionId) internal {
+        PendingEntry storage entry = pendingEntries[positionId];
+        require(entry.positionId == positionId, "Invalid position ID");
+        EntryParamsBase memory baseParams = EntryParamsBase({
+            listingAddr: entry.listingAddr,
+            entryPriceStr: entry.entryPriceStr,
+            initMargin: entry.initialMargin,
+            extraMargin: entry.extraMargin
+        });
+        EntryParamsRisk memory riskParams = EntryParamsRisk({
+            leverageVal: entry.leverageVal,
+            stopLoss: entry.stopLoss,
+            takeProfit: entry.takeProfit
+        });
+        EntryParamsToken memory tokenParams = EntryParamsToken({
+            tokenAddr: entry.tokenAddr,
+            normInitMargin: entry.normInitMargin,
+            normExtraMargin: entry.normExtraMargin,
+            driverAddr: address(this)
+        });
         (uint256 minPrice, uint256 maxPrice) = parseEntryPriceHelper(baseParams);
         (MarginParams memory marginParams, LeverageParams memory leverageParams, RiskParams memory calcRiskParams) = computeParams(
             baseParams,
@@ -209,15 +247,17 @@ contract SSIsolatedDriver is SSDExecutionPartial, ReentrancyGuard, Ownable {
 
     // Helper: Update entry indexes
     function updateEntryIndexes(uint256 positionId) internal {
-        PendingEntry memory entry = pendingEntries[positionId];
+        PendingEntry storage entry = pendingEntries[positionId];
+        require(entry.positionId == positionId, "Invalid position ID");
         updateIndexes(entry.makerAddress, entry.positionType, positionId, entry.listingAddr, true);
     }
 
-    // Helper: Finalize entry transfer
-    function finalizeEntryTransfer(uint256 positionId) internal {
-        PendingEntry memory entry = pendingEntries[positionId];
+    // Helper: Finalize entry
+    function finalizeEntry(uint256 positionId) internal {
+        PendingEntry storage entry = pendingEntries[positionId];
+        require(entry.positionId == positionId, "Invalid position ID");
         IERC20(entry.tokenAddr).transferFrom(
-            msg.sender,
+            entry.makerAddress,
             entry.listingAddr,
             entry.initialMargin + entry.extraMargin
         );
@@ -229,9 +269,42 @@ contract SSIsolatedDriver is SSDExecutionPartial, ReentrancyGuard, Ownable {
             entry.positionType == 1 ? io : 0,
             block.timestamp
         );
+        EntryParamsBase memory baseParams = EntryParamsBase({
+            listingAddr: entry.listingAddr,
+            entryPriceStr: entry.entryPriceStr,
+            initMargin: entry.initialMargin,
+            extraMargin: entry.extraMargin
+        });
+        EntryParamsRisk memory riskParams = EntryParamsRisk({
+            leverageVal: entry.leverageVal,
+            stopLoss: entry.stopLoss,
+            takeProfit: entry.takeProfit
+        });
+        EntryParamsToken memory tokenParams = EntryParamsToken({
+            tokenAddr: entry.tokenAddr,
+            normInitMargin: entry.normInitMargin,
+            normExtraMargin: entry.normExtraMargin,
+            driverAddr: address(this)
+        });
+        uint256 returnedPositionId;
+        uint256 minPrice;
+        uint256 maxPrice;
+        (returnedPositionId, minPrice, maxPrice) = entry.positionType == 0
+            ? prepareEnterLong(baseParams, riskParams, tokenParams)
+            : prepareEnterShort(baseParams, riskParams, tokenParams);
+        require(returnedPositionId == positionId, "Position ID mismatch");
+        emit PositionEntered(
+            positionId,
+            entry.makerAddress,
+            entry.listingAddr,
+            entry.positionType,
+            minPrice,
+            maxPrice
+        );
+        delete pendingEntries[positionId];
     }
 
-    // Helper: Initiate entry
+    // Initiate entry
     function initiateEntry(
         EntryContext memory context,
         string memory entryPriceStr,
@@ -242,51 +315,16 @@ contract SSIsolatedDriver is SSDExecutionPartial, ReentrancyGuard, Ownable {
         uint256 takeProfit,
         uint8 positionType
     ) internal returns (uint256 positionId) {
-        positionId = positionIdCounter++;
-        pendingEntries[positionId] = PendingEntry({
-            listingAddr: context.listingAddr,
-            tokenAddr: context.tokenAddr,
-            positionId: positionId,
-            positionType: positionType,
-            initialMargin: initMargin,
-            extraMargin: extraMargin,
-            entryPriceStr: entryPriceStr,
-            makerAddress: msg.sender
-        });
-        EntryParamsBase memory baseParams = prepareBaseParams(
-            context.listingAddr,
-            entryPriceStr,
-            initMargin,
-            extraMargin
-        );
-        EntryParamsRisk memory riskParams = prepareRiskParams(
-            leverage,
-            stopLoss,
-            takeProfit
-        );
-        EntryParamsToken memory tokenParams = prepareTokenParams(context);
-        validateEntryInputs(baseParams, riskParams);
-        validateListing(baseParams.listingAddr);
-        updateEntryCore(positionId, baseParams, positionType);
-        updateEntryParams(positionId, baseParams, riskParams, tokenParams);
+        positionId = prepareEntryBase(context, entryPriceStr, initMargin, extraMargin, positionType);
+        prepareEntryRisk(positionId, leverage, stopLoss, takeProfit);
+        prepareEntryToken(positionId);
+        validateEntryBase(positionId);
+        validateEntryRisk(positionId);
+        updateEntryCore(positionId);
+        updateEntryParams(positionId);
         updateEntryIndexes(positionId);
-        finalizeEntryTransfer(positionId);
-        uint256 returnedPositionId;
-        uint256 minPrice;
-        uint256 maxPrice;
-        (returnedPositionId, minPrice, maxPrice) = positionType == 0
-            ? prepareEnterLong(baseParams, riskParams, tokenParams)
-            : prepareEnterShort(baseParams, riskParams, tokenParams);
-        require(returnedPositionId == positionId, "Position ID mismatch");
-        emit PositionEntered(
-            positionId,
-            msg.sender,
-            context.listingAddr,
-            positionType,
-            minPrice,
-            maxPrice
-        );
-        delete pendingEntries[positionId];
+        finalizeEntry(positionId);
+        return positionId;
     }
 
     // Enter long position
