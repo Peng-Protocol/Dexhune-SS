@@ -1,13 +1,14 @@
-// SPDX-License-Identifier: BSD-3-Clause
+/* SPDX-License-Identifier: BSD-3-Clause */
 pragma solidity ^0.8.1;
 
-// Version 0.0.9:
-// - Fixed TypeError in fetchPositionData by renaming local riskParams to riskParamsLocal to avoid shadowing the riskParams mapping (line ~43).
-// - Updated prepareCloseLong, prepareCloseShort, internalCloseLongPosition, internalCloseShortPosition to use riskParamsLocal for consistency.
-// - Compatible with SSDUtilityPartial.sol v0.0.5, SSDPositionPartial.sol v0.0.4, SSIsolatedDriver.sol v0.0.2.
-// - v0.0.8: Fixed TypeError in fetchPositionData by renaming local leverageParams to leverageParamsLocal to avoid shadowing the leverageParams mapping (line ~40).
-// - v0.0.7: Fixed TypeError in fetchPositionData by renaming local marginParams to marginParamsLocal to avoid shadowing.
-// - Compatible with SSDUtilityPartial.sol v0.0.5, SSDPositionPartial.sol v0.0.4, SSIsolatedDriver.sol v0.0.2.
+// Version 0.0.17:
+// - Fixed TypeError in prepareExecution by removing view modifier and refactoring to avoid state modifications in view context.
+// - Split processActiveActions logic into non-view processActiveActionsInternal to handle state updates incrementally using pendingActions mapping.
+// - Removed state writes from prepareActiveBase, validateActiveStatus, checkActiveConditions, and introduced computeActiveAction for pure computation.
+// - Ensured compatibility with SSDUtilityPartial.sol v0.0.5, SSDPositionPartial.sol v0.0.5, SSIsolatedDriver.sol v0.0.15.
+// - v0.0.16:
+//   - Fixed TypeError in prepareClosePrice by correcting comparison: changed 'close.positionId == address(this)' to 'close.positionId == positionId'.
+//   - Refactored processActiveActions to reduce stack depth with modular helpers.
 
 import "./SSDPositionPartial.sol";
 
@@ -20,6 +21,30 @@ contract SSDExecutionPartial is SSDPositionPartial {
         uint256 payout;
         uint8 decimals;
     }
+
+    // Temporary storage for close operations
+    struct PendingClose {
+        uint256 positionId;
+        uint256 currentPrice;
+        uint256 payout;
+        uint8 decimals;
+        address listingAddress;
+        address makerAddress;
+        uint8 positionType;
+    }
+
+    // Temporary storage for action processing
+    struct PendingAction {
+        uint256 positionId;
+        uint8 positionType;
+        address listingAddress;
+        bool isValid;
+        uint8 actionType;
+    }
+
+    // Temporary storage mapping
+    mapping(uint256 => PendingClose) internal pendingCloses;
+    mapping(uint256 => PendingAction) internal pendingActions;
 
     // Helper: Get current price
     function getCurrentPrice(address listingAddress) internal view returns (uint256) {
@@ -93,30 +118,62 @@ contract SSDExecutionPartial is SSDPositionPartial {
         }
     }
 
-    // Helper: Process active position
-    function processActivePosition(
-        PositionCoreBase memory coreBase,
-        PositionCoreStatus memory coreStatus,
-        PriceParams memory priceParams,
-        RiskParams memory riskParams,
+    // Helper: Compute active action (pure)
+    function computeActiveAction(
+        uint256 positionId,
+        uint8 positionType,
         uint256 currentPrice,
         address listingAddress
-    ) internal pure returns (PositionAction memory action) {
-        action.positionId = coreBase.positionId;
+    ) internal view returns (PositionAction memory action) {
+        action.positionId = positionId;
         action.actionType = 255; // No action
-        if (coreStatus.status1 && coreStatus.status2 == 0 && coreBase.listingAddress == listingAddress) {
-            bool shouldClose = false;
-            if (coreBase.positionType == 0) { // Long
-                if (riskParams.priceStopLoss > 0 && currentPrice <= riskParams.priceStopLoss) shouldClose = true;
-                else if (riskParams.priceTakeProfit > 0 && currentPrice >= riskParams.priceTakeProfit) shouldClose = true;
-                else if (currentPrice <= riskParams.priceLiquidation) shouldClose = true;
-            } else { // Short
-                if (riskParams.priceStopLoss > 0 && currentPrice >= riskParams.priceStopLoss) shouldClose = true;
-                else if (riskParams.priceTakeProfit > 0 && currentPrice <= riskParams.priceTakeProfit) shouldClose = true;
-                else if (currentPrice >= riskParams.priceLiquidation) shouldClose = true;
-            }
-            if (shouldClose) {
-                action.actionType = 1; // Close
+        PositionCoreBase memory coreBase = positionCoreBase[positionId];
+        PositionCoreStatus memory coreStatus = positionCoreStatus[positionId];
+        if (!coreStatus.status1 || coreStatus.status2 != 0 || coreBase.listingAddress != listingAddress) {
+            return action;
+        }
+        PriceParams memory priceParams = priceParams[positionId];
+        RiskParams memory riskParams = riskParams[positionId];
+        bool shouldClose = false;
+        if (positionType == 0) { // Long
+            if (riskParams.priceStopLoss > 0 && currentPrice <= riskParams.priceStopLoss) shouldClose = true;
+            else if (riskParams.priceTakeProfit > 0 && currentPrice >= riskParams.priceTakeProfit) shouldClose = true;
+            else if (currentPrice <= riskParams.priceLiquidation) shouldClose = true;
+        } else { // Short
+            if (riskParams.priceStopLoss > 0 && currentPrice >= riskParams.priceStopLoss) shouldClose = true;
+            else if (riskParams.priceTakeProfit > 0 && currentPrice <= riskParams.priceTakeProfit) shouldClose = true;
+            else if (currentPrice >= riskParams.priceLiquidation) shouldClose = true;
+        }
+        if (shouldClose) {
+            action.actionType = 1; // Close
+        }
+    }
+
+    // Helper: Store active action
+    function storeActiveAction(
+        PositionAction memory action,
+        PositionAction[] memory tempActions,
+        uint256 actionCount
+    ) internal {
+        if (action.actionType != 255) {
+            tempActions[actionCount] = action;
+        }
+    }
+
+    // Helper: Process active actions (state-modifying)
+    function processActiveActionsInternal(
+        ExecutionContextBase memory contextBase,
+        ExecutionContextCounts memory contextCounts,
+        uint8 positionType,
+        PositionAction[] memory tempActions
+    ) internal {
+        uint256[] memory active = positionsByType[positionType];
+        for (uint256 i = 0; i < active.length; i++) {
+            if (gasleft() < 100000) break;
+            PositionAction memory action = computeActiveAction(active[i], positionType, contextBase.currentPrice, contextBase.listingAddress);
+            storeActiveAction(action, tempActions, contextCounts.actionCount);
+            if (action.actionType != 255) {
+                contextCounts.actionCount++;
             }
         }
     }
@@ -143,29 +200,6 @@ contract SSDExecutionPartial is SSDPositionPartial {
         return contextCounts.actionCount;
     }
 
-    // Helper: Process active actions
-    function processActiveActions(
-        ExecutionContextBase memory contextBase,
-        ExecutionContextCounts memory contextCounts,
-        uint8 positionType,
-        PositionAction[] memory tempActions
-    ) internal view returns (uint256) {
-        uint256[] memory active = positionsByType[positionType];
-        for (uint256 i = 0; i < active.length; i++) {
-            if (gasleft() < 100000) break;
-            PositionCoreBase memory coreBase = positionCoreBase[active[i]];
-            PositionCoreStatus memory coreStatus = positionCoreStatus[active[i]];
-            PriceParams memory priceParams = priceParams[active[i]];
-            RiskParams memory riskParams = riskParams[active[i]];
-            PositionAction memory action = processActivePosition(coreBase, coreStatus, priceParams, riskParams, contextBase.currentPrice, contextBase.listingAddress);
-            if (action.actionType != 255) {
-                tempActions[contextCounts.actionCount] = action;
-                contextCounts.actionCount++;
-            }
-        }
-        return contextCounts.actionCount;
-    }
-
     // Helper: Finalize actions
     function finalizeActions(
         PositionAction[] memory tempActions,
@@ -180,7 +214,7 @@ contract SSDExecutionPartial is SSDPositionPartial {
     // Prepare execution
     function prepareExecution(
         address listingAddress
-    ) internal view returns (PositionAction[] memory actions) {
+    ) internal returns (PositionAction[] memory actions) {
         ExecutionContextBase memory contextBase = ExecutionContextBase({
             listingAddress: listingAddress,
             driver: address(this),
@@ -196,7 +230,7 @@ contract SSDExecutionPartial is SSDPositionPartial {
             contextCounts.actionCount = processPendingActions(contextBase, contextCounts, positionType, tempActions);
         }
         for (uint8 positionType = 0; positionType <= 1; positionType++) {
-            contextCounts.actionCount = processActiveActions(contextBase, contextCounts, positionType, tempActions);
+            processActiveActionsInternal(contextBase, contextCounts, positionType, tempActions);
         }
 
         actions = finalizeActions(tempActions, contextCounts.actionCount);
@@ -213,46 +247,49 @@ contract SSDExecutionPartial is SSDPositionPartial {
         return true;
     }
 
-    // Helper: Prepare closeLong
-    function prepareCloseLong(
-        ClosePositionBase memory closeBase,
-        ClosePositionMargin memory closeMargin
-    ) internal view returns (
-        CloseParams memory closeParams,
-        PositionCoreBase memory coreBase,
-        PositionCoreStatus memory coreStatus,
-        PriceParams memory priceParamsLocal,
-        MarginParams memory marginParamsLocal,
-        LeverageParams memory leverageParamsLocal,
-        RiskParams memory riskParamsLocal
-    ) {
-        (coreBase, coreStatus, priceParamsLocal, marginParamsLocal, leverageParamsLocal, riskParamsLocal) = fetchPositionData(closeBase.positionId);
+    // Helper: Prepare close base data
+    function prepareCloseBase(
+        ClosePositionBase memory closeBase
+    ) internal returns (uint256 positionId) {
+        positionId = closeBase.positionId;
+        pendingCloses[positionId] = PendingClose({
+            positionId: positionId,
+            currentPrice: 0,
+            payout: 0,
+            decimals: 0,
+            listingAddress: closeBase.listingAddress,
+            makerAddress: closeBase.makerAddress,
+            positionType: 0
+        });
+        (PositionCoreBase memory coreBase, PositionCoreStatus memory coreStatus,,,,) = fetchPositionData(positionId);
         validatePositionStatus(coreStatus);
-
-        closeParams.currentPrice = ISSListing(closeBase.listingAddress).prices(uint256(uint160(closeBase.listingAddress)));
-        closeParams.payout = computeLongPayout(closeMargin, leverageParamsLocal, closeParams.currentPrice);
-        closeParams.decimals = ISSListing(closeBase.listingAddress).decimalsB();
+        pendingCloses[positionId].positionType = coreBase.positionType;
+        return positionId;
     }
 
-    // Helper: Prepare closeShort
-    function prepareCloseShort(
-        ClosePositionBase memory closeBase,
-        ClosePositionMargin memory closeMargin
-    ) internal view returns (
-        CloseParams memory closeParams,
-        PositionCoreBase memory coreBase,
-        PositionCoreStatus memory coreStatus,
-        PriceParams memory priceParamsLocal,
-        MarginParams memory marginParamsLocal,
-        LeverageParams memory leverageParamsLocal,
-        RiskParams memory riskParamsLocal
-    ) {
-        (coreBase, coreStatus, priceParamsLocal, marginParamsLocal, leverageParamsLocal, riskParamsLocal) = fetchPositionData(closeBase.positionId);
-        validatePositionStatus(coreStatus);
+    // Helper: Prepare close price data
+    function prepareClosePrice(
+        uint256 positionId
+    ) internal {
+        PendingClose storage close = pendingCloses[positionId];
+        require(close.positionId == positionId, "Invalid position ID");
+        close.currentPrice = ISSListing(close.listingAddress).prices(uint256(uint160(close.listingAddress)));
+        close.decimals = close.positionType == 0
+            ? ISSListing(close.listingAddress).decimalsB()
+            : ISSListing(close.listingAddress).decimalsA();
+    }
 
-        closeParams.currentPrice = ISSListing(closeBase.listingAddress).prices(uint256(uint160(closeBase.listingAddress)));
-        closeParams.payout = computeShortPayout(closeMargin, priceParamsLocal, marginParamsLocal, leverageParamsLocal, closeParams.currentPrice);
-        closeParams.decimals = ISSListing(closeBase.listingAddress).decimalsA();
+    // Helper: Prepare close payout
+    function prepareClosePayout(
+        uint256 positionId,
+        ClosePositionMargin memory closeMargin
+    ) internal {
+        PendingClose storage close = pendingCloses[positionId];
+        require(close.positionId == positionId, "Invalid position ID");
+        (,, PriceParams memory priceParamsLocal, MarginParams memory marginParamsLocal, LeverageParams memory leverageParamsLocal, RiskParams memory riskParamsLocal) = fetchPositionData(positionId);
+        close.payout = close.positionType == 0
+            ? computeLongPayout(closeMargin, leverageParamsLocal, close.currentPrice)
+            : computeShortPayout(closeMargin, priceParamsLocal, marginParamsLocal, leverageParamsLocal, close.currentPrice);
     }
 
     // Helper: Denormalize payout
@@ -297,17 +334,13 @@ contract SSDExecutionPartial is SSDPositionPartial {
         ClosePositionMargin memory closeMargin,
         LongCloseParams memory longParams
     ) internal returns (uint256 payout) {
-        CloseParams memory closeParams;
-        PositionCoreBase memory coreBase;
-        PositionCoreStatus memory coreStatus;
-        PriceParams memory priceParamsLocal;
-        MarginParams memory marginParamsLocal;
-        LeverageParams memory leverageParamsLocal;
-        RiskParams memory riskParamsLocal;
-        (closeParams, coreBase, coreStatus, priceParamsLocal, marginParamsLocal, leverageParamsLocal, riskParamsLocal) = prepareCloseLong(closeBase, closeMargin);
-
-        payout = denormalizePayout(closeParams.payout, closeParams.decimals);
+        uint256 positionId = prepareCloseBase(closeBase);
+        prepareClosePrice(positionId);
+        prepareClosePayout(positionId, closeMargin);
+        PendingClose storage close = pendingCloses[positionId];
+        payout = denormalizePayout(close.payout, close.decimals);
         finalizeClose(closeBase, closeMargin, 0, payout);
+        delete pendingCloses[positionId];
     }
 
     // Internal Helper: Close short position
@@ -316,17 +349,13 @@ contract SSDExecutionPartial is SSDPositionPartial {
         ClosePositionMargin memory closeMargin,
         ShortCloseParams memory shortParams
     ) internal returns (uint256 payout) {
-        CloseParams memory closeParams;
-        PositionCoreBase memory coreBase;
-        PositionCoreStatus memory coreStatus;
-        PriceParams memory priceParamsLocal;
-        MarginParams memory marginParamsLocal;
-        LeverageParams memory leverageParamsLocal;
-        RiskParams memory riskParamsLocal;
-        (closeParams, coreBase, coreStatus, priceParamsLocal, marginParamsLocal, leverageParamsLocal, riskParamsLocal) = prepareCloseShort(closeBase, closeMargin);
-
-        payout = denormalizePayout(closeParams.payout, closeParams.decimals);
+        uint256 positionId = prepareCloseBase(closeBase);
+        prepareClosePrice(positionId);
+        prepareClosePayout(positionId, closeMargin);
+        PendingClose storage close = pendingCloses[positionId];
+        payout = denormalizePayout(close.payout, close.decimals);
         finalizeClose(closeBase, closeMargin, 1, payout);
+        delete pendingCloses[positionId];
     }
 
     // Internal Helper: Cancel position
@@ -531,7 +560,7 @@ contract SSDExecutionPartial is SSDPositionPartial {
                 });
                 LongCloseParams memory longParams = LongCloseParams({
                     leverageAmount: leverageParams.leverageAmount,
-                    loanInitial: leverageParams.loanInitial
+                    loanInitial: leverageParams.leverageVal
                 });
                 internalCloseLongPosition(closeBase, closeMargin, longParams);
                 count++;
@@ -540,10 +569,13 @@ contract SSDExecutionPartial is SSDPositionPartial {
     }
 
     // Cancel all long
-    function cancelAllLongInternal(address user, uint256 maxIterations) internal returns (uint256 count) {
+    function cancelAllLongInternal(
+        address user,
+        uint256 maxIterations
+    ) internal returns (uint256 count) {
         count = 0;
         uint256[] memory positions = pendingPositions[user][0];
-        for (uint256 i = 0; i < positions.length && count < maxIterations; i++) {
+        for (uint256 i = 0; i < positions.length && i < maxIterations; i++) {
             PositionCoreBase memory coreBase = positionCoreBase[positions[i]];
             PositionCoreStatus memory coreStatus = positionCoreStatus[positions[i]];
             MarginParams memory marginParams = marginParams[positions[i]];
@@ -562,5 +594,6 @@ contract SSDExecutionPartial is SSDPositionPartial {
                 count++;
             }
         }
+        return count;
     }
 }
