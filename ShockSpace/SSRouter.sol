@@ -1,23 +1,9 @@
 // SPDX-License-Identifier: BSD-3-Clause
 pragma solidity ^0.8.1;
 
-// Version: 0.0.34 (Updated)
+// Version: 0.0.36 (Updated)
 // Changes:
-// - v0.0.34: Updated clearSingleOrder to use _clearOrderData with correct refund logic via ISSListingTemplate.transact. Refactored clearOrders to iterate over all pending buy and sell orders from pendingBuyOrdersView and pendingSellOrdersView, clearing and refunding each via _clearOrderData, using maxIterations for gas control.
-// - v0.0.33: Fixed TypeError in withdraw by replacing ternary operator in try/catch block with if/else to explicitly call xExecuteOut or yExecuteOut, ensuring compiler recognizes external calls (line 475).
-// - v0.0.32: Fixed TypeError by adding amountReceived and normalizedReceived to OrderPrep struct in SSMainPartial.sol (v0.0.19). Replaced safeTransferFrom with transferFrom in _checkTransferAmount (line 62). Made ISSListingTemplate.transact payable in SSMainPartial.sol to allow ETH transfers (line 58). Simplified _checkTransferAmount to remove redundant transact call for ERC20 tokens. Removed try/catch in settleBuyLiquid and settleSellLiquid, using direct calls to executeSingleBuyLiquid and executeSingleSellLiquid (lines 367-394).
-// - v0.0.31: Added pre/post balance checks in createBuyOrder and createSellOrder using _checkTransferAmount to ensure the amount withdrawn from the user to the listing matches inputAmount, accounting for tax on transfers. Updated OrderPrep struct to include amountReceived and normalizedReceived, adjusting _executeSingleOrder to use amountReceived for order creation. Modified _prepBuyLiquidUpdates and _prepSellLiquidUpdates to check recipient balances before/after ISSLiquidityTemplate.transact, updating orders with actual amountReceived (lines 200-250, 300-350, 400-450).
-// - v0.0.30: Updated _prepBuyLiquidUpdates and _prepSellLiquidUpdates to check liquidityAddr balances for ISSLiquidityTemplate.transact calls, aligning with _executeTransaction fix in SSSettlementPartial.sol v0.0.23 (lines 350-400).
-// - v0.0.29: Added changeDepositor function to wrap ISSLiquidityTemplate.changeSlotDepositor, allowing users to change the depositor of a liquidity slot (lines 600-620).
-// - v0.0.28: Removed initializeListing and ListingInitialized event as they are redundant with onlyValidListing modifier (lines 140-150). Removed unused functions: liquidLongPayout, liquidShortPayout, changeLiquiditySlotDepositor (lines 380-400, 480-490). Changed visibility of executeSingleBuyLiquid, executeSingleSellLiquid to internal (lines 320-360). Removed redundant mappings from SSMainPartial.sol, querying SSListingTemplate view functions (lines 100-110). Integrated ISSListingTemplate.transact for fund transfers in createBuyOrder, createSellOrder, executeBuyOrder, executeSellOrder, clearOrderData (lines 200-250, 300-350, 400-450). Added ISSLiquidityTemplate.transact and updateLiquidity for liquid settlement fund flows in executeSingleBuyLiquid, executeSingleSellLiquid (lines 320-360). Added refund logic in _clearOrderData using ISSListingTemplate.transact (lines 500-520). Updated settleBuyLiquid, settleSellLiquid to query pendingBuyOrdersView, pendingSellOrdersView (lines 360-400).
-// - v0.0.27: Fixed stack-too-deep in _prepBuyLiquidUpdates by adding _createBuyOrderUpdates helper, using BuyOrderUpdateContext struct for _prepBuyOrderUpdate outputs, and applying scoped blocks (lines 305-320).
-// - v0.0.26: Fixed ParserError in settleSellLiquid by removing erroneous 'yul' identifier from finalUpdates declaration (line 460).
-// - v0.0.25: Fixed stack-too-deep in _prepSellLiquidUpdates by adding _createSellOrderUpdates helper, using SellOrderUpdateContext struct for _prepSellOrderUpdate outputs, reusing _checkPricing, and applying scoped blocks. Corrected import path to "./utils/SSSettlementPartial.sol" (lines 8, 335-350).
-// - v0.0.24: Fixed stack-too-deep in executeSingleBuyLiquid by adding _prepBuyLiquidUpdates and _checkPricing helpers, using OrderContext struct, and applying scoped blocks, inspired by MFPRouter.sol v0.0.27 (lines 260-300).
-// - v0.0.23: Fixed stack-too-deep in executeSingleSellLiquid by introducing OrderContext struct, adding _prepSellLiquidUpdates helper, using scoped blocks, and reusing _prepareLiquidityTransaction/_updateLiquidity, inspired by MFPRouter.sol v0.0.27 (lines 260-300).
-// - v0.0.22: Fixed DeclarationError in createSellOrder by replacing tokenBAddress with tokenAAddress in postBalance calculation, aligning with sell order tokenA input (line 199).
-// - v0.0.21: Removed isValidListing[listing] = true from initializeListing, as isValidListing mapping was removed from SSMainPartial.sol (v0.0.14). Validation now relies solely on checkValidListing via onlyValidListing modifier (line 140).
-// - v0.0.6: Compatible with SSListingTemplate.sol (v0.0.8), SSLiquidityTemplate.sol (v0.0.4), SSMainPartial.sol (v0.0.19), SSOrderPartial.sol (v0.0.14), SSSettlementPartial.sol (v0.0.30).
+// - v0.0.36: Refactored settleLongLiquid and settleShortLiquid to use new helpers from SSSettlementPartial (_prepPayoutContext, _checkLiquidityBalance, _transferPayoutAmount, _createPayoutUpdate). Added settleSingleLongLiquid and settleSingleShortLiquid to handle individual payouts, inspired by executeSingleBuyLiquid and executeSingleSellLiquid.
 
 import "./utils/SSSettlementPartial.sol";
 
@@ -66,7 +52,7 @@ contract SSRouter is SSSettlementPartial {
             ? to.balance
             : IERC20(tokenAddress).balanceOf(to);
         amountReceived = postBalance > preBalance ? postBalance - preBalance : 0;
-        normalizedReceived = amountReceived > 0 ? listingContract.normalize(amountReceived, tokenDecimals) : 0;
+        normalizedReceived = amountReceived > 0 ? normalize(amountReceived, tokenDecimals) : 0;
         require(amountReceived > 0, "No tokens received");
     }
 
@@ -213,7 +199,7 @@ contract SSRouter is SSSettlementPartial {
             uint256 preBalance = tokenOut == address(0)
                 ? updateContext.recipient.balance
                 : IERC20(tokenOut).balanceOf(updateContext.recipient);
-            try ISSLiquidityTemplate(context.liquidityAddr).transact(address(this), tokenOut, context.listingContract.denormalize(amountOut, tokenDecimals), updateContext.recipient) {} catch {
+            try ISSLiquidityTemplate(context.liquidityAddr).transact(address(this), tokenOut, denormalize(amountOut, tokenDecimals), updateContext.recipient) {} catch {
                 return new ISSListingTemplate.UpdateType[](0);
             }
             uint256 postBalance = tokenOut == address(0)
@@ -223,7 +209,7 @@ contract SSRouter is SSSettlementPartial {
                 return new ISSListingTemplate.UpdateType[](0);
             }
             updateContext.amountReceived = postBalance - preBalance;
-            updateContext.normalizedReceived = context.listingContract.normalize(updateContext.amountReceived, tokenDecimals);
+            updateContext.normalizedReceived = normalize(updateContext.amountReceived, tokenDecimals);
         }
         if (updateContext.normalizedReceived == 0) {
             return new ISSListingTemplate.UpdateType[](0);
@@ -258,7 +244,7 @@ contract SSRouter is SSSettlementPartial {
             uint256 preBalance = tokenOut == address(0)
                 ? updateContext.recipient.balance
                 : IERC20(tokenOut).balanceOf(updateContext.recipient);
-            try ISSLiquidityTemplate(context.liquidityAddr).transact(address(this), tokenOut, context.listingContract.denormalize(amountOut, tokenDecimals), updateContext.recipient) {} catch {
+            try ISSLiquidityTemplate(context.liquidityAddr).transact(address(this), tokenOut, denormalize(amountOut, tokenDecimals), updateContext.recipient) {} catch {
                 return new ISSListingTemplate.UpdateType[](0);
             }
             uint256 postBalance = tokenOut == address(0)
@@ -268,7 +254,7 @@ contract SSRouter is SSSettlementPartial {
                 return new ISSListingTemplate.UpdateType[](0);
             }
             updateContext.amountReceived = postBalance - preBalance;
-            updateContext.normalizedReceived = context.listingContract.normalize(updateContext.amountReceived, tokenDecimals);
+            updateContext.normalizedReceived = normalize(updateContext.amountReceived, tokenDecimals);
         }
         if (updateContext.normalizedReceived == 0) {
             return new ISSListingTemplate.UpdateType[](0);
@@ -375,6 +361,24 @@ contract SSRouter is SSSettlementPartial {
         return _prepSellLiquidUpdates(context, orderIdentifier, pendingAmount);
     }
 
+    function settleSingleLongLiquid(
+        address listingAddress,
+        uint256 orderIdentifier
+    ) internal returns (ISSListingTemplate.PayoutUpdate[] memory) {
+        ISSListingTemplate listingContract = ISSListingTemplate(listingAddress);
+        ISSListingTemplate.LongPayoutStruct memory payout = listingContract.getLongPayout(orderIdentifier);
+        return _prepLongPayoutLiquid(listingAddress, orderIdentifier, payout);
+    }
+
+    function settleSingleShortLiquid(
+        address listingAddress,
+        uint256 orderIdentifier
+    ) internal returns (ISSListingTemplate.PayoutUpdate[] memory) {
+        ISSListingTemplate listingContract = ISSListingTemplate(listingAddress);
+        ISSListingTemplate.ShortPayoutStruct memory payout = listingContract.getShortPayout(orderIdentifier);
+        return _prepShortPayoutLiquid(listingAddress, orderIdentifier, payout);
+    }
+
     function settleBuyLiquid(address listingAddress, uint256 maxIterations) external onlyValidListing(listingAddress) nonReentrant {
         ISSListingTemplate listingContract = ISSListingTemplate(listingAddress);
         uint256[] memory orderIdentifiers = listingContract.pendingBuyOrdersView();
@@ -418,6 +422,56 @@ contract SSRouter is SSSettlementPartial {
         }
         if (updateIndex > 0) {
             listingContract.update(address(this), finalUpdates);
+        }
+    }
+
+    function settleLongLiquid(address listingAddress, uint256 maxIterations) external onlyValidListing(listingAddress) nonReentrant {
+        ISSListingTemplate listingContract = ISSListingTemplate(listingAddress);
+        address liquidityAddr = listingContract.liquidityAddressView();
+        ISSLiquidityTemplate liquidityContract = ISSLiquidityTemplate(liquidityAddr);
+        require(liquidityContract.routers(address(this)), "Router not registered");
+        uint256[] memory orderIdentifiers = listingContract.longPayoutByIndexView();
+        uint256 iterationCount = maxIterations < orderIdentifiers.length ? maxIterations : orderIdentifiers.length;
+        ISSListingTemplate.PayoutUpdate[] memory tempPayoutUpdates = new ISSListingTemplate.PayoutUpdate[](iterationCount);
+        uint256 updateIndex = 0;
+        for (uint256 i = 0; i < iterationCount; i++) {
+            ISSListingTemplate.PayoutUpdate[] memory updates = settleSingleLongLiquid(listingAddress, orderIdentifiers[i]);
+            if (updates.length == 0) {
+                continue;
+            }
+            tempPayoutUpdates[updateIndex++] = updates[0];
+        }
+        ISSListingTemplate.PayoutUpdate[] memory finalPayoutUpdates = new ISSListingTemplate.PayoutUpdate[](updateIndex);
+        for (uint256 i = 0; i < updateIndex; i++) {
+            finalPayoutUpdates[i] = tempPayoutUpdates[i];
+        }
+        if (updateIndex > 0) {
+            listingContract.ssUpdate(address(this), finalPayoutUpdates);
+        }
+    }
+
+    function settleShortLiquid(address listingAddress, uint256 maxIterations) external onlyValidListing(listingAddress) nonReentrant {
+        ISSListingTemplate listingContract = ISSListingTemplate(listingAddress);
+        address liquidityAddr = listingContract.liquidityAddressView();
+        ISSLiquidityTemplate liquidityContract = ISSLiquidityTemplate(liquidityAddr);
+        require(liquidityContract.routers(address(this)), "Router not registered");
+        uint256[] memory orderIdentifiers = listingContract.shortPayoutByIndexView();
+        uint256 iterationCount = maxIterations < orderIdentifiers.length ? maxIterations : orderIdentifiers.length;
+        ISSListingTemplate.PayoutUpdate[] memory tempPayoutUpdates = new ISSListingTemplate.PayoutUpdate[](iterationCount);
+        uint256 updateIndex = 0;
+        for (uint256 i = 0; i < iterationCount; i++) {
+            ISSListingTemplate.PayoutUpdate[] memory updates = settleSingleShortLiquid(listingAddress, orderIdentifiers[i]);
+            if (updates.length == 0) {
+                continue;
+            }
+            tempPayoutUpdates[updateIndex++] = updates[0];
+        }
+        ISSListingTemplate.PayoutUpdate[] memory finalPayoutUpdates = new ISSListingTemplate.PayoutUpdate[](updateIndex);
+        for (uint256 i = 0; i < updateIndex; i++) {
+            finalPayoutUpdates[i] = tempPayoutUpdates[i];
+        }
+        if (updateIndex > 0) {
+            listingContract.ssUpdate(address(this), finalPayoutUpdates);
         }
     }
 
@@ -514,7 +568,7 @@ contract SSRouter is SSSettlementPartial {
         ISSLiquidityTemplate liquidityContract = ISSLiquidityTemplate(liquidityAddr);
         require(liquidityContract.routers(address(this)), "Router not registered");
         try liquidityContract.changeSlotDepositor(msg.sender, isX, slotIndex, newDepositor) {} catch {
-            revert("Failed to change depositor");
+            revert("Failed to change");
         }
     }
 }
