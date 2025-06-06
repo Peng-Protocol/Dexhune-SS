@@ -1,15 +1,18 @@
 // SPDX-License-Identifier: BSD-3-Clause
 pragma solidity ^0.8.1;
 
-// Version: 0.0.10
+// Version: 0.0.13 (Updated)
 // Changes:
+// - v0.0.13: Updated _executeSingleOrder to use prep.normalizedReceived instead of prep.amount to reflect pre/post balance checks in SSRouter.sol (v0.0.32).
+// - v0.0.12: Fixed TypeError in _executeSingleOrder by adding getNextOrderId to ISSListingTemplate interface in SSMainPartial.sol, enabling correct order ID retrieval (line 42). Noted potential review needed for updates[1].value in _executeSingleOrder (set to 0 for Pricing struct).
+// - v0.0.11: Removed makerActiveOrders, activeBuyOrders, and activeSellOrders mappings from SSOrderPartial.sol as they are redundant. Replaced with ISSListingTemplate.makerPendingOrdersView, pendingBuyOrdersView, and pendingSellOrdersView calls to fetch order details directly from the listing contract. Updated _executeSingleOrder and _clearOrderData to rely on listing contract state via view functions, ensuring correct context and alignment with SSListingTemplate.sol (v0.0.8).
 // - v0.0.10: Fixed DeclarationError in _handleOrderPrep by replacing decimalsA/decimalsB mappings with ISSListingTemplate.decimalsA()/decimalsB() calls, aligning with SSMainPartial.sol v0.0.15 (line 28).
 // - v0.0.9: Fixed TypeError in _clearOrderData by explicitly destructuring tuples from getBuyOrderCore and getSellOrderCore.
 // - v0.0.8: Updated to align with SSMainPartial.sol v0.0.8 and SSListingTemplate.sol v0.0.8.
 // - v0.0.7: Removed ISSAgent.globalizeOrders calls, globalization handled by SSListingTemplate.
 // - v0.0.7: Fixed _clearOrderData array index assignment (removed erroneous activeOrders[i] = i).
 // - v0.0.7: Maintained generic helpers (_handleOrderPrep, _executeSingleOrder, _clearOrderData).
-// - Compatible with SSListingTemplate.sol (v0.0.8), SSLiquidityTemplate.sol (v0.0.4).
+// - Compatible with SSListingTemplate.sol (v0.0.8), SSLiquidityTemplate.sol (v0.0.4), SSMainPartial.sol (v0.0.19).
 
 import "./SSMainPartial.sol";
 
@@ -29,7 +32,7 @@ contract SSOrderPartial is SSMainPartial {
         ISSListingTemplate listingContract = ISSListingTemplate(listing);
         uint8 decimals = isBuy ? listingContract.decimalsB() : listingContract.decimalsA();
         uint256 normalizedAmount = listingContract.normalize(amount, decimals);
-        return OrderPrep(maker, recipient, normalizedAmount, maxPrice, minPrice);
+        return OrderPrep(maker, recipient, normalizedAmount, maxPrice, minPrice, 0, 0);
     }
 
     function _executeSingleOrder(
@@ -38,26 +41,29 @@ contract SSOrderPartial is SSMainPartial {
         bool isBuy
     ) internal {
         ISSListingTemplate listingContract = ISSListingTemplate(listing);
-        uint256 orderId = makerActiveOrders[listing][prep.maker].length;
-        ISSListingTemplate.UpdateType[] memory updates = new ISSListingTemplate.UpdateType[](1);
+        uint256 orderId = listingContract.getNextOrderId();
+        ISSListingTemplate.UpdateType[] memory updates = new ISSListingTemplate.UpdateType[](2);
         updates[0] = ISSListingTemplate.UpdateType({
             updateType: isBuy ? 1 : 2,
             structId: 0,
             index: orderId,
-            value: prep.amount,
+            value: 1, // Initial status: pending
             addr: prep.maker,
             recipient: prep.recipient,
+            maxPrice: 0,
+            minPrice: 0
+        });
+        updates[1] = ISSListingTemplate.UpdateType({
+            updateType: isBuy ? 1 : 2,
+            structId: 1,
+            index: orderId,
+            value: prep.normalizedReceived, // Use normalized received amount
+            addr: address(0),
+            recipient: address(0),
             maxPrice: prep.maxPrice,
             minPrice: prep.minPrice
         });
         listingContract.update(address(this), updates);
-        orderPendingAmounts[listing][orderId] = prep.amount;
-        makerActiveOrders[listing][prep.maker].push(orderId);
-        if (isBuy) {
-            activeBuyOrders[listing].push(orderId);
-        } else {
-            activeSellOrders[listing].push(orderId);
-        }
     }
 
     function _clearOrderData(
@@ -66,35 +72,18 @@ contract SSOrderPartial is SSMainPartial {
         bool isBuy
     ) internal {
         ISSListingTemplate listingContract = ISSListingTemplate(listing);
+        (address maker,,) = isBuy ? listingContract.getBuyOrderCore(orderId) : listingContract.getSellOrderCore(orderId);
         ISSListingTemplate.UpdateType[] memory updates = new ISSListingTemplate.UpdateType[](1);
         updates[0] = ISSListingTemplate.UpdateType({
             updateType: isBuy ? 1 : 2,
             structId: 0,
             index: orderId,
-            value: 0,
+            value: 0, // Set status to cancelled
             addr: address(0),
             recipient: address(0),
             maxPrice: 0,
             minPrice: 0
         });
         listingContract.update(address(this), updates);
-        orderPendingAmounts[listing][orderId] = 0;
-        (address maker,,) = isBuy ? listingContract.getBuyOrderCore(orderId) : listingContract.getSellOrderCore(orderId);
-        uint256[] storage makerOrders = makerActiveOrders[listing][maker];
-        for (uint256 i = 0; i < makerOrders.length; i++) {
-            if (makerOrders[i] == orderId) {
-                makerOrders[i] = makerOrders[makerOrders.length - 1];
-                makerOrders.pop();
-                break;
-            }
-        }
-        uint256[] storage activeOrders = isBuy ? activeBuyOrders[listing] : activeSellOrders[listing];
-        for (uint256 i = 0; i < activeOrders.length; i++) {
-            if (activeOrders[i] == orderId) {
-                activeOrders[i] = activeOrders[activeOrders.length - 1];
-                activeOrders.pop();
-                break;
-            }
-        }
     }
 }

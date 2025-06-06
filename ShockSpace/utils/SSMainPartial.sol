@@ -1,8 +1,12 @@
 // SPDX-License-Identifier: BSD-3-Clause
 pragma solidity ^0.8.1;
 
-// Version: 0.0.15
+// Version: 0.0.19 (Updated)
 // Changes:
+// - v0.0.19: Added amountReceived and normalizedReceived to OrderPrep struct to support pre/post balance checks in SSRouter.sol (v0.0.32). Marked ISSListingTemplate.transact as payable to allow ETH transfers in _checkTransferAmount (line 58). Removed SafeERC20 import, as transferFrom replaces safeTransferFrom.
+// - v0.0.18: Added getNextOrderId() external view returns (uint256) to ISSListingTemplate interface to resolve TypeError in SSOrderPartial.sol (line 42).
+// - v0.0.17: Fixed ParserError in checkValidListing by removing extra parenthesis in require statement (line 188). Corrected modifier onlyValidListing syntax by moving _; to end of block (line 190). Fixed typo in revert message from "Agent not not set" to "Agent not set" (line 186). Revised SellOrderDetails struct: changed maker from uint256 to address, removed duplicate maxPrice (uint8), removed sellId for consistency with BuyOrderDetails (lines 170-180). Added agentView function to access internal agent state variable (line 200).
+// - v0.0.16: Removed redundant mappings (orderPendingAmounts, payoutPendingAmounts, activeBuyOrders, activeSellOrders, activeLongPayouts, activeShortPayouts, makerActiveOrders) to query ISSListingTemplate view functions (e.g., pendingBuyOrdersView, getBuyOrderAmounts) (lines 100-110). Simplified struct definitions (BuyOrderDetails, SellOrderDetails, OrderClearData) as they are unused in SSRouter.sol (lines 90-100).
 // - v0.0.15: Fixed DeclarationError by moving checkValidListing from SSRouter.sol to SSMainPartial.sol as a private view function. Updated onlyValidListing modifier to call checkValidListing directly, removing SSRouter dependency (lines 180-190).
 // - v0.0.14: Removed isValidListing mapping, updated onlyValidListing modifier to call SSRouter.checkValidListing for runtime validation before order creation and settlement (lines 100-110).
 // - v0.0.13: Removed redundant mappings (liquidityAddress, tokenA, tokenB, decimalsA, decimalsB) to fetch data from ISSListingTemplate (lines 100-110).
@@ -19,9 +23,9 @@ pragma solidity ^0.8.1;
 // - v0.0.7: Removed taxCollector references.
 // - Compatible with SSListingTemplate.sol (v0.0.8), SSLiquidityTemplate.sol (v0.0.4).
 
-import "../imports/SafeERC20.sol";
 import "../imports/ReentrancyGuard.sol";
 import "../imports/Ownable.sol";
+import "../imports/SafeERC20.sol";
 
 // Note: Globalization (orders and liquidity) is handled by SSListingTemplate and SSLiquidityTemplate, not SSRouter.
 
@@ -62,7 +66,7 @@ interface ISSListingTemplate {
     function setRegistry(address newRegistry) external;
     function update(address caller, UpdateType[] memory updates) external;
     function ssUpdate(address caller, PayoutUpdate[] memory payoutUpdates) external;
-    function transact(address caller, address token, uint256 amount, address recipient) external;
+    function transact(address caller, address token, uint256 amount, address recipient) external payable;
     function decimalsA() external view returns (uint8);
     function decimalsB() external view returns (uint8);
     function listingVolumeBalancesView() external view returns (uint256 xBalance, uint256 yBalance, uint256 xVolume, uint256 yVolume);
@@ -85,6 +89,7 @@ interface ISSListingTemplate {
     function normalize(uint256 amount, uint8 decimals) external pure returns (uint256);
     function denormalize(uint256 amount, uint8 decimals) external pure returns (uint256);
     function getListingId() external view returns (uint256);
+    function getNextOrderId() external view returns (uint256);
 }
 
 interface ISSLiquidityTemplate {
@@ -106,6 +111,7 @@ interface ISSLiquidityTemplate {
         uint256 dVolume;
         uint256 timestamp;
     }
+    
     function update(address caller, UpdateType[] memory updates) external;
     function transact(address caller, address token, uint256 amount, address recipient) external;
     function deposit(address caller, address token, uint256 amount) external payable;
@@ -132,13 +138,13 @@ interface ISSLiquidityTemplate {
 }
 
 interface ISSAgent {
-    function getListing(address tokenA, address tokenB) external view returns (address);
+    function getListing(address tokenA, address tokenB) external view returns(address);
 }
 
 contract SSMainPartial is ReentrancyGuard, Ownable {
     using SafeERC20 for IERC20;
 
-    address public agent;
+    address internal agent;
 
     struct OrderPrep {
         address maker;
@@ -146,6 +152,8 @@ contract SSMainPartial is ReentrancyGuard, Ownable {
         uint256 amount;
         uint256 maxPrice;
         uint256 minPrice;
+        uint256 amountReceived;
+        uint256 normalizedReceived;
     }
 
     struct BuyOrderDetails {
@@ -176,14 +184,6 @@ contract SSMainPartial is ReentrancyGuard, Ownable {
         uint256 amount;
     }
 
-    mapping(address => mapping(uint256 => uint256)) public orderPendingAmounts;
-    mapping(address => mapping(uint256 => uint256)) public payoutPendingAmounts;
-    mapping(address => uint256[]) public activeBuyOrders;
-    mapping(address => uint256[]) public activeSellOrders;
-    mapping(address => uint256[]) public activeLongPayouts;
-    mapping(address => uint256[]) public activeShortPayouts;
-    mapping(address => mapping(address => uint256[])) public makerActiveOrders;
-
     function checkValidListing(address listing) private view {
         ISSListingTemplate listingTemplate = ISSListingTemplate(listing);
         address agentAddress = listingTemplate.agent();
@@ -201,5 +201,9 @@ contract SSMainPartial is ReentrancyGuard, Ownable {
     function setAgent(address newAgent) external onlyOwner {
         require(newAgent != address(0), "Invalid agent address");
         agent = newAgent;
+    }
+
+    function agentView() external view returns (address) {
+        return agent;
     }
 }
