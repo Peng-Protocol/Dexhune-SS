@@ -1,29 +1,102 @@
 // SPDX-License-Identifier: BSD-3-Clause
 pragma solidity ^0.8.1;
 
-// Version: 0.0.30 (Updated)
+// Version: 0.0.34 (Updated)
 // Changes:
-// - v0.0.30: Fixed TypeError by removing try/catch blocks around internal function calls (executeBuyOrder, executeSellOrder, executeLongPayout, executeShortPayout) in executeBuyOrders, executeSellOrders, executeLongPayouts, and executeShortPayouts, as try/catch is only valid for external calls (lines 274, 308, 359, 391). Added import for IERC20 to support decimals() and balanceOf() in _checkRecipientTransfer (line 24).
-// - v0.0.29: Fixed TypeError by replacing external calls (this.executeBuyOrder, this.executeSellOrder, this.executeLongPayout, this.executeShortPayout) with internal calls (executeBuyOrder, executeSellOrder, executeLongPayout, executeShortPayout) in executeBuyOrders, executeSellOrders, executeLongPayouts, and executeShortPayouts, as internal functions cannot be called via 'this' (lines 274, 308, 342, 374). Corrected inheritance from SSOrder.partial to SSOrderPartial (line 27).
-// - v0.0.28: Fixed ParserError in _computeImpact by removing stray 'HawkinsHighlight' identifier, replacing with proper 'if (isBuyOrder)' condition for buy/sell logic (line 37).
-// - v0.0.27: Fixed ParserError in _computeImpact by correcting syntax from 'ISSListingTemplate:listingAddress' to 'ISSListingTemplate(listingAddress)' for proper type casting (line 29). Fixed ParserError in executeShortPayouts by adding missing semicolon before 'for' loop, correcting syntax and ensuring proper statement termination (line 380).
-// - v0.0.26: Fixed ParserError in _processPayoutUpdate by removing semicolon from empty catch block, correcting syntax for try/catch (line 194).
-// - v0.0.25: Updated _prepBuyOrderUpdate and _prepSellOrderUpdate to use new _checkRecipientTransfer helper for pre/post balance checks on the recipient's balance, ensuring the amount sent from the listing to the recipient matches inputAmount, updating orders with actual amountReceived to account for tax on transfers (lines 200-250).
-// - v0.0.24: Fixed syntax errors in executeShortPayout (corrected listingContractLASListingTemplate to listingContract, line ~390) and executeLongPayouts (completed if condition and added closing braces, line ~460). Restored orderPendingAmounts and payoutPendingAmounts state variables and their updates in _executeBuyOrderUpdate, _executeSellOrderUpdate, _processPayoutUpdate, as their removal in v0.0.22 was inconsistent with logic (lines 90-100, 200-220, 280-300). Removed reliance on activeBuyOrders, activeSellOrders, activeLongPayouts, activeShortPayouts, using pendingBuyOrdersView, pendingSellOrdersView, longPayoutByIndexView, shortPayoutByIndexView (lines 350-450). Ensured stack depth ≤16 variables, explicit parameter names, and style guide compliance.
-// - v0.0.23: Updated _executeTransaction to check balances of targetContract (listing or liquidity contract) instead of address(this) for accurate amountReceived calculation (lines 120-140). Replaced listing parameter with targetContract to support both listing and liquidity contracts.
-// - v0.0.22: Changed visibility of executeBuyOrder, executeSellOrder, executeLongPayout, executeShortPayout to internal to hide non-user-facing functions (lines 330-380). Updated _executeTransaction to use ISSListingTemplate.transact instead of direct token transfers (lines 200-220). Updated _clearOrderData to refund pending amounts via ISSListingTemplate.transact (lines 250-270). Removed references to orderPendingAmounts, payoutPendingAmounts, activeBuyOrders, activeSellOrders, activeLongPayouts, activeShortPayouts, makerActiveOrders, querying ISSListingTemplate view functions (e.g., pendingBuyOrdersView, getBuyOrderAmounts) (lines 100-150).
-// - v0.0.21: Fixed TypeError in executeLongPayout and executeShortPayout by updating _processPayoutUpdate to return ISSListingTemplate.PayoutUpdate[], aligning with function expectations (lines 393-405).
-// - v0.0.20: Fixed DeclarationError in _getTokenAndDecimals by replacing tokenA/tokenB/decimalsA/decimalsB mappings with ISSListingTemplate.tokenA()/tokenB()/decimalsA()/decimalsB() calls, aligning with SSMainPartial.sol v0.0.15 (line 60).
-// - v0.0.19: Fixed ParserError in executeLongPayout by correcting return type to ISSListingTemplate.PayoutUpdate[], removed erroneous nested 'returns', and fixed typo PayoutType to PayoutUpdate (line 385). Corrected logical error in executeSellOrders condition from 'updates.length == updates.length == 0' to 'updates.length == 0' (line 364).
-// - v0.0.18: Fixed typo in executeShortPayouts: replaced 'ordres' with 'orders' (lines 448-463).
-// - v0.0.17: Revised _computeImpact to align with token flow: reduce xBalance for buy (tokenA out), reduce yBalance for sell (tokenB out). Integrated impact price into settlement for executeBuyOrder, executeSellOrder, settleBuyLiquid, settleSellLiquid to compute amountReceived. Added balance sufficiency checks.
-// - Compatible with SSListingTemplate.sol (v0.0.8), SSLiquidityTemplate.sol (v0.0.4), SSMainPartial.sol (v0.0.18), SSOrderPartial.sol (v0.0.12).
+// - v0.0.34: Fixed TypeError in _prepLongPayoutLiquid, _prepShortPayoutLiquid, executeLongPayout, and executeShortPayout by adding context.amountOut as the second argument to _transferPayoutAmount and _transferListingPayoutAmount calls, aligning with their function signatures.
+// - v0.0.33: Refactored executeLongPayout and executeShortPayout to support partial settlement by measuring actual amount transferred via new _transferListingPayoutAmount helper. Updates payoutPendingAmounts only for actual normalizedReceived, returns empty array if transfer fails, ensuring accurate state for insufficient balances.
+// - v0.0.32: Added _prepPayoutContext, _checkLiquidityBalance, _transferPayoutAmount, _createPayoutUpdate helpers to modularize payout processing for settleLongLiquid and settleShortLiquid, reducing stack usage and improving readability. Refactored _prepLongPayoutLiquid and _prepShortPayoutLiquid to use these new helpers.
 
 import "./SSOrderPartial.sol";
 
 contract SSSettlementPartial is SSOrderPartial {
     mapping(address => mapping(uint256 => uint256)) internal orderPendingAmounts;
     mapping(address => mapping(uint256 => uint256)) internal payoutPendingAmounts;
+
+    struct PayoutContext {
+        address listingAddress;
+        address liquidityAddr;
+        address tokenOut;
+        uint8 tokenDecimals;
+        uint256 amountOut;
+        address recipientAddress;
+    }
+
+    function _prepPayoutContext(
+        address listingAddress,
+        uint256 orderId,
+        bool isLong
+    ) internal view returns (PayoutContext memory) {
+        ISSListingTemplate listingContract = ISSListingTemplate(listingAddress);
+        return PayoutContext({
+            listingAddress: listingAddress,
+            liquidityAddr: listingContract.liquidityAddressView(),
+            tokenOut: isLong ? listingContract.tokenA() : listingContract.tokenB(),
+            tokenDecimals: isLong ? listingContract.decimalsA() : listingContract.decimalsB(),
+            amountOut: 0,
+            recipientAddress: address(0)
+        });
+    }
+
+    function _checkLiquidityBalance(
+        PayoutContext memory context,
+        uint256 requiredAmount,
+        bool isLong
+    ) internal view returns (bool) {
+        ISSLiquidityTemplate liquidityContract = ISSLiquidityTemplate(context.liquidityAddr);
+        (uint256 xAmount, uint256 yAmount) = liquidityContract.liquidityAmounts();
+        return isLong ? xAmount >= requiredAmount : yAmount >= requiredAmount;
+    }
+
+    function _transferPayoutAmount(
+        PayoutContext memory context,
+        uint256 amountOut
+    ) internal returns (uint256 amountReceived, uint256 normalizedReceived) {
+        ISSLiquidityTemplate liquidityContract = ISSLiquidityTemplate(context.liquidityAddr);
+        uint256 preBalance = context.tokenOut == address(0)
+            ? context.recipientAddress.balance
+            : IERC20(context.tokenOut).balanceOf(context.recipientAddress);
+        try liquidityContract.transact(address(this), context.tokenOut, amountOut, context.recipientAddress) {} catch {
+            return (0, 0);
+        }
+        uint256 postBalance = context.tokenOut == address(0)
+            ? context.recipientAddress.balance
+            : IERC20(context.tokenOut).balanceOf(context.recipientAddress);
+        amountReceived = postBalance > preBalance ? postBalance - preBalance : 0;
+        normalizedReceived = amountReceived > 0 ? normalize(amountReceived, context.tokenDecimals) : 0;
+    }
+
+    function _transferListingPayoutAmount(
+        PayoutContext memory context,
+        uint256 amountOut
+    ) internal returns (uint256 amountReceived, uint256 normalizedReceived) {
+        ISSListingTemplate listingContract = ISSListingTemplate(context.listingAddress);
+        uint256 preBalance = context.tokenOut == address(0)
+            ? context.recipientAddress.balance
+            : IERC20(context.tokenOut).balanceOf(context.recipientAddress);
+        try listingContract.transact(address(this), context.tokenOut, amountOut, context.recipientAddress) {} catch {
+            return (0, 0);
+        }
+        uint256 postBalance = context.tokenOut == address(0)
+            ? context.recipientAddress.balance
+            : IERC20(context.tokenOut).balanceOf(context.recipientAddress);
+        amountReceived = postBalance > preBalance ? postBalance - preBalance : 0;
+        normalizedReceived = amountReceived > 0 ? normalize(amountReceived, context.tokenDecimals) : 0;
+    }
+
+    function _createPayoutUpdate(
+        uint256 normalizedReceived,
+        address recipientAddress,
+        bool isLong
+    ) internal pure returns (ISSListingTemplate.PayoutUpdate[] memory) {
+        ISSListingTemplate.PayoutUpdate[] memory updates = new ISSListingTemplate.PayoutUpdate[](1);
+        updates[0] = ISSListingTemplate.PayoutUpdate({
+            payoutType: isLong ? 0 : 1,
+            recipient: recipientAddress,
+            required: normalizedReceived
+        });
+        return updates;
+    }
 
     function _computeImpact(
         address listingAddress,
@@ -77,7 +150,7 @@ contract SSSettlementPartial is SSOrderPartial {
             ? recipientAddress.balance
             : IERC20(tokenAddress).balanceOf(recipientAddress);
         amountReceived = postBalance > preBalance ? postBalance - preBalance : 0;
-        normalizedReceived = amountReceived > 0 ? listingContract.normalize(amountReceived, tokenDecimals) : 0;
+        normalizedReceived = amountReceived > 0 ? normalize(amountReceived, tokenDecimals) : 0;
     }
 
     function _createOrderUpdates(
@@ -151,6 +224,50 @@ contract SSSettlementPartial is SSOrderPartial {
         (amountReceived, normalizedReceived) = _checkRecipientTransfer(listingAddress, tokenAddress, inputAmount, recipientAddress);
     }
 
+    function _prepLongPayoutLiquid(
+        address listingAddress,
+        uint256 orderIdentifier,
+        ISSListingTemplate.LongPayoutStruct memory payout
+    ) internal returns (ISSListingTemplate.PayoutUpdate[] memory) {
+        if (payout.required == 0) {
+            return new ISSListingTemplate.PayoutUpdate[](0);
+        }
+        PayoutContext memory context = _prepPayoutContext(listingAddress, orderIdentifier, true);
+        context.recipientAddress = payout.recipientAddress;
+        context.amountOut = denormalize(payout.required, context.tokenDecimals);
+        if (!_checkLiquidityBalance(context, payout.required, true)) {
+            return new ISSListingTemplate.PayoutUpdate[](0);
+        }
+        (uint256 amountReceived, uint256 normalizedReceived) = _transferPayoutAmount(context, context.amountOut);
+        if (normalizedReceived == 0) {
+            return new ISSListingTemplate.PayoutUpdate[](0);
+        }
+        payoutPendingAmounts[listingAddress][orderIdentifier] -= normalizedReceived;
+        return _createPayoutUpdate(normalizedReceived, payout.recipientAddress, true);
+    }
+
+    function _prepShortPayoutLiquid(
+        address listingAddress,
+        uint256 orderIdentifier,
+        ISSListingTemplate.ShortPayoutStruct memory payout
+    ) internal returns (ISSListingTemplate.PayoutUpdate[] memory) {
+        if (payout.amount == 0) {
+            return new ISSListingTemplate.PayoutUpdate[](0);
+        }
+        PayoutContext memory context = _prepPayoutContext(listingAddress, orderIdentifier, false);
+        context.recipientAddress = payout.recipientAddress;
+        context.amountOut = denormalize(payout.amount, context.tokenDecimals);
+        if (!_checkLiquidityBalance(context, payout.amount, false)) {
+            return new ISSListingTemplate.PayoutUpdate[](0);
+        }
+        (uint256 amountReceived, uint256 normalizedReceived) = _transferPayoutAmount(context, context.amountOut);
+        if (normalizedReceived == 0) {
+            return new ISSListingTemplate.PayoutUpdate[](0);
+        }
+        payoutPendingAmounts[listingAddress][orderIdentifier] -= normalizedReceived;
+        return _createPayoutUpdate(normalizedReceived, payout.recipientAddress, false);
+    }
+
     function _executeBuyOrderUpdate(
         address listingAddress,
         uint256 orderIdentifier,
@@ -183,22 +300,44 @@ contract SSSettlementPartial is SSOrderPartial {
         return _createOrderUpdates(orderIdentifier, normalizedReceivedAmount, makerAddress, recipientAddress, orderStatus, false, pendingAmount);
     }
 
-    function _processPayoutUpdate(
+    function executeLongPayout(
         address listingAddress,
-        uint256 orderIdentifier,
-        uint256 payoutAmount,
-        bool isLongPayout
+        uint256 orderIdentifier
     ) internal returns (ISSListingTemplate.PayoutUpdate[] memory) {
         ISSListingTemplate listingContract = ISSListingTemplate(listingAddress);
-        ISSListingTemplate.PayoutUpdate[] memory updates = new ISSListingTemplate.PayoutUpdate[](1);
-        updates[0] = ISSListingTemplate.PayoutUpdate({
-            payoutType: isLongPayout ? 0 : 1,
-            recipient: address(0),
-            required: payoutAmount
-        });
-        try listingContract.ssUpdate(address(this), updates) {} catch {}
-        payoutPendingAmounts[listingAddress][orderIdentifier] -= payoutAmount;
-        return updates;
+        ISSListingTemplate.LongPayoutStruct memory payout = listingContract.getLongPayout(orderIdentifier);
+        if (payout.required == 0) {
+            return new ISSListingTemplate.PayoutUpdate[](0);
+        }
+        PayoutContext memory context = _prepPayoutContext(listingAddress, orderIdentifier, true);
+        context.recipientAddress = payout.recipientAddress;
+        context.amountOut = denormalize(payout.required, context.tokenDecimals);
+        (uint256 amountReceived, uint256 normalizedReceived) = _transferListingPayoutAmount(context, context.amountOut);
+        if (normalizedReceived == 0) {
+            return new ISSListingTemplate.PayoutUpdate[](0);
+        }
+        payoutPendingAmounts[listingAddress][orderIdentifier] -= normalizedReceived;
+        return _createPayoutUpdate(normalizedReceived, payout.recipientAddress, true);
+    }
+
+    function executeShortPayout(
+        address listingAddress,
+        uint256 orderIdentifier
+    ) internal returns (ISSListingTemplate.PayoutUpdate[] memory) {
+        ISSListingTemplate listingContract = ISSListingTemplate(listingAddress);
+        ISSListingTemplate.ShortPayoutStruct memory payout = listingContract.getShortPayout(orderIdentifier);
+        if (payout.amount == 0) {
+            return new ISSListingTemplate.PayoutUpdate[](0);
+        }
+        PayoutContext memory context = _prepPayoutContext(listingAddress, orderIdentifier, false);
+        context.recipientAddress = payout.recipientAddress;
+        context.amountOut = denormalize(payout.amount, context.tokenDecimals);
+        (uint256 amountReceived, uint256 normalizedReceived) = _transferListingPayoutAmount(context, context.amountOut);
+        if (normalizedReceived == 0) {
+            return new ISSListingTemplate.PayoutUpdate[](0);
+        }
+        payoutPendingAmounts[listingAddress][orderIdentifier] -= normalizedReceived;
+        return _createPayoutUpdate(normalizedReceived, payout.recipientAddress, false);
     }
 
     function executeBuyOrder(
@@ -317,30 +456,6 @@ contract SSSettlementPartial is SSOrderPartial {
         if (updateIndex > 0) {
             listingContract.update(address(this), finalUpdates);
         }
-    }
-
-    function executeLongPayout(
-        address listingAddress,
-        uint256 orderIdentifier
-    ) internal returns (ISSListingTemplate.PayoutUpdate[] memory) {
-        ISSListingTemplate listingContract = ISSListingTemplate(listingAddress);
-        ISSListingTemplate.LongPayoutStruct memory payout = listingContract.getLongPayout(orderIdentifier);
-        if (payout.required == 0) {
-            return new ISSListingTemplate.PayoutUpdate[](0);
-        }
-        return _processPayoutUpdate(listingAddress, orderIdentifier, payout.required, true);
-    }
-
-    function executeShortPayout(
-        address listingAddress,
-        uint256 orderIdentifier
-    ) internal returns (ISSListingTemplate.PayoutUpdate[] memory) {
-        ISSListingTemplate listingContract = ISSListingTemplate(listingAddress);
-        ISSListingTemplate.ShortPayoutStruct memory payout = listingContract.getShortPayout(orderIdentifier);
-        if (payout.amount == 0) {
-            return new ISSListingTemplate.PayoutUpdate[](0);
-        }
-        return _processPayoutUpdate(listingAddress, orderIdentifier, payout.amount, false);
     }
 
     function executeLongPayouts(address listingAddress, uint256 maxIterations) internal onlyValidListing(listingAddress) {

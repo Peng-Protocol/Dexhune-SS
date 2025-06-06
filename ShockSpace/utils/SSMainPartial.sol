@@ -1,27 +1,9 @@
 // SPDX-License-Identifier: BSD-3-Clause
 pragma solidity ^0.8.1;
 
-// Version: 0.0.19 (Updated)
+// Version: 0.0.20 (Updated)
 // Changes:
-// - v0.0.19: Added amountReceived and normalizedReceived to OrderPrep struct to support pre/post balance checks in SSRouter.sol (v0.0.32). Marked ISSListingTemplate.transact as payable to allow ETH transfers in _checkTransferAmount (line 58). Removed SafeERC20 import, as transferFrom replaces safeTransferFrom.
-// - v0.0.18: Added getNextOrderId() external view returns (uint256) to ISSListingTemplate interface to resolve TypeError in SSOrderPartial.sol (line 42).
-// - v0.0.17: Fixed ParserError in checkValidListing by removing extra parenthesis in require statement (line 188). Corrected modifier onlyValidListing syntax by moving _; to end of block (line 190). Fixed typo in revert message from "Agent not not set" to "Agent not set" (line 186). Revised SellOrderDetails struct: changed maker from uint256 to address, removed duplicate maxPrice (uint8), removed sellId for consistency with BuyOrderDetails (lines 170-180). Added agentView function to access internal agent state variable (line 200).
-// - v0.0.16: Removed redundant mappings (orderPendingAmounts, payoutPendingAmounts, activeBuyOrders, activeSellOrders, activeLongPayouts, activeShortPayouts, makerActiveOrders) to query ISSListingTemplate view functions (e.g., pendingBuyOrdersView, getBuyOrderAmounts) (lines 100-110). Simplified struct definitions (BuyOrderDetails, SellOrderDetails, OrderClearData) as they are unused in SSRouter.sol (lines 90-100).
-// - v0.0.15: Fixed DeclarationError by moving checkValidListing from SSRouter.sol to SSMainPartial.sol as a private view function. Updated onlyValidListing modifier to call checkValidListing directly, removing SSRouter dependency (lines 180-190).
-// - v0.0.14: Removed isValidListing mapping, updated onlyValidListing modifier to call SSRouter.checkValidListing for runtime validation before order creation and settlement (lines 100-110).
-// - v0.0.13: Removed redundant mappings (liquidityAddress, tokenA, tokenB, decimalsA, decimalsB) to fetch data from ISSListingTemplate (lines 100-110).
-// - v0.0.12: Renamed listingAddress to getListingAddress in ISSLiquidityTemplate to resolve naming conflict with claimFees. Updated ISSListingTemplate.liquidityAddress to liquidityAddressView to match SSListingTemplate.sol (v0.0.8).
-// - v0.0.11: Removed registryAddress mapping, moved to ISSListingTemplate to align with SSListingTemplate.sol (v0.0.8).
-// - v0.0.10: Homogenized agent state variable usage, removed redundant listingAgent from SSRouter.sol, retained agent and setAgent for inheritance chain.
-// - v0.0.9: Added agent state variable and setAgent function to allow setting the agent address, aligning with ISSListingTemplate.agent().
-// - v0.0.8: Updated ISSListingTemplate interface to match SSListingTemplate.sol v0.0.8, revised PayoutUpdate struct, getBuyOrderCore, getSellOrderCore, and renamed viewDecimalsA/B to decimalsA/B.
-// - v0.0.8: Added agent() function to ISSListingTemplate to resolve TypeError in SSRouter.sol.
-// - v0.0.7: Added globalization comment clarifying SSListingTemplate/SSLiquidityTemplate handle globalization.
-// - v0.0.7: Added registryAddress mapping, set manually via SSRouter.setRegistry.
-// - v0.0.7: Updated ISSAgent to include only getListing for listing validation.
-// - v0.0.7: Maintained ISSListingTemplate and ISSLiquidityTemplate for SSListingTemplate v0.0.5 and SSLiquidityTemplate v0.0.4.
-// - v0.0.7: Removed taxCollector references.
-// - Compatible with SSListingTemplate.sol (v0.0.8), SSLiquidityTemplate.sol (v0.0.4).
+// - v0.0.20: Added normalize and denormalize functions to handle token amount conversions internally, replacing external calls to ISSListingTemplate.normalize and ISSListingTemplate.denormalize for consistency and control.
 
 import "../imports/ReentrancyGuard.sol";
 import "../imports/Ownable.sol";
@@ -86,8 +68,6 @@ interface ISSListingTemplate {
     function liquidityAddressView() external view returns (address);
     function tokenA() external view returns (address);
     function tokenB() external view returns (address);
-    function normalize(uint256 amount, uint8 decimals) external pure returns (uint256);
-    function denormalize(uint256 amount, uint8 decimals) external pure returns (uint256);
     function getListingId() external view returns (uint256);
     function getNextOrderId() external view returns (uint256);
 }
@@ -182,6 +162,18 @@ contract SSMainPartial is ReentrancyGuard, Ownable {
         uint256 orderId;
         bool isBuy;
         uint256 amount;
+    }
+
+    function normalize(uint256 amount, uint8 decimals) internal pure returns (uint256) {
+        if (decimals == 18) return amount;
+        else if (decimals < 18) return amount * 10 ** (uint256(18) - uint256(decimals));
+        else return amount / 10 ** (uint256(decimals) - uint256(18));
+    }
+
+    function denormalize(uint256 amount, uint8 decimals) internal pure returns (uint256) {
+        if (decimals == 18) return amount;
+        else if (decimals < 18) return amount / 10 ** (uint256(18) - uint256(decimals));
+        else return amount * 10 ** (uint256(decimals) - uint256(18));
     }
 
     function checkValidListing(address listing) private view {

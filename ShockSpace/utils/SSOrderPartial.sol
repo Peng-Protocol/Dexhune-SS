@@ -1,8 +1,9 @@
 // SPDX-License-Identifier: BSD-3-Clause
 pragma solidity ^0.8.1;
 
-// Version: 0.0.14 (Updated)
+// Version: 0.0.15 (Updated)
 // Changes:
+// - v0.0.15: Replaced ISSListingTemplate.normalize and ISSListingTemplate.denormalize calls in _clearOrderData with inherited normalize and denormalize functions from SSMainPartial.sol for consistency and direct access.
 // - v0.0.14: Updated _clearOrderData to refund pending amounts via ISSListingTemplate.transact, using denormalized amount based on token decimals (tokenB for buy, tokenA for sell) and recipient from order core, before canceling order status (status 0 for canceled or invalid orders).
 // - v0.0.13: Updated _executeSingleOrder to use prep.normalizedReceived instead of prep.amount to reflect pre/post balance checks in SSRouter.sol (v0.0.32).
 // - v0.0.12: Fixed TypeError in _executeSingleOrder by adding getNextOrderId to ISSListingTemplate interface in SSMainPartial.sol, enabling correct order ID retrieval (line 42). Noted potential review needed for updates[1].value in _executeSingleOrder (set to 0 for Pricing struct).
@@ -13,7 +14,7 @@ pragma solidity ^0.8.1;
 // - v0.0.7: Removed ISSAgent.globalizeOrders calls, globalization handled by SSListingTemplate.
 // - v0.0.7: Fixed _clearOrderData array index assignment (removed erroneous activeOrders[i] = i).
 // - v0.0.7: Maintained generic helpers (_handleOrderPrep, _executeSingleOrder, _clearOrderData).
-// - Compatible with SSListingTemplate.sol (v0.0.8), SSLiquidityTemplate.sol (v0.0.4), SSMainPartial.sol (v0.0.19).
+// Compatible with SSListingTemplate.sol (v0.0.8), SSLiquidityTemplate.sol (v0.0.4), SSMainPartial.sol (v0.0.20), SSRouter.sol (v0.0.36), SSSettlementPartial.sol (v0.0.33).
 
 import "./SSMainPartial.sol";
 
@@ -32,7 +33,7 @@ contract SSOrderPartial is SSMainPartial {
         require(amount > 0, "Invalid amount");
         ISSListingTemplate listingContract = ISSListingTemplate(listing);
         uint8 decimals = isBuy ? listingContract.decimalsB() : listingContract.decimalsA();
-        uint256 normalizedAmount = listingContract.normalize(amount, decimals);
+        uint256 normalizedAmount = normalize(amount, decimals);
         return OrderPrep(maker, recipient, normalizedAmount, maxPrice, minPrice, 0, 0);
     }
 
@@ -82,7 +83,7 @@ contract SSOrderPartial is SSMainPartial {
         if (pending > 0 && (status == 1 || status == 2)) {
             address tokenAddress = isBuy ? listingContract.tokenB() : listingContract.tokenA();
             uint8 tokenDecimals = isBuy ? listingContract.decimalsB() : listingContract.decimalsA();
-            uint256 refundAmount = listingContract.denormalize(pending, tokenDecimals);
+            uint256 refundAmount = denormalize(pending, tokenDecimals);
             try listingContract.transact(address(this), tokenAddress, refundAmount, recipient) {} catch {
                 revert("Refund failed");
             }
