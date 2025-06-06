@@ -1,8 +1,9 @@
 // SPDX-License-Identifier: BSD-3-Clause
 pragma solidity ^0.8.1;
 
-// Version: 0.0.33 (Updated)
+// Version: 0.0.34 (Updated)
 // Changes:
+// - v0.0.34: Updated clearSingleOrder to use _clearOrderData with correct refund logic via ISSListingTemplate.transact. Refactored clearOrders to iterate over all pending buy and sell orders from pendingBuyOrdersView and pendingSellOrdersView, clearing and refunding each via _clearOrderData, using maxIterations for gas control.
 // - v0.0.33: Fixed TypeError in withdraw by replacing ternary operator in try/catch block with if/else to explicitly call xExecuteOut or yExecuteOut, ensuring compiler recognizes external calls (line 475).
 // - v0.0.32: Fixed TypeError by adding amountReceived and normalizedReceived to OrderPrep struct in SSMainPartial.sol (v0.0.19). Replaced safeTransferFrom with transferFrom in _checkTransferAmount (line 62). Made ISSListingTemplate.transact payable in SSMainPartial.sol to allow ETH transfers (line 58). Simplified _checkTransferAmount to remove redundant transact call for ERC20 tokens. Removed try/catch in settleBuyLiquid and settleSellLiquid, using direct calls to executeSingleBuyLiquid and executeSingleSellLiquid (lines 367-394).
 // - v0.0.31: Added pre/post balance checks in createBuyOrder and createSellOrder using _checkTransferAmount to ensure the amount withdrawn from the user to the listing matches inputAmount, accounting for tax on transfers. Updated OrderPrep struct to include amountReceived and normalizedReceived, adjusting _executeSingleOrder to use amountReceived for order creation. Modified _prepBuyLiquidUpdates and _prepSellLiquidUpdates to check recipient balances before/after ISSLiquidityTemplate.transact, updating orders with actual amountReceived (lines 200-250, 300-350, 400-450).
@@ -16,7 +17,7 @@ pragma solidity ^0.8.1;
 // - v0.0.23: Fixed stack-too-deep in executeSingleSellLiquid by introducing OrderContext struct, adding _prepSellLiquidUpdates helper, using scoped blocks, and reusing _prepareLiquidityTransaction/_updateLiquidity, inspired by MFPRouter.sol v0.0.27 (lines 260-300).
 // - v0.0.22: Fixed DeclarationError in createSellOrder by replacing tokenBAddress with tokenAAddress in postBalance calculation, aligning with sell order tokenA input (line 199).
 // - v0.0.21: Removed isValidListing[listing] = true from initializeListing, as isValidListing mapping was removed from SSMainPartial.sol (v0.0.14). Validation now relies solely on checkValidListing via onlyValidListing modifier (line 140).
-// - v0.0.6: Compatible with SSListingTemplate.sol (v0.0.8), SSLiquidityTemplate.sol (v0.0.4), SSMainPartial.sol (v0.0.19), SSOrderPartial.sol (v0.0.13), SSSettlementPartial.sol (v0.0.30).
+// - v0.0.6: Compatible with SSListingTemplate.sol (v0.0.8), SSLiquidityTemplate.sol (v0.0.4), SSMainPartial.sol (v0.0.19), SSOrderPartial.sol (v0.0.14), SSSettlementPartial.sol (v0.0.30).
 
 import "./utils/SSSettlementPartial.sol";
 
@@ -488,10 +489,17 @@ contract SSRouter is SSSettlementPartial {
         _clearOrderData(listingAddress, orderIdentifier, isBuyOrder);
     }
 
-    function clearOrders(address listingAddress, uint256[] memory orderIdentifiers, bool[] memory isBuyIds) external onlyValidListing(listingAddress) nonReentrant {
-        require(orderIdentifiers.length == isBuyIds.length, "Array length mismatch");
-        for (uint256 i = 0; i < orderIdentifiers.length; i++) {
-            _clearOrderData(listingAddress, orderIdentifiers[i], isBuyIds[i]);
+    function clearOrders(address listingAddress, uint256 maxIterations) external onlyValidListing(listingAddress) nonReentrant {
+        ISSListingTemplate listingContract = ISSListingTemplate(listingAddress);
+        uint256[] memory buyOrderIds = listingContract.pendingBuyOrdersView();
+        uint256 buyIterationCount = maxIterations < buyOrderIds.length ? maxIterations : buyOrderIds.length;
+        for (uint256 i = 0; i < buyIterationCount; i++) {
+            _clearOrderData(listingAddress, buyOrderIds[i], true);
+        }
+        uint256[] memory sellOrderIds = listingContract.pendingSellOrdersView();
+        uint256 sellIterationCount = maxIterations < sellOrderIds.length ? maxIterations : sellOrderIds.length;
+        for (uint256 k = 0; k < sellIterationCount; k++) {
+            _clearOrderData(listingAddress, sellOrderIds[k], false);
         }
     }
 
