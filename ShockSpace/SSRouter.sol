@@ -1,8 +1,10 @@
 // SPDX-License-Identifier: BSD-3-Clause
 pragma solidity ^0.8.1;
 
-// Version: 0.0.37 (Updated)
+// Version: 0.0.39 (Updated)
 // Changes:
+// - v0.0.39: Fixed TypeError in settleSingleLongLiquid and settleSingleShortLiquid by correctly destructuring LongPayoutStruct and ShortPayoutStruct from getLongPayout and getShortPayout, then mapping fields to PayoutUpdate struct for compatibility.
+// - v0.0.38: Removed post-transfer balance checks in settlement functions (_prepBuyLiquidUpdates, _prepSellLiquidUpdates, settleSingleLongLiquid, settleSingleShortLiquid). Assumes input amounts are transferred correctly, with users footing any fee-on-transfer costs, not LPs.
 // - v0.0.37: Added denormalization of amounts before transfers in settleBuyLiquid, settleSellLiquid, settleBuyOrders, and settleSellOrders to ensure correct token amounts are sent to recipients based on token decimals.
 // - v0.0.36: Refactored settleLongLiquid and settleShortLiquid to use new helpers from SSSettlementPartial (_prepPayoutContext, _checkLiquidityBalance, _transferPayoutAmount, _createPayoutUpdate). Added settleSingleLongLiquid and settleSingleShortLiquid to handle individual payouts, inspired by executeSingleBuyLiquid and executeSingleSellLiquid.
 
@@ -197,21 +199,13 @@ contract SSRouter is SSSettlementPartial {
             address tokenAddress;
             uint8 tokenDecimals;
             (tokenAddress, tokenDecimals, updateContext.makerAddress, updateContext.recipient, updateContext.status, updateContext.amountReceived, updateContext.normalizedReceived) = _prepBuyOrderUpdate(address(context.listingContract), orderIdentifier, amountOut);
-            uint256 preBalance = tokenOut == address(0)
-                ? updateContext.recipient.balance
-                : IERC20(tokenOut).balanceOf(updateContext.recipient);
             uint256 denormalizedAmount = denormalize(amountOut, tokenDecimals);
             try ISSLiquidityTemplate(context.liquidityAddr).transact(address(this), tokenOut, denormalizedAmount, updateContext.recipient) {} catch {
                 return new ISSListingTemplate.UpdateType[](0);
             }
-            uint256 postBalance = tokenOut == address(0)
-                ? updateContext.recipient.balance
-                : IERC20(tokenOut).balanceOf(updateContext.recipient);
-            if (postBalance <= preBalance) {
-                return new ISSListingTemplate.UpdateType[](0);
-            }
-            updateContext.amountReceived = postBalance - preBalance;
-            updateContext.normalizedReceived = normalize(updateContext.amountReceived, tokenDecimals);
+            // Assume transfer succeeds, user foots any fee-on-transfer costs, not LPs
+            updateContext.amountReceived = denormalizedAmount;
+            updateContext.normalizedReceived = normalize(denormalizedAmount, tokenDecimals);
         }
         if (updateContext.normalizedReceived == 0) {
             return new ISSListingTemplate.UpdateType[](0);
@@ -243,21 +237,13 @@ contract SSRouter is SSSettlementPartial {
             address tokenAddress;
             uint8 tokenDecimals;
             (tokenAddress, tokenDecimals, updateContext.makerAddress, updateContext.recipient, updateContext.status, updateContext.amountReceived, updateContext.normalizedReceived) = _prepSellOrderUpdate(address(context.listingContract), orderIdentifier, amountOut);
-            uint256 preBalance = tokenOut == address(0)
-                ? updateContext.recipient.balance
-                : IERC20(tokenOut).balanceOf(updateContext.recipient);
             uint256 denormalizedAmount = denormalize(amountOut, tokenDecimals);
             try ISSLiquidityTemplate(context.liquidityAddr).transact(address(this), tokenOut, denormalizedAmount, updateContext.recipient) {} catch {
                 return new ISSListingTemplate.UpdateType[](0);
             }
-            uint256 postBalance = tokenOut == address(0)
-                ? updateContext.recipient.balance
-                : IERC20(tokenOut).balanceOf(updateContext.recipient);
-            if (postBalance <= preBalance) {
-                return new ISSListingTemplate.UpdateType[](0);
-            }
-            updateContext.amountReceived = postBalance - preBalance;
-            updateContext.normalizedReceived = normalize(updateContext.amountReceived, tokenDecimals);
+            // Assume transfer succeeds, user foots any fee-on-transfer costs, not LPs
+            updateContext.amountReceived = denormalizedAmount;
+            updateContext.normalizedReceived = normalize(denormalizedAmount, tokenDecimals);
         }
         if (updateContext.normalizedReceived == 0) {
             return new ISSListingTemplate.UpdateType[](0);
@@ -423,8 +409,23 @@ contract SSRouter is SSSettlementPartial {
         uint256 orderIdentifier
     ) internal returns (ISSListingTemplate.PayoutUpdate[] memory) {
         ISSListingTemplate listingContract = ISSListingTemplate(listingAddress);
-        ISSListingTemplate.LongPayoutStruct memory payout = listingContract.getLongPayout(orderIdentifier);
-        return _prepLongPayoutLiquid(listingAddress, orderIdentifier, payout);
+        ISSListingTemplate.LongPayoutStruct memory longPayout = listingContract.getLongPayout(orderIdentifier);
+        if (longPayout.required == 0) {
+            return new ISSListingTemplate.PayoutUpdate[](0);
+        }
+        PayoutContext memory context = _prepPayoutContext(listingAddress, orderIdentifier, true);
+        context.recipientAddress = longPayout.recipientAddress;
+        context.amountOut = denormalize(longPayout.required, context.tokenDecimals);
+        if (!_checkLiquidityBalance(context, longPayout.required, true)) {
+            return new ISSListingTemplate.PayoutUpdate[](0);
+        }
+        try ISSLiquidityTemplate(context.liquidityAddr).transact(address(this), context.tokenOut, context.amountOut, context.recipientAddress) {} catch {
+            return new ISSListingTemplate.PayoutUpdate[](0);
+        }
+        // Assume transfer succeeds, user foots any fee-on-transfer costs, not LPs
+        uint256 normalizedReceived = normalize(context.amountOut, context.tokenDecimals);
+        payoutPendingAmounts[listingAddress][orderIdentifier] -= normalizedReceived;
+        return _createPayoutUpdate(normalizedReceived, longPayout.recipientAddress, true);
     }
 
     function settleSingleShortLiquid(
@@ -432,8 +433,23 @@ contract SSRouter is SSSettlementPartial {
         uint256 orderIdentifier
     ) internal returns (ISSListingTemplate.PayoutUpdate[] memory) {
         ISSListingTemplate listingContract = ISSListingTemplate(listingAddress);
-        ISSListingTemplate.ShortPayoutStruct memory payout = listingContract.getShortPayout(orderIdentifier);
-        return _prepShortPayoutLiquid(listingAddress, orderIdentifier, payout);
+        ISSListingTemplate.ShortPayoutStruct memory shortPayout = listingContract.getShortPayout(orderIdentifier);
+        if (shortPayout.amount == 0) {
+            return new ISSListingTemplate.PayoutUpdate[](0);
+        }
+        PayoutContext memory context = _prepPayoutContext(listingAddress, orderIdentifier, false);
+        context.recipientAddress = shortPayout.recipientAddress;
+        context.amountOut = denormalize(shortPayout.amount, context.tokenDecimals);
+        if (!_checkLiquidityBalance(context, shortPayout.amount, false)) {
+            return new ISSListingTemplate.PayoutUpdate[](0);
+        }
+        try ISSLiquidityTemplate(context.liquidityAddr).transact(address(this), context.tokenOut, context.amountOut, context.recipientAddress) {} catch {
+            return new ISSListingTemplate.PayoutUpdate[](0);
+        }
+        // Assume transfer succeeds, user foots any fee-on-transfer costs, not LPs
+        uint256 normalizedReceived = normalize(context.amountOut, context.tokenDecimals);
+        payoutPendingAmounts[listingAddress][orderIdentifier] -= normalizedReceived;
+        return _createPayoutUpdate(normalizedReceived, shortPayout.recipientAddress, false);
     }
 
     function settleBuyLiquid(address listingAddress, uint256 maxIterations) external onlyValidListing(listingAddress) nonReentrant {
