@@ -1,8 +1,9 @@
 // SPDX-License-Identifier: BSD-3-Clause
 pragma solidity ^0.8.1;
 
-// Version: 0.0.34 (Updated)
+// Version: 0.0.35 (Updated)
 // Changes:
+// - v0.0.35: Added denormalization in executeBuyOrder and executeSellOrder before calling _checkRecipientTransfer to ensure correct token amounts are sent to recipients based on token decimals.
 // - v0.0.34: Fixed TypeError in _prepLongPayoutLiquid, _prepShortPayoutLiquid, executeLongPayout, and executeShortPayout by adding context.amountOut as the second argument to _transferPayoutAmount and _transferListingPayoutAmount calls, aligning with their function signatures.
 // - v0.0.33: Refactored executeLongPayout and executeShortPayout to support partial settlement by measuring actual amount transferred via new _transferListingPayoutAmount helper. Updates payoutPendingAmounts only for actual normalizedReceived, returns empty array if transfer fails, ensuring accurate state for insufficient balances.
 // - v0.0.32: Added _prepPayoutContext, _checkLiquidityBalance, _transferPayoutAmount, _createPayoutUpdate helpers to modularize payout processing for settleLongLiquid and settleShortLiquid, reducing stack usage and improving readability. Refactored _prepLongPayoutLiquid and _prepShortPayoutLiquid to use these new helpers.
@@ -202,7 +203,8 @@ contract SSSettlementPartial is SSOrderPartial {
         ISSListingTemplate listingContract = ISSListingTemplate(listingAddress);
         (tokenAddress, tokenDecimals) = _getTokenAndDecimals(listingAddress, true);
         (makerAddress, recipientAddress, orderStatus) = listingContract.getBuyOrderCore(orderIdentifier);
-        (amountReceived, normalizedReceived) = _checkRecipientTransfer(listingAddress, tokenAddress, inputAmount, recipientAddress);
+        uint256 denormalizedAmount = denormalize(inputAmount, tokenDecimals);
+        (amountReceived, normalizedReceived) = _checkRecipientTransfer(listingAddress, tokenAddress, denormalizedAmount, recipientAddress);
     }
 
     function _prepSellOrderUpdate(
@@ -221,7 +223,8 @@ contract SSSettlementPartial is SSOrderPartial {
         ISSListingTemplate listingContract = ISSListingTemplate(listingAddress);
         (tokenAddress, tokenDecimals) = _getTokenAndDecimals(listingAddress, false);
         (makerAddress, recipientAddress, orderStatus) = listingContract.getSellOrderCore(orderIdentifier);
-        (amountReceived, normalizedReceived) = _checkRecipientTransfer(listingAddress, tokenAddress, inputAmount, recipientAddress);
+        uint256 denormalizedAmount = denormalize(inputAmount, tokenDecimals);
+        (amountReceived, normalizedReceived) = _checkRecipientTransfer(listingAddress, tokenAddress, denormalizedAmount, recipientAddress);
     }
 
     function _prepLongPayoutLiquid(
@@ -412,7 +415,9 @@ contract SSSettlementPartial is SSOrderPartial {
             if (pendingAmount == 0) {
                 continue;
             }
-            ISSListingTemplate.UpdateType[] memory updates = executeBuyOrder(listingAddress, orderIdentifier, pendingAmount);
+            (address tokenAddress, uint8 tokenDecimals) = _getTokenAndDecimals(listingAddress, true);
+            uint256 denormalizedAmount = denormalize(pendingAmount, tokenDecimals);
+            ISSListingTemplate.UpdateType[] memory updates = executeBuyOrder(listingAddress, orderIdentifier, denormalizedAmount);
             if (updates.length == 0) {
                 continue;
             }
@@ -441,7 +446,9 @@ contract SSSettlementPartial is SSOrderPartial {
             if (pendingAmount == 0) {
                 continue;
             }
-            ISSListingTemplate.UpdateType[] memory updates = executeSellOrder(listingAddress, orderIdentifier, pendingAmount);
+            (address tokenAddress, uint8 tokenDecimals) = _getTokenAndDecimals(listingAddress, false);
+            uint256 denormalizedAmount = denormalize(pendingAmount, tokenDecimals);
+            ISSListingTemplate.UpdateType[] memory updates = executeSellOrder(listingAddress, orderIdentifier, denormalizedAmount);
             if (updates.length == 0) {
                 continue;
             }
