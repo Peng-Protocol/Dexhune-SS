@@ -1,8 +1,9 @@
 // SPDX-License-Identifier: BSD-3-Clause
 pragma solidity ^0.8.1;
 
-// Version: 0.0.36 (Updated)
+// Version: 0.0.37 (Updated)
 // Changes:
+// - v0.0.37: Added denormalization of amounts before transfers in settleBuyLiquid, settleSellLiquid, settleBuyOrders, and settleSellOrders to ensure correct token amounts are sent to recipients based on token decimals.
 // - v0.0.36: Refactored settleLongLiquid and settleShortLiquid to use new helpers from SSSettlementPartial (_prepPayoutContext, _checkLiquidityBalance, _transferPayoutAmount, _createPayoutUpdate). Added settleSingleLongLiquid and settleSingleShortLiquid to handle individual payouts, inspired by executeSingleBuyLiquid and executeSingleSellLiquid.
 
 import "./utils/SSSettlementPartial.sol";
@@ -199,7 +200,8 @@ contract SSRouter is SSSettlementPartial {
             uint256 preBalance = tokenOut == address(0)
                 ? updateContext.recipient.balance
                 : IERC20(tokenOut).balanceOf(updateContext.recipient);
-            try ISSLiquidityTemplate(context.liquidityAddr).transact(address(this), tokenOut, denormalize(amountOut, tokenDecimals), updateContext.recipient) {} catch {
+            uint256 denormalizedAmount = denormalize(amountOut, tokenDecimals);
+            try ISSLiquidityTemplate(context.liquidityAddr).transact(address(this), tokenOut, denormalizedAmount, updateContext.recipient) {} catch {
                 return new ISSListingTemplate.UpdateType[](0);
             }
             uint256 postBalance = tokenOut == address(0)
@@ -244,7 +246,8 @@ contract SSRouter is SSSettlementPartial {
             uint256 preBalance = tokenOut == address(0)
                 ? updateContext.recipient.balance
                 : IERC20(tokenOut).balanceOf(updateContext.recipient);
-            try ISSLiquidityTemplate(context.liquidityAddr).transact(address(this), tokenOut, denormalize(amountOut, tokenDecimals), updateContext.recipient) {} catch {
+            uint256 denormalizedAmount = denormalize(amountOut, tokenDecimals);
+            try ISSLiquidityTemplate(context.liquidityAddr).transact(address(this), tokenOut, denormalizedAmount, updateContext.recipient) {} catch {
                 return new ISSListingTemplate.UpdateType[](0);
             }
             uint256 postBalance = tokenOut == address(0)
@@ -318,11 +321,65 @@ contract SSRouter is SSSettlementPartial {
     }
 
     function settleBuyOrders(address listingAddress, uint256 maxIterations) external onlyValidListing(listingAddress) nonReentrant {
-        executeBuyOrders(listingAddress, maxIterations);
+        ISSListingTemplate listingContract = ISSListingTemplate(listingAddress);
+        uint256[] memory orderIdentifiers = listingContract.pendingBuyOrdersView();
+        uint256 iterationCount = maxIterations < orderIdentifiers.length ? maxIterations : orderIdentifiers.length;
+        ISSListingTemplate.UpdateType[] memory tempUpdates = new ISSListingTemplate.UpdateType[](iterationCount * 2);
+        uint256 updateIndex = 0;
+        for (uint256 i = 0; i < iterationCount; i++) {
+            uint256 orderIdentifier = orderIdentifiers[i];
+            (uint256 pendingAmount,) = listingContract.getBuyOrderAmounts(orderIdentifier);
+            if (pendingAmount == 0) {
+                continue;
+            }
+            (address tokenAddress, uint8 tokenDecimals) = _getTokenAndDecimals(listingAddress, true);
+            uint256 denormalizedAmount = denormalize(pendingAmount, tokenDecimals);
+            ISSListingTemplate.UpdateType[] memory updates = executeBuyOrder(listingAddress, orderIdentifier, denormalizedAmount);
+            if (updates.length == 0) {
+                continue;
+            }
+            for (uint256 j = 0; j < updates.length; j++) {
+                tempUpdates[updateIndex++] = updates[j];
+            }
+        }
+        ISSListingTemplate.UpdateType[] memory finalUpdates = new ISSListingTemplate.UpdateType[](updateIndex);
+        for (uint256 i = 0; i < updateIndex; i++) {
+            finalUpdates[i] = tempUpdates[i];
+        }
+        if (updateIndex > 0) {
+            listingContract.update(address(this), finalUpdates);
+        }
     }
 
     function settleSellOrders(address listingAddress, uint256 maxIterations) external onlyValidListing(listingAddress) nonReentrant {
-        executeSellOrders(listingAddress, maxIterations);
+        ISSListingTemplate listingContract = ISSListingTemplate(listingAddress);
+        uint256[] memory orderIdentifiers = listingContract.pendingSellOrdersView();
+        uint256 iterationCount = maxIterations < orderIdentifiers.length ? maxIterations : orderIdentifiers.length;
+        ISSListingTemplate.UpdateType[] memory tempUpdates = new ISSListingTemplate.UpdateType[](iterationCount * 2);
+        uint256 updateIndex = 0;
+        for (uint256 i = 0; i < iterationCount; i++) {
+            uint256 orderIdentifier = orderIdentifiers[i];
+            (uint256 pendingAmount,) = listingContract.getSellOrderAmounts(orderIdentifier);
+            if (pendingAmount == 0) {
+                continue;
+            }
+            (address tokenAddress, uint8 tokenDecimals) = _getTokenAndDecimals(listingAddress, false);
+            uint256 denormalizedAmount = denormalize(pendingAmount, tokenDecimals);
+            ISSListingTemplate.UpdateType[] memory updates = executeSellOrder(listingAddress, orderIdentifier, denormalizedAmount);
+            if (updates.length == 0) {
+                continue;
+            }
+            for (uint256 j = 0; j < updates.length; j++) {
+                tempUpdates[updateIndex++] = updates[j];
+            }
+        }
+        ISSListingTemplate.UpdateType[] memory finalUpdates = new ISSListingTemplate.UpdateType[](updateIndex);
+        for (uint256 i = 0; i < updateIndex; i++) {
+            finalUpdates[i] = tempUpdates[i];
+        }
+        if (updateIndex > 0) {
+            listingContract.update(address(this), finalUpdates);
+        }
     }
 
     function executeSingleBuyLiquid(
