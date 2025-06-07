@@ -1,8 +1,10 @@
 // SPDX-License-Identifier: BSD-3-Clause
 pragma solidity ^0.8.1;
 
-// Version: 0.0.35 (Updated)
+// Version: 0.0.37 (Updated)
 // Changes:
+// - v0.0.37: Removed interface declarations for ISSListingTemplate, ISSLiquidityTemplate, and IERC20, as they are now declared in SSMainPartial.sol. Fixed DeclarationError in executeLongPayout by correcting return type to PayoutUpdate[] from PayoutPathUpdate[] to match struct in SSMainPartial.sol.
+// - v0.0.36: Removed post-transfer balance checks in _checkRecipientTransfer, _prepBuyOrderUpdate, and _prepSellOrderUpdate. Assumes denormalized input amounts are transferred correctly, with users footing any fee-on-transfer costs, not LPs.
 // - v0.0.35: Added denormalization in executeBuyOrder and executeSellOrder before calling _checkRecipientTransfer to ensure correct token amounts are sent to recipients based on token decimals.
 // - v0.0.34: Fixed TypeError in _prepLongPayoutLiquid, _prepShortPayoutLiquid, executeLongPayout, and executeShortPayout by adding context.amountOut as the second argument to _transferPayoutAmount and _transferListingPayoutAmount calls, aligning with their function signatures.
 // - v0.0.33: Refactored executeLongPayout and executeShortPayout to support partial settlement by measuring actual amount transferred via new _transferListingPayoutAmount helper. Updates payoutPendingAmounts only for actual normalizedReceived, returns empty array if transfer fails, ensuring accurate state for insufficient balances.
@@ -141,17 +143,12 @@ contract SSSettlementPartial is SSOrderPartial {
     ) internal returns (uint256 amountReceived, uint256 normalizedReceived) {
         ISSListingTemplate listingContract = ISSListingTemplate(targetContract);
         uint8 tokenDecimals = tokenAddress == address(0) ? 18 : IERC20(tokenAddress).decimals();
-        uint256 preBalance = tokenAddress == address(0)
-            ? recipientAddress.balance
-            : IERC20(tokenAddress).balanceOf(recipientAddress);
         try listingContract.transact(address(this), tokenAddress, inputAmount, recipientAddress) {} catch {
             return (0, 0);
         }
-        uint256 postBalance = tokenAddress == address(0)
-            ? recipientAddress.balance
-            : IERC20(tokenAddress).balanceOf(recipientAddress);
-        amountReceived = postBalance > preBalance ? postBalance - preBalance : 0;
-        normalizedReceived = amountReceived > 0 ? normalize(amountReceived, tokenDecimals) : 0;
+        // Assume transfer succeeds, user foots any fee-on-transfer costs, not LPs
+        amountReceived = inputAmount;
+        normalizedReceived = normalize(inputAmount, tokenDecimals);
     }
 
     function _createOrderUpdates(
@@ -204,6 +201,7 @@ contract SSSettlementPartial is SSOrderPartial {
         (tokenAddress, tokenDecimals) = _getTokenAndDecimals(listingAddress, true);
         (makerAddress, recipientAddress, orderStatus) = listingContract.getBuyOrderCore(orderIdentifier);
         uint256 denormalizedAmount = denormalize(inputAmount, tokenDecimals);
+        // Assume transfer succeeds, user foots any fee-on-transfer costs, not LPs
         (amountReceived, normalizedReceived) = _checkRecipientTransfer(listingAddress, tokenAddress, denormalizedAmount, recipientAddress);
     }
 
@@ -224,6 +222,7 @@ contract SSSettlementPartial is SSOrderPartial {
         (tokenAddress, tokenDecimals) = _getTokenAndDecimals(listingAddress, false);
         (makerAddress, recipientAddress, orderStatus) = listingContract.getSellOrderCore(orderIdentifier);
         uint256 denormalizedAmount = denormalize(inputAmount, tokenDecimals);
+        // Assume transfer succeeds, user foots any fee-on-transfer costs, not LPs
         (amountReceived, normalizedReceived) = _checkRecipientTransfer(listingAddress, tokenAddress, denormalizedAmount, recipientAddress);
     }
 
