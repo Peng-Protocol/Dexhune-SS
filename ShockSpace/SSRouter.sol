@@ -1,8 +1,14 @@
 // SPDX-License-Identifier: BSD-3-Clause
 pragma solidity ^0.8.1;
 
-// Version: 0.0.39 (Updated)
+// Version: 0.0.41 (Updated)
 // Changes:
+// - v0.0.41: Split _updateLiquidity logic to reduce stack depth. Added _checkAndTransferPrincipal helper to handle
+//   pre- and post-transfer balance checks for listing and liquidity contracts, compute actual amount moved, and perform
+//   the transfer. _updateLiquidity now uses the returned amount for the liquidity update, reducing local variables.
+// - v0.0.40: Modified _updateLiquidity to check listing and liquidity contract balances before and after transfer.
+//   Computes actual amount moved from listing to liquidity, then uses normalized amount for updateLiquidity call.
+//   Added error handling for insufficient balance changes and ensured compatibility with token decimals.
 // - v0.0.39: Fixed TypeError in settleSingleLongLiquid and settleSingleShortLiquid by correctly destructuring LongPayoutStruct and ShortPayoutStruct from getLongPayout and getShortPayout, then mapping fields to PayoutUpdate struct for compatibility.
 // - v0.0.38: Removed post-transfer balance checks in settlement functions (_prepBuyLiquidUpdates, _prepSellLiquidUpdates, settleSingleLongLiquid, settleSingleShortLiquid). Assumes input amounts are transferred correctly, with users footing any fee-on-transfer costs, not LPs.
 // - v0.0.37: Added denormalization of amounts before transfers in settleBuyLiquid, settleSellLiquid, settleBuyOrders, and settleSellOrders to ensure correct token amounts are sent to recipients based on token decimals.
@@ -11,6 +17,8 @@ pragma solidity ^0.8.1;
 import "./utils/SSSettlementPartial.sol";
 
 contract SSRouter is SSSettlementPartial {
+    using SafeERC20 for IERC20;
+
     struct OrderContext {
         ISSListingTemplate listingContract;
         address tokenIn;
@@ -32,6 +40,50 @@ contract SSRouter is SSSettlementPartial {
         uint8 status;
         uint256 amountReceived;
         uint256 normalizedReceived;
+    }
+
+    // Helper function to check balances and transfer principal, reducing stack depth in _updateLiquidity
+    function _checkAndTransferPrincipal(
+        address listingAddress,
+        address tokenIn,
+        uint256 inputAmount,
+        address liquidityAddr,
+        ISSListingTemplate listingContract
+    ) internal returns (uint256 actualAmount, uint8 tokenDecimals) {
+        // Get token decimals for normalization
+        tokenDecimals = tokenIn == address(0) ? 18 : IERC20(tokenIn).decimals();
+        
+        // Check balances before transfer
+        uint256 listingPreBalance = tokenIn == address(0)
+            ? listingAddress.balance
+            : IERC20(tokenIn).balanceOf(listingAddress);
+        uint256 liquidityPreBalance = tokenIn == address(0)
+            ? liquidityAddr.balance
+            : IERC20(tokenIn).balanceOf(liquidityAddr);
+        
+        // Attempt to transfer principal from listing to liquidity
+        try listingContract.transact(address(this), tokenIn, inputAmount, liquidityAddr) {} catch {
+            revert("Principal transfer failed");
+        }
+        
+        // Check balances after transfer
+        uint256 listingPostBalance = tokenIn == address(0)
+            ? listingAddress.balance
+            : IERC20(tokenIn).balanceOf(listingAddress);
+        uint256 liquidityPostBalance = tokenIn == address(0)
+            ? liquidityAddr.balance
+            : IERC20(tokenIn).balanceOf(liquidityAddr);
+        
+        // Compute actual amount moved
+        uint256 amountSent = listingPreBalance > listingPostBalance 
+            ? listingPreBalance - listingPostBalance 
+            : 0;
+        uint256 amountReceived = liquidityPostBalance > liquidityPreBalance 
+            ? liquidityPostBalance - liquidityPreBalance 
+            : 0;
+        require(amountSent > 0, "No amount sent from listing");
+        require(amountReceived > 0, "No amount received by liquidity");
+        actualAmount = amountSent < amountReceived ? amountSent : amountReceived;
     }
 
     function _checkTransferAmount(
@@ -110,10 +162,24 @@ contract SSRouter is SSSettlementPartial {
         ISSListingTemplate listingContract = ISSListingTemplate(listingAddress);
         address liquidityAddr = listingContract.liquidityAddressView();
         ISSLiquidityTemplate liquidityContract = ISSLiquidityTemplate(liquidityAddr);
-        try listingContract.transact(address(this), tokenIn, inputAmount, liquidityAddr) {} catch {
-            revert("Principal transfer failed");
-        }
-        try liquidityContract.updateLiquidity(address(this), isX, inputAmount) {} catch {
+        
+        // Use helper to check balances and transfer, reducing stack depth
+        uint256 actualAmount;
+        uint8 tokenDecimals;
+        (actualAmount, tokenDecimals) = _checkAndTransferPrincipal(
+            listingAddress,
+            tokenIn,
+            inputAmount,
+            liquidityAddr,
+            listingContract
+        );
+        
+        // Normalize the actual amount moved for liquidity update
+        uint256 normalizedAmount = normalize(actualAmount, tokenDecimals);
+        require(normalizedAmount > 0, "Normalized amount is zero");
+        
+        // Update liquidity pool with the actual normalized amount moved
+        try liquidityContract.updateLiquidity(address(this), isX, normalizedAmount) {} catch {
             revert("Liquidity update failed");
         }
     }
