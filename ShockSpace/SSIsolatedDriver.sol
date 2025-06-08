@@ -1,36 +1,16 @@
 /* SPDX-License-Identifier: BSD-3-Clause */
 pragma solidity ^0.8.1;
 
-// Version 0.0.15:
-// - Removed atomicity requirement, allowing partial data in pendingEntries if steps fail.
-// - Refactored initiateEntry into helpers handling single structs/tasks: prepareEntryBase, prepareEntryRisk, prepareEntryToken, validateEntryBase, validateEntryRisk, updateEntryCore, updateEntryParams, updateEntryIndexes, finalizeEntry.
-// - Ensured no helper handles multiple structs to reduce stack depth.
-// - Compatible with SSDUtilityPartial.sol v0.0.5, SSDPositionPartial.sol v0.0.5, SSDExecutionPartial.sol v0.0.9.
-// - v0.0.14:
-//   - Refactored initiateEntry to reduce stack depth by splitting struct handling into separate helpers.
-//   - Used PendingEntry for temporary storage of all parameters.
-// - v0.0.13:
-//   - Refactored initiateEntry into modular helpers (initiateEntryBase, initiateEntryParams, initiateEntryIndexes, initiateEntryFinalize).
-//   - Fixed Stack too deep error in initiateEntry by reducing local variables.
-// - v0.0.12:
-//   - Fixed TypeError in closeLongPosition, closeShortPosition, and cancelPosition by correcting driverAddr to driver.
-// - v0.0.11:
-//   - Fixed ParserError for trailing comma in ClosePositionMargin struct initialization.
-//   - Fixed ParserError in event declarations by replacing extra parentheses with semicolons.
-// - v0.0.10:
-//   - Fixed ParserError in updateEntryCore by adding missing closing parenthesis.
-// - v0.0.9:
-//   - Fixed TypeError in closeLongPosition by correcting positionCoreStatus.status2 to coreStatus.status2.
-// - v0.0.8:
-//   - Fixed ParserError in prepareBaseParams by correcting return type syntax.
-// - v0.0.7:
-//   - Fixed TypeError in initiateEntry by correcting destructuring for prepareEnterLong/prepareEnterShort.
-// - v0.0.6:
-//   - Added makerAddress to PendingEntry struct to fix TypeError in updateEntryIndexes.
-// - v0.0.5:
-//   - Rebuilt position entry to update data incrementally via initiateEntry, updateEntryCore, updateEntryParams, updateEntryIndexes, finalizeEntryTransfer.
-//   - Added pendingEntry mapping for temporary storage.
-//   - Removed redundant SafeERC20 import.
+// Version 0.0.18:
+// - Removed redundant checkTransferAmount; inherits from SSDExecutionPartial.sol.
+// - Updated finalizeEntry to pass balanceBefore to checkTransferAmount.
+// - Added explicit casting for uint256 and uint8.
+// - Compatible with SSDUtilityPartial.sol v0.0.6, SSDPositionPartial.sol v0.0.6, SSDExecutionPartial.sol v0.0.24.
+// - v0.0.17:
+//   - Fixed DeclarationError by renaming executePositionsInternal.
+//   - Updated executePositions to call executePositionsLogic.
+// - v0.0.16:
+//   - Added balance checks in finalizeEntry for correct margin amounts.
 
 import "./driverUtils/SSDExecutionPartial.sol";
 import "./imports/ReentrancyGuard.sol";
@@ -69,9 +49,9 @@ contract SSIsolatedDriver is SSDExecutionPartial, ReentrancyGuard, Ownable {
 
     // Constructor
     constructor() {
-        historicalInterestHeight = 1;
-        nonce = 0;
-        positionIdCounter = 0;
+        historicalInterestHeight = uint256(1);
+        nonce = uint256(0);
+        positionIdCounter = uint256(0);
     }
 
     // Helper: Normalize margin amounts
@@ -122,9 +102,9 @@ contract SSIsolatedDriver is SSDExecutionPartial, ReentrancyGuard, Ownable {
             extraMargin: extraMargin,
             entryPriceStr: entryPriceStr,
             makerAddress: msg.sender,
-            leverageVal: 0,
-            stopLoss: 0,
-            takeProfit: 0,
+            leverageVal: uint8(0),
+            stopLoss: uint256(0),
+            takeProfit: uint256(0),
             normInitMargin: context.normInitMargin,
             normExtraMargin: context.normExtraMargin
         });
@@ -149,7 +129,6 @@ contract SSIsolatedDriver is SSDExecutionPartial, ReentrancyGuard, Ownable {
     function prepareEntryToken(uint256 positionId) internal view {
         PendingEntry storage entry = pendingEntries[positionId];
         require(entry.positionId == positionId, "Invalid position ID");
-        // Token params already stored in entry (tokenAddr, normInitMargin, normExtraMargin)
     }
 
     // Helper: Validate base parameters
@@ -162,7 +141,7 @@ contract SSIsolatedDriver is SSDExecutionPartial, ReentrancyGuard, Ownable {
             initMargin: entry.initialMargin,
             extraMargin: entry.extraMargin
         });
-        require(baseParams.initMargin > 0, "Invalid margin");
+        require(baseParams.initMargin > uint256(0), "Invalid margin");
         require(baseParams.listingAddr != address(0), "Invalid listing");
         validateListing(baseParams.listingAddr);
     }
@@ -176,7 +155,7 @@ contract SSIsolatedDriver is SSDExecutionPartial, ReentrancyGuard, Ownable {
             stopLoss: entry.stopLoss,
             takeProfit: entry.takeProfit
         });
-        require(riskParams.leverageVal >= 2 && riskParams.leverageVal <= 100, "Invalid leverage");
+        require(riskParams.leverageVal >= uint8(2) && riskParams.leverageVal <= uint8(100), "Invalid leverage");
     }
 
     // Helper: Update entry core
@@ -191,7 +170,7 @@ contract SSIsolatedDriver is SSDExecutionPartial, ReentrancyGuard, Ownable {
         });
         PositionCoreStatus memory coreStatus = PositionCoreStatus({
             status1: false,
-            status2: 0
+            status2: uint8(0)
         });
         updatePositionCore(positionId, coreBase, coreStatus);
     }
@@ -256,17 +235,25 @@ contract SSIsolatedDriver is SSDExecutionPartial, ReentrancyGuard, Ownable {
     function finalizeEntry(uint256 positionId) internal {
         PendingEntry storage entry = pendingEntries[positionId];
         require(entry.positionId == positionId, "Invalid position ID");
+        uint256 expectedAmount = entry.initialMargin + entry.extraMargin;
+        uint256 balanceBefore = IERC20(entry.tokenAddr).balanceOf(entry.listingAddr);
         IERC20(entry.tokenAddr).transferFrom(
             entry.makerAddress,
             entry.listingAddr,
-            entry.initialMargin + entry.extraMargin
+            expectedAmount
         );
-        uint256 io = normalizeAmount(entry.tokenAddr, entry.initialMargin + entry.extraMargin);
+        uint256 actualAmount = checkTransferAmount(
+            entry.tokenAddr,
+            entry.listingAddr,
+            expectedAmount,
+            balanceBefore
+        );
+        uint256 io = normalizeAmount(entry.tokenAddr, actualAmount);
         transferMarginToListing(entry.listingAddr, io, entry.positionType);
         updateHistoricalInterest(
             historicalInterestHeight,
-            entry.positionType == 0 ? io : 0,
-            entry.positionType == 1 ? io : 0,
+            entry.positionType == uint8(0) ? io : uint256(0),
+            entry.positionType == uint8(1) ? io : uint256(0),
             block.timestamp
         );
         EntryParamsBase memory baseParams = EntryParamsBase({
@@ -289,7 +276,7 @@ contract SSIsolatedDriver is SSDExecutionPartial, ReentrancyGuard, Ownable {
         uint256 returnedPositionId;
         uint256 minPrice;
         uint256 maxPrice;
-        (returnedPositionId, minPrice, maxPrice) = entry.positionType == 0
+        (returnedPositionId, minPrice, maxPrice) = entry.positionType == uint8(0)
             ? prepareEnterLong(baseParams, riskParams, tokenParams)
             : prepareEnterShort(baseParams, riskParams, tokenParams);
         require(returnedPositionId == positionId, "Position ID mismatch");
@@ -352,7 +339,7 @@ contract SSIsolatedDriver is SSDExecutionPartial, ReentrancyGuard, Ownable {
             leverage,
             stopLoss,
             takeProfit,
-            0 // Long
+            uint8(0) // Long
         );
     }
 
@@ -381,7 +368,7 @@ contract SSIsolatedDriver is SSDExecutionPartial, ReentrancyGuard, Ownable {
             leverage,
             stopLoss,
             takeProfit,
-            1 // Short
+            uint8(1) // Short
         );
     }
 
@@ -390,7 +377,7 @@ contract SSIsolatedDriver is SSDExecutionPartial, ReentrancyGuard, Ownable {
         PositionCoreBase memory coreBase = positionCoreBase[positionId];
         PositionCoreStatus memory coreStatus = positionCoreStatus[positionId];
         require(coreBase.makerAddress == msg.sender, "Not position owner");
-        require(coreStatus.status2 == 0, "Position not open");
+        require(coreStatus.status2 == uint8(0), "Position not open");
 
         ClosePositionBase memory closeBase = ClosePositionBase({
             positionId: positionId,
@@ -416,7 +403,7 @@ contract SSIsolatedDriver is SSDExecutionPartial, ReentrancyGuard, Ownable {
         PositionCoreBase memory coreBase = positionCoreBase[positionId];
         PositionCoreStatus memory coreStatus = positionCoreStatus[positionId];
         require(coreBase.makerAddress == msg.sender, "Not position owner");
-        require(coreStatus.status2 == 0, "Position not open");
+        require(coreStatus.status2 == uint8(0), "Position not open");
 
         ClosePositionBase memory closeBase = ClosePositionBase({
             positionId: positionId,
@@ -468,11 +455,9 @@ contract SSIsolatedDriver is SSDExecutionPartial, ReentrancyGuard, Ownable {
     ) external nonReentrant {
         PositionCoreBase memory coreBase = positionCoreBase[positionId];
         PositionCoreStatus memory coreStatus = positionCoreStatus[positionId];
-        require(coreStatus.status2 == 0, "Position not open");
+        require(coreStatus.status2 == uint8(0), "Position not open");
 
         uint256 normalizedAmount = normalizeAmount(token, amount);
-        IERC20(token).transferFrom(msg.sender, coreBase.listingAddress, amount);
-
         addExcessMarginInternal(
             positionId,
             amount,
@@ -492,10 +477,10 @@ contract SSIsolatedDriver is SSDExecutionPartial, ReentrancyGuard, Ownable {
         PositionCoreBase memory coreBase = positionCoreBase[positionId];
         PositionCoreStatus memory coreStatus = positionCoreStatus[positionId];
         require(coreBase.makerAddress == msg.sender, "Not position owner");
-        require(coreStatus.status2 == 0, "Position not open");
+        require(coreStatus.status2 == uint8(0), "Position not open");
 
         uint256 currentPrice = getCurrentPrice(coreBase.listingAddress);
-        if (coreBase.positionType == 0) {
+        if (coreBase.positionType == uint8(0)) {
             require(newStopLossPrice < currentPrice, "Stop loss too high for long");
         } else {
             require(newStopLossPrice > currentPrice, "Stop loss too low for short");
@@ -513,10 +498,10 @@ contract SSIsolatedDriver is SSDExecutionPartial, ReentrancyGuard, Ownable {
         PositionCoreBase memory coreBase = positionCoreBase[positionId];
         PositionCoreStatus memory coreStatus = positionCoreStatus[positionId];
         require(coreBase.makerAddress == msg.sender, "Not position owner");
-        require(coreStatus.status2 == 0, "Position not open");
+        require(coreStatus.status2 == uint8(0), "Position not open");
 
         uint256 entryPrice = priceParams[positionId].priceAtEntry;
-        if (coreBase.positionType == 0) {
+        if (coreBase.positionType == uint8(0)) {
             require(newTakeProfitPrice > entryPrice, "Take profit too low for long");
         } else {
             require(newTakeProfitPrice < entryPrice, "Take profit too high for short");
@@ -553,7 +538,7 @@ contract SSIsolatedDriver is SSDExecutionPartial, ReentrancyGuard, Ownable {
     // Execute positions
     function executePositions(address listingAddress) external nonReentrant {
         PositionAction[] memory actions = prepareExecution(listingAddress);
-        uint256 resultCount = executePositions(actions, listingAddress);
+        uint256 resultCount = executePositionsLogic(actions, listingAddress);
         emit PositionsExecuted(listingAddress, resultCount);
     }
 
@@ -566,7 +551,7 @@ contract SSIsolatedDriver is SSDExecutionPartial, ReentrancyGuard, Ownable {
         uint256[] memory positions = positionsByType[positionType];
         uint256 length = maxIterations < positions.length - step ? maxIterations : positions.length - step;
         positionIds = new uint256[](length);
-        for (uint256 i = 0; i < length; i++) {
+        for (uint256 i = uint256(0); i < length; i++) {
             positionIds[i] = positions[step + i];
         }
     }
@@ -581,7 +566,7 @@ contract SSIsolatedDriver is SSDExecutionPartial, ReentrancyGuard, Ownable {
         uint256[] memory positions = pendingPositions[user][positionType];
         uint256 length = maxIterations < positions.length - step ? maxIterations : positions.length - step;
         positionIds = new uint256[](length);
-        for (uint256 i = 0; i < length; i++) {
+        for (uint256 i = uint256(0); i < length; i++) {
             positionIds[i] = positions[step + i];
         }
     }
@@ -618,7 +603,7 @@ contract SSIsolatedDriver is SSDExecutionPartial, ReentrancyGuard, Ownable {
         longIO = new uint256[](length);
         shortIO = new uint256[](length);
         timestamps = new uint256[](length);
-        for (uint256 i = 0; i < length; i++) {
+        for (uint256 i = uint256(0); i < length; i++) {
             uint256 index = step + i;
             longIO[i] = longIOByHeight[index];
             shortIO[i] = shortIOByHeight[index];
@@ -630,17 +615,4 @@ contract SSIsolatedDriver is SSDExecutionPartial, ReentrancyGuard, Ownable {
     function setAgent(address newAgent) external onlyOwner {
         agent = newAgent;
     }
-
-    // Events
-    event PositionEntered(uint256 indexed positionId, address indexed user, address listingAddress, uint8 positionType, uint256 minPrice, uint256 maxPrice);
-    event PositionClosed(uint256 indexed positionId, address indexed user, uint256 payout);
-    event PositionCancelled(uint256 indexed positionId, address indexed user);
-    event ExcessMarginAdded(uint256 indexed positionId, address indexed user, uint256 amount);
-    event StopLossUpdated(uint256 indexed positionId, address indexed user, uint256 newStopLossPrice);
-    event TakeProfitUpdated(uint256 indexed positionId, address indexed user, uint256 newTakeProfitPrice);
-    event AllShortsClosed(address indexed user, uint256 count);
-    event AllShortsCancelled(address indexed user, uint256 count);
-    event AllLongsClosed(address indexed user, uint256 count);
-    event AllLongsCancelled(address indexed user, uint256 count);
-    event PositionsExecuted(address indexed listingAddress, uint256 resultCount);
 }
