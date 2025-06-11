@@ -1,10 +1,12 @@
-/* SPDX-License-Identifier: BSD-3-Clause */
+// SPDX-License-Identifier: BSD-3-Clause
 pragma solidity ^0.8.1;
 
-// Version 0.0.26:
-// - Fixed DeclarationError by replacing PositionActionType with PositionAction in finalizeActions.
-// - Fixed SyntaxError by adding internal visibility to processPendingActions and restoring correct implementation.
-// - Compatible with SSDUtilityPartial.sol v0.0.5, SSDPositionPartial.sol v0.0.5, SSIsolatedDriver.sol v0.0.18.
+// Version 0.0.27:
+// - Updated updatePositionStatusHelper to move position IDs from pendingPositions to positionsByType when status1 is set to true.
+// - Compatible with SSDUtilityPartial.sol v0.0.5, SSDPositionPartial.sol v0.0.6, SSIsolatedDriver.sol v0.0.10.
+// - v0.0.26:
+//   - Fixed DeclarationError by replacing PositionActionType with PositionAction in finalizeActions.
+//   - Fixed SyntaxError by adding internal visibility to processPendingActions and restoring correct implementation.
 // - v0.0.25:
 //   - Fixed DeclarationError by replacing ISSListingCurrentPrice with ISSListing.
 // - v0.0.24:
@@ -263,6 +265,19 @@ contract SSDExecutionPartial is SSDPositionPartial {
     ) internal returns (bool) {
         coreStatus.status1 = true;
         updatePositionCore(positionId, coreBase, coreStatus);
+
+        // Move position from pendingPositions to positionsByType
+        uint8 positionType = coreBase.positionType;
+        address listingAddress = coreBase.listingAddress;
+        uint256[] storage pending = pendingPositions[listingAddress][positionType];
+        for (uint256 i = 0; i < pending.length; i++) {
+            if (pending[i] == positionId) {
+                pending[i] = pending[pending.length - 1];
+                pending.pop();
+                positionsByType[positionType].push(positionId);
+                break;
+            }
+        }
         return true;
     }
 
