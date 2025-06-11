@@ -1,13 +1,15 @@
 // SPDX-License-Identifier: BSD-3-Clause
 pragma solidity ^0.8.1;
 
-// Version 0.0.5:
-// - Split finalizePosition into modular functions: updateHistoricalInterest, updateLiquidityFees.
-// - Adjusted prepareEnterLong/prepareEnterShort to return only positionId, minPrice, maxPrice.
-// - Compatible with SSDUtilityPartial.sol v0.0.5, SSDExecutionPartial.sol v0.0.9, SSIsolatedDriver.sol v0.0.5.
+// Version 0.0.6:
+// - Modified updateLiquidityFees to manually transfer fees from user to liquidity address, verify actual amount, and return fee for deduction from initial margin.
+// - Normalized marginInitial in updateLiquidityFees for decimal consistency.
+// - Compatible with SSDUtilityPartial.sol v0.0.5, SSDExecutionPartial.sol v0.0.9, SSIsolatedDriver.sol v0.0.6.
+// - v0.0.5:
+//   - Split finalizePosition into modular functions: updateHistoricalInterest, updateLiquidityFees.
+//   - Adjusted prepareEnterLong/prepareEnterShort to return only positionId, minPrice, maxPrice.
 // - v0.0.4:
 //   - Fixed TypeError: Wrong argument count for liquidityAddressView calls in validateLeverageLimit and finalizePosition.
-//   - Compatible with SSDUtilityPartial.sol v0.0.5, SSDExecutionPartial.sol v0.0.7, SSIsolatedDriver.sol v0.0.2.
 
 import "./SSDUtilityPartial.sol";
 
@@ -270,19 +272,36 @@ contract SSDPositionPartial is SSDUtilityPartial {
         }
     }
 
-    // Update liquidity fees
+    // Update liquidity fees and return actual fee for deduction
     function updateLiquidityFees(
         uint256 positionId,
         address listingAddress,
         uint8 positionType,
         uint256 marginInitial,
         uint8 leverageVal
-    ) internal {
+    ) internal returns (uint256 actualFee) {
         address liquidityAddress = ISSListing(listingAddress).liquidityAddressView();
-        uint256 fee = (leverageVal - 1) * marginInitial / 100;
+        address tokenAddr = positionToken[positionId];
+        uint256 normMarginInitial = normalizeAmount(tokenAddr, marginInitial);
+        uint256 fee = (leverageVal - 1) * normMarginInitial / 100;
+        actualFee = 0;
         if (fee > 0) {
-            ISSLiquidityTemplate(liquidityAddress).addFees(address(this), positionType == 0, fee);
+            uint256 balanceBefore = IERC20(tokenAddr).balanceOf(liquidityAddress);
+            uint256 denormFee = denormalizeAmount(tokenAddr, fee);
+            IERC20(tokenAddr).transferFrom(msg.sender, liquidityAddress, denormFee);
+            uint256 balanceAfter = IERC20(tokenAddr).balanceOf(liquidityAddress);
+            uint256 actualDenormFee = balanceAfter - balanceBefore;
+            require(actualDenormFee >= denormFee, "Fee transfer amount mismatch");
+            actualFee = normalizeAmount(tokenAddr, actualDenormFee);
+            ISSLiquidityTemplate(liquidityAddress).addFees(address(this), positionType == 0, actualFee);
+            updateHistoricalInterest(
+                historicalInterestHeight,
+                positionType == 0 ? actualFee : 0,
+                positionType == 1 ? actualFee : 0,
+                block.timestamp
+            );
         }
+        return actualFee;
     }
 
     // Prepare core and extended params
