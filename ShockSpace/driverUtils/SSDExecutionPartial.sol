@@ -290,7 +290,7 @@ contract SSDExecutionPartial is SSDPositionPartial {
     function prepareClosePrice(
         uint256 positionId
     ) internal {
-        PendingClose storage close = pendingCloses[positionId);
+        PendingClose storage close = pendingCloses[positionId];
         require(close.positionId == positionId, "Invalid position ID");
         close.currentPrice = ISSListing(close.listingAddress).prices(uint256(uint160(close.listingAddress)));
         close.decimals = close.positionType == uint8(0)
