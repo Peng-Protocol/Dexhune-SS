@@ -3,16 +3,10 @@
 */
 
 // Recent Changes:
-// - 2025-06-02: Added UpdateType struct and update function to ISSListing interface for volume balance updates. Version incremented to 0.0.7 for pre-testing.
-// - 2025-05-31: Added positionCount state variable to resolve undeclared identifier error in CSDExecutionPartial.
-// - 2025-05-31: Version incremented to 0.0.6 for pre-testing.
-// - 2025-05-31: Moved PositionCore1, PositionCore2, PriceParams1, PriceParams2, MarginParams1, MarginParams2, ExitParams, and OpenInterest structs and mappings from SSCrossDriver.sol to resolve identifier errors.
-// - 2025-05-30: Updated ISSLiquidityTemplate to include liquidityDetailsView for xLiquid and yLiquid.
-// - 2025-05-30: Version incremented to 0.0.4 for pre-testing.
-// - 2025-05-29: Added ISSAgent interface for listing validation.
-// - 2025-05-29: Added agentAddress storage variable.
-// - 2025-05-29: Updated parseEntryPrice to return priceAtEntry.
-// - 2025-05-29: Version incremented to 0.0.2 for pre-testing.
+// - 2025-06-14: Added EntryContext struct to support refactored _initiateEntry in SSCrossDriver.sol and helpers in CSDPositionPartial.sol, aligning with isolatedDriver's call tree. Version incremented to 0.0.17.
+// - 2025-06-13: Confirmed PositionClosed event for inheritance. Version incremented to 0.0.16.
+// - 2025-06-13: Added PositionClosed event, removed from SSCrossDriver.sol. Version incremented to 0.0.15.
+// - 2025-06-13: Added DECIMAL_PRECISION, removed from SSCrossDriver.sol. Version incremented to 0.0.14.
 
 pragma solidity 0.8.1;
 
@@ -45,15 +39,8 @@ interface ISSListing {
 }
 
 interface ISSLiquidityTemplate {
-    struct UpdateType {
-        uint8 updateTipo;
-        uint256 index;
-        uint256 value;
-        address addr;
-        address recipient;
-    }
     function addFees(address caller, bool isX, uint256 fee) external;
-    function liquidityDetailsView() external view returns (uint256 xLiquid, uint256 yLiquid, uint256 xFees, uint256 yFees);
+    function liquidityDetailsView(address) external view returns (uint256 xLiquid, uint256 yLiquid, uint256 xFees, uint256 yFees);
 }
 
 interface ISSAgent {
@@ -65,7 +52,8 @@ contract CSDUtilityPartial {
 
     uint256 public constant DECIMAL_PRECISION = 1e18;
     address public agentAddress;
-    uint256 public positionCount;
+
+    event PositionClosed(uint256 indexed positionId, address indexed maker, uint256 payout);
 
     struct PositionCore1 {
         uint256 positionId;
@@ -113,37 +101,32 @@ contract CSDUtilityPartial {
         uint256 timestamp;
     }
 
+    struct EntryContext {
+        uint256 positionId;
+        address listingAddress;
+        uint256 minEntryPrice;
+        uint256 maxEntryPrice;
+        uint256 initialMargin;
+        uint256 excessMargin;
+        uint8 leverage;
+        uint8 positionType;
+        address maker;
+        address token;
+    }
+
+    mapping(address => mapping(address => uint256)) public makerTokenMargin;
+    mapping(address => address[]) public makerMarginTokens;
     mapping(uint256 => PositionCore1) public positionCore1;
     mapping(uint256 => PositionCore2) public positionCore2;
     mapping(uint256 => PriceParams1) public priceParams1;
     mapping(uint256 => PriceParams2) public priceParams2;
     mapping(uint256 => MarginParams1) public marginParams1;
-    mapping(uint256 => MarginParams2) public margin2;
+    mapping(uint256 => MarginParams2) public marginParams2;
     mapping(uint256 => ExitParams) public exitParams;
     mapping(uint256 => OpenInterest) public openInterest;
-
-    mapping(address => mapping(address => uint256)) public makerTokenMargin;
-    mapping(address => address[]) public makerMarginTokens;
-
-    function parseEntryPrice(
-        uint256 minEntryPrice,
-        uint256 maxEntryPrice,
-        address listingAddress
-    ) internal view returns (uint256 currentPrice, uint256 minPrice, uint256 maxPrice, uint256 priceAtEntry) {
-        currentPrice = ISSListing(listingAddress).prices(listingAddress);
-        priceAtEntry = currentPrice;
-        if (minEntryPrice == 0 && maxEntryPrice == 0) {
-            return (currentPrice, currentPrice, currentPrice, priceAtEntry);
-        }
-        require(minEntryPrice <= maxEntryPrice, "Invalid price range");
-        return (currentPrice, minEntryPrice, maxEntryPrice, priceAtEntry);
-    }
-
-    function transferMargin(address to, address token, uint256 amount) internal {
-        if (amount > 0) {
-            IERC20(token).safeTransfer(to, amount);
-        }
-    }
+    mapping(uint8 => uint256[]) public positionsByType;
+    mapping(address => mapping(uint8 => uint256[])) public pendingPositions;
+    uint256 public positionCount;
 
     function _removeToken(address maker, address token) internal {
         address[] storage tokens = makerMarginTokens[maker];
@@ -151,6 +134,25 @@ contract CSDUtilityPartial {
             if (tokens[i] == token) {
                 tokens[i] = tokens[tokens.length - 1];
                 tokens.pop();
+                break;
+            }
+        }
+    }
+
+    function removePositionIndex(uint256 positionId, uint8 positionType, address listingAddress) internal {
+        uint256[] storage pending = pendingPositions[listingAddress][positionType];
+        for (uint256 i = 0; i < pending.length; i++) {
+            if (pending[i] == positionId) {
+                pending[i] = pending[pending.length - 1];
+                pending.pop();
+                break;
+            }
+        }
+        uint256[] storage active = positionsByType[positionType];
+        for (uint256 i = 0; i < active.length; i++) {
+            if (active[i] == positionId) {
+                active[i] = active[active.length - 1];
+                active.pop();
                 break;
             }
         }

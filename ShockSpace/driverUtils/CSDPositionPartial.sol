@@ -3,21 +3,12 @@
 */
 
 // Recent Changes:
-// - 2025-06-02: Updated _transferMarginToListing to call ISSListing.update for volume balances (xBalance for long, yBalance for short) and _transferLiquidityFee to call addFees for fee tracking (xFees for long, yFees for short). Added positionType parameter. Version incremented to 0.0.10 for pre-testing.
-// - 2025-06-01: Extracted liquidity limit check and loan/liquidation price calculation in prepEnterLong to _checkLiquidityLimitLong and _computeLoanAndLiquidationLong to prevent stack too deep. Applied similar extraction in prepCloseLong/prepCloseShort to _deductMarginAndRemoveToken and _executePayoutUpdate. Version incremented to 0.0.9 for pre-testing.
-// - 2025-06-01: Extracted liquidity limit check and loan/liquidation price calculation in prepEnterShort to _checkLiquidityLimitShort and _computeLoanAndLiquidationShort to resolve stack too deep error. Version incremented to 0.0.8 for pre-testing.
-// - 2025-06-01: Added liquidityAddr validation in _transferLiquidityFee, extracted payout logic in prepCloseLong/prepCloseShort to _computePayoutLong/_computePayoutShort to prevent stack too deep in downstream calls. Version incremented to 0.0.7 for pre-testing.
-// - 2025-06-01: Split liquidity fee transfer into _transferLiquidityFee helper, removed liquidityAddr from _transferMarginToListing, consolidated margin transfers. Version incremented to 0.0.6 for pre-testing.
-// - 2025-05-31: Fixed stack too deep in prepEnterShort by extracting margin transfer logic to internal function _transferMarginToListing. Version incremented to 0.0.5 for pre-testing.
-// - 2025-05-30: Updated prepEnterLong to use xLiquid and prepEnterShort to use yLiquid from liquidityDetailsView.
-// - 2025-05-30: Version incremented to 0.0.4 for pre-testing.
-// - 2025-05-29: Added margin deduction in prepCloseLong/prepCloseShort.
-// - 2025-05-29: Version incremented to 0.0.2 for pre-testing.
-// - 2025-05-29: Updated prepEnterLong/prepEnterShort to transfer taxedMargin and excessMargin to listingAddress, track in makerTokenMargin.
-// - 2025-05-29: Updated liquidation price to use makerTokenMargin[maker][token].
-// - 2025-05-29: Replaced entryPrice with minEntryPrice/maxEntryPrice.
-// - 2025-05-29: Updated fee to (leverage - 1) * initialMargin / 100.
-// - 2025-05-29: Updated closeLongPosition/closeShortPosition to create PayoutUpdate without margin deduction.
+// - 2025-06-14: Removed `override` from normalizePrice, denormalizeAmount, normalizeAmount, _validateAndInit, _setCoreData, _setPriceData, _setMarginData, and _setExitData to resolve TypeError for unneeded override. Kept `virtual` for potential overrides in derived contracts. Version incremented to 0.0.23.
+// - 2025-06-14: Renamed public virtual parseEntryPrice to _parseEntryPriceHelper, removed virtual/override, made internal to resolve DeclarationError for duplicate function. Version incremented to 0.0.22.
+// - 2025-06-14: Removed updateHistoricalInterest and positionToken references to resolve DeclarationError at lines 436, 491, 505, 507, 509. Moved updateHistoricalInterest to SSCrossDriver.sol. Updated _setExitData to accept token parameter, removing positionToken access. Removed positionToken from _setCoreData. Version incremented to 0.0.21.
+// - 2025-06-14: Moved PrepPosition struct before function declarations to resolve DeclarationError at line 233:25 in _computeEntryParams. Version incremented to 0.0.20.
+// - 2025-06-14: Added _prepareEntryContext, _validateEntry, _computeEntryParams, _storeEntryData helpers to support refactored _initiateEntry in SSCrossDriver.sol, aligning with isolatedDriver's call tree. Updated prepEnterLong/prepEnterShort to use EntryContext. Version incremented to 0.0.19.
+// - 2025-06-13: Replaced safeTransferFrom with transferFrom in _transferMarginToListing and safeTransfer with transfer in _transferLiquidityFee, added balance checks. Renamed totalMargin to transferAmount. Removed SafeERC20 import. Version incremented to 0.0.18.
 
 pragma solidity 0.8.1;
 
@@ -37,6 +28,18 @@ contract CSDPositionPartial is CSDUtilityPartial {
         return (initialMargin * feePercent * DECIMAL_PRECISION) / 100 / DECIMAL_PRECISION;
     }
 
+    function parseEntryPrice(
+        uint256 minEntryPrice,
+        uint256 maxEntryPrice,
+        address listingAddress
+    ) internal view returns (uint256 currentPrice, uint256 minPrice, uint256 maxPrice, uint256 priceAtEntry) {
+        currentPrice = ISSListing(listingAddress).prices(listingAddress);
+        minPrice = minEntryPrice;
+        maxPrice = maxEntryPrice;
+        priceAtEntry = currentPrice >= minPrice && currentPrice <= maxPrice ? currentPrice : 0;
+        return (currentPrice, minPrice, maxPrice, priceAtEntry);
+    }
+
     function _transferLiquidityFee(
         address listingAddress,
         address token,
@@ -46,12 +49,16 @@ contract CSDPositionPartial is CSDUtilityPartial {
         address liquidityAddr = ISSListing(listingAddress).liquidityAddressView(listingAddress);
         require(liquidityAddr != address(0), "Invalid liquidity address");
         if (fee > 0) {
-            transferMargin(liquidityAddr, token, fee);
-            ISSLiquidityTemplate(liquidityAddr).addFees(address(this), positionType == 0 ? true : false, fee);
+            uint256 denormalizedFee = denormalizeAmount(token, fee);
+            uint256 balanceBefore = IERC20(token).balanceOf(liquidityAddr);
+            bool success = IERC20(token).transfer(liquidityAddr, denormalizedFee);
+            require(success, "Transfer failed");
+            uint256 balanceAfter = IERC20(token).balanceOf(liquidityAddr);
+            require(balanceAfter - balanceBefore == denormalizedFee, "Fee transfer failed");
+            ISSLiquidityTemplate(liquidityAddr).addFees(address(this), positionType == 0 ? true : false, denormalizedFee);
         }
     }
 
-    // Fee switching is carried out by SSLiquidityTemplate using claimFees, no need to switch fees here
     function _transferMarginToListing(
         address token,
         address listingAddress,
@@ -61,22 +68,28 @@ contract CSDPositionPartial is CSDUtilityPartial {
         uint256 fee,
         uint8 positionType
     ) internal {
-        uint256 totalMargin = taxedMargin + excessMargin;
+        uint256 transferAmount = taxedMargin + excessMargin;
         _transferLiquidityFee(listingAddress, token, fee, positionType);
-        if (totalMargin > 0) {
-            transferMargin(listingAddress, token, totalMargin);
+        if (transferAmount > 0) {
+            uint256 denormalizedAmount = denormalizeAmount(token, transferAmount);
+            uint256 balanceBefore = IERC20(token).balanceOf(listingAddress);
+            bool success = IERC20(token).transferFrom(msg.sender, listingAddress, denormalizedAmount);
+            require(success, "TransferFrom failed");
+            uint256 balanceAfter = IERC20(token).balanceOf(listingAddress);
+            require(balanceAfter - balanceBefore == denormalizedAmount, "Balance update failed");
+
             ISSListing.UpdateType[] memory updates = new ISSListing.UpdateType[](1);
             updates[0] = ISSListing.UpdateType({
                 updateType: 0,
                 index: positionType,
-                value: totalMargin,
+                value: denormalizedAmount,
                 addr: address(0),
                 recipient: address(0)
             });
             ISSListing(listingAddress).update(address(this), updates);
         }
-        makerTokenMargin[maker][token] += totalMargin;
-        if (makerTokenMargin[maker][token] == totalMargin) {
+        makerTokenMargin[maker][token] += transferAmount;
+        if (makerTokenMargin[maker][token] == transferAmount) {
             makerMarginTokens[maker].push(token);
         }
     }
@@ -87,10 +100,13 @@ contract CSDPositionPartial is CSDUtilityPartial {
         address tokenB
     ) internal view returns (uint256) {
         MarginParams1 storage margin1 = marginParams1[positionId];
-        MarginParams2 storage margin2 = margin2[positionId];
+        MarginParams2 storage margin2 = marginParams2[positionId];
         PriceParams1 storage price1 = priceParams1[positionId];
-        uint256 currentPrice = ISSListing(listingAddress).prices(listingAddress);
-        return (margin1.taxedMargin + makerTokenMargin[positionCore1[positionId].makerAddress][tokenB] + price1.leverage * margin1.initialMargin) / currentPrice - margin2.initialLoan;
+        uint256 currentPrice = normalizePrice(tokenB, ISSListing(listingAddress).prices(listingAddress));
+        require(currentPrice > 0, "Invalid price");
+        uint256 totalMargin = makerTokenMargin[positionCore1[positionId].makerAddress][tokenB];
+        uint256 leverageAmount = uint256(price1.leverage) * margin1.initialMargin;
+        return ((margin1.taxedMargin + totalMargin + leverageAmount) / currentPrice) - margin2.initialLoan;
     }
 
     function _computePayoutShort(
@@ -100,8 +116,10 @@ contract CSDPositionPartial is CSDUtilityPartial {
     ) internal view returns (uint256) {
         MarginParams1 storage margin1 = marginParams1[positionId];
         PriceParams1 storage price1 = priceParams1[positionId];
-        uint256 currentPrice = ISSListing(listingAddress).prices(listingAddress);
-        return (price1.minEntryPrice - currentPrice) * margin1.initialMargin * price1.leverage + (margin1.taxedMargin + makerTokenMargin[positionCore1[positionId].makerAddress][tokenA]) * currentPrice;
+        uint256 currentPrice = normalizePrice(tokenA, ISSListing(listingAddress).prices(listingAddress));
+        require(currentPrice > 0, "Invalid price");
+        uint256 totalMargin = makerTokenMargin[positionCore1[positionId].makerAddress][tokenA];
+        return (price1.priceAtEntry - currentPrice) * margin1.initialMargin * uint256(price1.leverage) + (margin1.taxedMargin + totalMargin) * currentPrice;
     }
 
     function _checkLiquidityLimitLong(
@@ -110,7 +128,7 @@ contract CSDPositionPartial is CSDUtilityPartial {
         uint8 leverage
     ) internal view returns (address tokenB) {
         address liquidityAddr = ISSListing(listingAddress).liquidityAddressView(listingAddress);
-        (uint256 xLiquid,,,) = ISSLiquidityTemplate(liquidityAddr).liquidityDetailsView();
+        (uint256 xLiquid,,,) = ISSLiquidityTemplate(liquidityAddr).liquidityDetailsView(address(this));
         uint256 limitPercent = 101 - uint256(leverage);
         uint256 limit = xLiquid * limitPercent / 100;
         require(leverageAmount <= limit, "Leverage amount exceeds limit");
@@ -134,7 +152,7 @@ contract CSDPositionPartial is CSDUtilityPartial {
         uint8 leverage
     ) internal view returns (address tokenA) {
         address liquidityAddr = ISSListing(listingAddress).liquidityAddressView(listingAddress);
-        (, uint256 yLiquid,,) = ISSLiquidityTemplate(liquidityAddr).liquidityDetailsView();
+        (, uint256 yLiquid,,) = ISSLiquidityTemplate(liquidityAddr).liquidityDetailsView(address(this));
         uint256 limitPercent = 101 - uint256(leverage);
         uint256 limit = yLiquid * limitPercent / 100;
         require(leverageAmount <= limit, "Leverage amount exceeds limit");
@@ -169,80 +187,173 @@ contract CSDPositionPartial is CSDUtilityPartial {
         address listingAddress,
         uint256 payout,
         uint8 positionType,
-        address maker
+        address maker,
+        address token
     ) internal {
         ISSListing.PayoutUpdate[] memory updates = new ISSListing.PayoutUpdate[](1);
         updates[0] = ISSListing.PayoutUpdate({
             payoutType: positionType,
             recipient: maker,
-            required: payout
+            required: denormalizeAmount(token, payout)
         });
         ISSListing(listingAddress).ssUpdate(address(this), updates);
-
-        exitParams[positionId].exitPrice = ISSListing(listingAddress).prices(listingAddress);
+        exitParams[positionId].exitPrice = normalizePrice(token, ISSListing(listingAddress).prices(listingAddress));
         positionCore2[positionId].status2 = 1;
     }
 
-    function prepEnterLong(
+    function _prepareEntryContext(
+        address listingAddress,
         uint256 positionId,
         uint256 minEntryPrice,
         uint256 maxEntryPrice,
         uint256 initialMargin,
         uint256 excessMargin,
         uint8 leverage,
-        address listingAddress,
-        address maker
-    ) internal returns (PrepPosition memory prep) {
-        require(leverage >= 2 && leverage <= 100, "Invalid leverage");
-        (uint256 currentPrice, uint256 minPrice, uint256 maxPrice,) = parseEntryPrice(minEntryPrice, maxEntryPrice, listingAddress);
+        uint8 positionType
+    ) internal view returns (EntryContext memory context) {
+        context = EntryContext({
+            positionId: positionId,
+            listingAddress: listingAddress,
+            minEntryPrice: minEntryPrice,
+            maxEntryPrice: maxEntryPrice,
+            initialMargin: initialMargin,
+            excessMargin: excessMargin,
+            leverage: leverage,
+            positionType: positionType,
+            maker: address(0),
+            token: address(0)
+        });
+    }
 
-        prep.fee = computeFee(initialMargin, leverage);
-        prep.taxedMargin = initialMargin - prep.fee;
-        prep.leverageAmount = initialMargin * uint256(leverage);
-        require(excessMargin <= prep.leverageAmount, "Excess margin too high");
+    function _validateEntry(
+        EntryContext memory context
+    ) internal returns (EntryContext memory) {
+        require(context.initialMargin > 0, "Invalid margin");
+        require(context.leverage >= 2 && context.leverage <= 100, "Invalid leverage");
+        (context.maker, context.token) = _validateAndInit(
+            context.positionId,
+            context.listingAddress,
+            context.positionType
+        );
+        return context;
+    }
 
-        address tokenB = _checkLiquidityLimitLong(listingAddress, prep.leverageAmount, leverage);
-        _transferMarginToListing(tokenB, listingAddress, maker, prep.taxedMargin, excessMargin, prep.fee, 0);
+    function _computeEntryParams(
+        EntryContext memory context
+    ) internal returns (PrepPosition memory params) {
+        uint256 normMinPrice = normalizePrice(context.token, context.minEntryPrice);
+        uint256 normMaxPrice = normalizePrice(context.token, context.maxEntryPrice);
+        uint256 normInitialMargin = normalizeAmount(context.token, context.initialMargin);
+        uint256 normExcessMargin = normalizeAmount(context.token, context.excessMargin);
+        if (context.positionType == 0) {
+            params = prepEnterLong(context);
+        } else {
+            params = prepEnterShort(context);
+        }
+    }
 
-        (prep.initialLoan, prep.liquidationPrice) = _computeLoanAndLiquidationLong(
+    function _storeEntryData(
+        EntryContext memory context,
+        PrepPosition memory prep,
+        uint256 stopLossPrice,
+        uint256 takeProfitPrice
+    ) internal {
+        _setCoreData(
+            context.positionId,
+            context.listingAddress,
+            context.maker,
+            context.positionType,
+            context.token
+        );
+        _setPriceData(
+            context.positionId,
+            context.minEntryPrice,
+            context.maxEntryPrice,
+            prep.liquidationPrice,
+            context.listingAddress,
+            context.leverage,
+            context.token
+        );
+        _setMarginData(
+            context.positionId,
+            context.initialMargin,
+            prep.taxedMargin,
+            context.excessMargin,
+            prep.fee,
+            prep.initialLoan,
+            context.token
+        );
+        _setExitData(
+            context.positionId,
+            stopLossPrice,
+            takeProfitPrice,
             prep.leverageAmount,
-            minPrice,
-            maker,
-            tokenB
+            context.listingAddress,
+            context.positionType,
+            context.token
+        );
+    }
+
+    function prepEnterLong(
+        EntryContext memory context
+    ) internal returns (PrepPosition memory params) {
+        (uint256 currentPrice, uint256 minPrice, uint256 maxPrice,) = parseEntryPrice(
+            normalizePrice(context.token, context.minEntryPrice),
+            normalizePrice(context.token, context.maxEntryPrice),
+            context.listingAddress
         );
 
-        return prep;
+        params.fee = computeFee(context.initialMargin, context.leverage);
+        params.taxedMargin = normalizeAmount(context.token, context.initialMargin) - params.fee;
+        params.leverageAmount = normalizeAmount(context.token, context.initialMargin) * uint256(context.leverage);
+        address tokenB = _checkLiquidityLimitLong(context.listingAddress, params.leverageAmount, context.leverage);
+        _transferMarginToListing(
+            tokenB,
+            context.listingAddress,
+            context.maker,
+            params.taxedMargin,
+            normalizeAmount(context.token, context.excessMargin),
+            params.fee,
+            0
+        );
+        (params.initialLoan, params.liquidationPrice) = _computeLoanAndLiquidationLong(
+            params.leverageAmount,
+            minPrice,
+            context.maker,
+            tokenB
+        );
+        return params;
     }
 
     function prepEnterShort(
-        uint256 positionId,
-        uint256 minEntryPrice,
-        uint256 maxEntryPrice,
-        uint256 initialMargin,
-        uint256 excessMargin,
-        uint8 leverage,
-        address listingAddress,
-        address maker
-    ) internal returns (PrepPosition memory prep) {
-        require(leverage >= 2 && leverage <= 100, "Invalid leverage");
-        (uint256 currentPrice, uint256 minPrice, uint256 maxPrice,) = parseEntryPrice(minEntryPrice, maxEntryPrice, listingAddress);
-
-        prep.fee = computeFee(initialMargin, leverage);
-        prep.taxedMargin = initialMargin - prep.fee;
-        prep.leverageAmount = initialMargin * uint256(leverage);
-        require(excessMargin <= prep.leverageAmount, "Excess margin too high");
-
-        address tokenA = _checkLiquidityLimitShort(listingAddress, prep.leverageAmount, leverage);
-        _transferMarginToListing(tokenA, listingAddress, maker, prep.taxedMargin, excessMargin, prep.fee, 1);
-
-        (prep.initialLoan, prep.liquidationPrice) = _computeLoanAndLiquidationShort(
-            prep.leverageAmount,
-            minPrice,
-            maker,
-            tokenA
+        EntryContext memory context
+    ) internal returns (PrepPosition memory params) {
+        (uint256 currentPrice, uint256 minPrice, uint256 maxPrice,) = parseEntryPrice(
+            normalizePrice(context.token, context.minEntryPrice),
+            normalizePrice(context.token, context.maxEntryPrice),
+            context.listingAddress
         );
 
-        return prep;
+        params.fee = computeFee(context.initialMargin, context.leverage);
+        params.taxedMargin = normalizeAmount(context.token, context.initialMargin) - params.fee;
+        params.leverageAmount = normalizeAmount(context.token, context.initialMargin) * uint256(context.leverage);
+        address tokenA = _checkLiquidityLimitShort(context.listingAddress, params.leverageAmount, context.leverage);
+        _transferMarginToListing(
+            tokenA,
+            context.listingAddress,
+            context.maker,
+            params.taxedMargin,
+            normalizeAmount(context.token, context.excessMargin),
+            params.fee,
+            1
+        );
+        (params.initialLoan, params.liquidationPrice) = _computeLoanAndLiquidationShort(
+            params.leverageAmount,
+            minPrice,
+            context.maker,
+            tokenA
+        );
+        return params;
     }
 
     function prepCloseLong(
@@ -251,12 +362,10 @@ contract CSDPositionPartial is CSDUtilityPartial {
     ) internal returns (uint256 payout) {
         PositionCore1 storage core1 = positionCore1[positionId];
         MarginParams1 storage margin1 = marginParams1[positionId];
-
         address tokenB = ISSListing(listingAddress).tokenB();
         payout = _computePayoutLong(positionId, listingAddress, tokenB);
-
         _deductMarginAndRemoveToken(core1.makerAddress, tokenB, margin1.taxedMargin, margin1.excessMargin);
-        _executePayoutUpdate(positionId, listingAddress, payout, core1.positionType, core1.makerAddress);
+        _executePayoutUpdate(positionId, listingAddress, payout, core1.positionType, core1.makerAddress, tokenB);
     }
 
     function prepCloseShort(
@@ -265,12 +374,10 @@ contract CSDPositionPartial is CSDUtilityPartial {
     ) internal returns (uint256 payout) {
         PositionCore1 storage core1 = positionCore1[positionId];
         MarginParams1 storage margin1 = marginParams1[positionId];
-
         address tokenA = ISSListing(listingAddress).tokenA();
         payout = _computePayoutShort(positionId, listingAddress, tokenA);
-
         _deductMarginAndRemoveToken(core1.makerAddress, tokenA, margin1.taxedMargin, margin1.excessMargin);
-        _executePayoutUpdate(positionId, listingAddress, payout, core1.positionType, core1.makerAddress);
+        _executePayoutUpdate(positionId, listingAddress, payout, core1.positionType, core1.makerAddress, tokenA);
     }
 
     function setExitParams(
@@ -282,4 +389,142 @@ contract CSDPositionPartial is CSDUtilityPartial {
         exit.stopLossPrice = stopLossPrice;
         exit.takeProfitPrice = takeProfitPrice;
     }
+
+    function normalizePrice(address token, uint256 price) internal view virtual returns (uint256) {
+        uint8 decimals = IERC20(token).decimals();
+        if (decimals < 18) return price * (10 ** (18 - decimals));
+        if (decimals > 18) return price / (10 ** (decimals - 18));
+        return price;
+    }
+
+    function denormalizeAmount(address token, uint256 amount) internal view virtual returns (uint256) {
+        uint8 decimals = IERC20(token).decimals();
+        return amount * (10 ** decimals) / DECIMAL_PRECISION;
+    }
+
+    function normalizeAmount(address token, uint256 amount) internal view virtual returns (uint256) {
+        uint8 decimals = IERC20(token).decimals();
+        return amount * DECIMAL_PRECISION / (10 ** decimals);
+    }
+
+    function _validateAndInit(
+        uint256 positionId,
+        address listingAddress,
+        uint8 positionType
+    ) internal virtual returns (address maker, address token) {
+        require(positionCore1[positionId].positionId == 0, "Position ID exists");
+        address tokenA = ISSListing(listingAddress).tokenA();
+        address tokenB = ISSListing(listingAddress).tokenB();
+        address expectedListing = ISSAgent(agentAddress).getListing(tokenA, tokenB);
+        require(expectedListing == listingAddress, "Invalid listing");
+        maker = msg.sender;
+        positionCount++;
+        token = positionType == 0 ? tokenB : tokenA;
+    }
+
+    function _setCoreData(
+        uint256 positionId,
+        address listingAddress,
+        address maker,
+        uint8 positionType,
+        address token
+    ) internal virtual {
+        positionCore1[positionId] = PositionCore1({
+            positionId: positionId,
+            listingAddress: listingAddress,
+            makerAddress: maker,
+            positionType: positionType
+        });
+        positionCore2[positionId] = PositionCore2({ status1: false, status2: 0 });
+    }
+
+    function _setPriceData(
+        uint256 positionId,
+        uint256 minEntryPrice,
+        uint256 maxEntryPrice,
+        uint256 liquidationPrice,
+        address listingAddress,
+        uint8 leverage,
+        address token
+    ) internal virtual {
+        (, , , uint256 priceAtEntry) = parseEntryPrice(
+            normalizePrice(token, minEntryPrice),
+            normalizePrice(token, maxEntryPrice),
+            listingAddress
+        );
+        priceParams1[positionId] = PriceParams1({
+            minEntryPrice: normalizePrice(token, minEntryPrice),
+            maxEntryPrice: normalizePrice(token, maxEntryPrice),
+            minPrice: liquidationPrice,
+            priceAtEntry: priceAtEntry,
+            leverage: leverage
+        });
+        priceParams2[positionId] = PriceParams2({ liquidationPrice: liquidationPrice });
+    }
+
+    function _setMarginData(
+        uint256 positionId,
+        uint256 initialMargin,
+        uint256 taxedMargin,
+        uint256 excessMargin,
+        uint256 fee,
+        uint256 initialLoan,
+        address token
+    ) internal virtual {
+        marginParams1[positionId] = MarginParams1({
+            initialMargin: normalizeAmount(token, initialMargin),
+            taxedMargin: taxedMargin,
+            excessMargin: normalizeAmount(token, excessMargin),
+            fee: fee
+        });
+        marginParams2[positionId] = MarginParams2({
+            initialLoan: normalizeAmount(token, initialLoan)
+        });
+    }
+
+    function _setExitData(
+        uint256 positionId,
+        uint256 stopLossPrice,
+        uint256 takeProfitPrice,
+        uint256 leverageAmount,
+        address listingAddress,
+        uint8 positionType,
+        address token
+    ) internal virtual {
+        exitParams[positionId] = ExitParams({
+            stopLossPrice: normalizePrice(token, stopLossPrice),
+            takeProfitPrice: normalizePrice(token, takeProfitPrice),
+            exitPrice: 0
+        });
+        openInterest[positionId] = OpenInterest({ leverageAmount: leverageAmount, timestamp: block.timestamp });
+        pendingPositions[listingAddress][positionType].push(positionId);
+    }
+
+    function _parseEntryPriceHelper(
+        uint256 positionId,
+        uint256 minEntryPrice,
+        uint256 maxEntryPrice,
+        uint256 initialMargin,
+        uint256 excessMargin,
+        uint8 leverage,
+        address listingAddress,
+        address maker
+    ) internal returns (PrepPosition memory) {}
+
+    function prepEnterShort(
+        uint256 positionId,
+        uint256 minEntryPrice,
+        uint256 maxEntryPrice,
+        uint256 initialMargin,
+        uint256 excessMargin,
+        uint8 leverage,
+        address listingAddress,
+        address maker
+    ) internal returns (PrepPosition memory) {}
+
+    function _parseEntryPriceHelper(
+        uint256 minEntryPrice,
+        uint256 maxEntryPrice,
+        address listingAddress
+    ) internal returns (uint256, uint256, uint256, uint256) {}
 }
