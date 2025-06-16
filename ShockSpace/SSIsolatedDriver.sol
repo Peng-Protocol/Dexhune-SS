@@ -1,20 +1,11 @@
 // SPDX-License-Identifier: BSD-3-Clause
 pragma solidity ^0.8.1;
 
-// Version 0.0.10:
-// - Fixed DeclarationError in updateEntryParamsStore by passing baseParams.initMargin as a parameter.
-// - Optimized stack usage by passing initMargin as uint256 instead of baseParams struct.
-// - Retained fixes from v0.0.9 (closeShortPosition), v0.0.8 (updateEntryParams), v0.0.7 (finalizeEntry).
-// - Compatible with SSDUtilityPartial.sol v0.0.5, SSDPositionPartial.sol v0.0.6, SSDExecutionPartial.sol v0.0.24.
-// - v0.0.9:
-//   - Fixed ParserError in closeShortPosition by removing extra parenthesis.
-//   - Corrected syntax errors in closeShortPosition: status -> status2, MeanscoreBase -> coreBase, minPrice -> priceMin.
-// - v0.0.8:
-//   - Fixed ParserError by correcting typo '众多Params' to 'leverageParams' in updateEntryParams.
-//   - Split updateEntryParams into helpers to mitigate stack depth.
-// - v0.0.7:
-//   - Split finalizeEntry into helpers to fix stack too deep error.
-//   - Adjusted finalizeEntry to deduct actual fee from initial margin.
+// Version 0.0.11:
+// - Removed tokenAddr parameter from enterLong and enterShort functions.
+// - Modified prepareEntryContext to compute tokenAddr internally using ISSListing.tokenA() for longs and ISSListing.tokenB() for shorts.
+// - Retained fixes from v0.0.10 (updateEntryParamsStore), v0.0.9 (closeShortPosition), v0.0.8 (updateEntryParams), v0.0.7 (finalizeEntry).
+// - Compatible with SSDUtilityPartial.sol v0.0.5, SSDPositionPartial.sol v0.0.7, SSDExecutionPartial.sol v0.0.27.
 
 import "./driverUtils/SSDExecutionPartial.sol";
 import "./imports/ReentrancyGuard.sol";
@@ -71,10 +62,11 @@ contract SSIsolatedDriver is SSDExecutionPartial, ReentrancyGuard, Ownable {
     // Helper: Prepare entry context
     function prepareEntryContext(
         address listingAddr,
-        address tokenAddr,
         uint256 initMargin,
-        uint256 extraMargin
+        uint256 extraMargin,
+        uint8 positionType
     ) internal view returns (EntryContext memory context) {
+        address tokenAddr = positionType == 0 ? ISSListing(listingAddr).tokenA() : ISSListing(listingAddr).tokenB();
         (uint256 normInitMargin, uint256 normExtraMargin) = normalizeMargins(
             tokenAddr,
             initMargin,
@@ -427,14 +419,13 @@ contract SSIsolatedDriver is SSDExecutionPartial, ReentrancyGuard, Ownable {
         uint256 extraMargin,
         uint8 leverage,
         uint256 stopLoss,
-        uint256 takeProfit,
-        address tokenAddr
+        uint256 takeProfit
     ) external nonReentrant {
         EntryContext memory context = prepareEntryContext(
             listingAddr,
-            tokenAddr,
             initMargin,
-            extraMargin
+            extraMargin,
+            uint8(0) // Long
         );
         initiateEntry(
             context,
@@ -456,14 +447,13 @@ contract SSIsolatedDriver is SSDExecutionPartial, ReentrancyGuard, Ownable {
         uint256 extraMargin,
         uint8 leverage,
         uint256 stopLoss,
-        uint256 takeProfit,
-        address tokenAddr
+        uint256 takeProfit
     ) external nonReentrant {
         EntryContext memory context = prepareEntryContext(
             listingAddr,
-            tokenAddr,
             initMargin,
-            extraMargin
+            extraMargin,
+            uint8(1) // Short
         );
         initiateEntry(
             context,
