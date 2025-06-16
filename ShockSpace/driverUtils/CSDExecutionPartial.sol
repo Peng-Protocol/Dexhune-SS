@@ -3,11 +3,12 @@
 */
 
 // Recent Changes:
+// - 2025-06-16: Replaced parseEntryPrice with _parseEntryPriceInternal at lines 87 and 102 to resolve DeclarationError. Updated Solidity version to ^0.8.2. Version incremented to 0.0.17.
 // - 2025-06-13: Renamed executePositions to _executePositions as internal helper, added external executePositions wrapper. Version incremented to 0.0.16.
 // - 2025-06-13: Changed executePositions visibility to external virtual. Version incremented to 0.0.15.
 // - 2025-06-13: Confirmed PositionClosed emission via CSDUtilityPartial.sol. Version incremented to 0.0.14.
 
-pragma solidity 0.8.1;
+pragma solidity ^0.8.2;
 
 import "./CSDPositionPartial.sol";
 
@@ -84,7 +85,7 @@ contract CSDExecutionPartial is CSDPositionPartial {
                 uint256 positionId = pending[i];
                 PositionCore1 storage core1 = positionCore1[positionId];
                 address token = positionType == 0 ? ISSListing(listingAddress).tokenB() : ISSListing(listingAddress).tokenA();
-                (uint256 currentPrice,,,) = parseEntryPrice(priceParams1[positionId].minEntryPrice, priceParams1[positionId].maxEntryPrice, listingAddress);
+                (uint256 currentPrice,,,) = _parseEntryPriceInternal(priceParams1[positionId].minEntryPrice, priceParams1[positionId].maxEntryPrice, listingAddress);
                 currentPrice = normalizePrice(token, currentPrice);
 
                 if (_processPendingPosition(positionId, positionType, listingAddress, pending, i, currentPrice)) {
@@ -99,7 +100,7 @@ contract CSDExecutionPartial is CSDPositionPartial {
                 PositionCore1 storage core1 = positionCore1[positionId];
                 if (core1.positionId == 0 || core1.listingAddress != listingAddress || positionCore2[positionId].status2 != 0) continue;
                 address token = positionType == 0 ? ISSListing(listingAddress).tokenB() : ISSListing(listingAddress).tokenA();
-                (uint256 currentPrice,,,) = parseEntryPrice(priceParams1[positionId].minEntryPrice, priceParams1[positionId].maxEntryPrice, listingAddress);
+                (uint256 currentPrice,,,) = _parseEntryPriceInternal(priceParams1[positionId].minEntryPrice, priceParams1[positionId].maxEntryPrice, listingAddress);
                 currentPrice = normalizePrice(token, currentPrice);
 
                 if (_processActivePosition(positionId, positionType, listingAddress, active, i, currentPrice)) {
