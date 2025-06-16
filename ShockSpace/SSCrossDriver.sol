@@ -3,13 +3,20 @@
 */
 
 // Recent Changes:
+// - 2025-06-16: Updated addExcessMargin and pullMargin to use ISSAgent.isValidListing for listing validation instead of ISSAgent.getListing. Version incremented to 0.0.33.
+// - 2025-06-16: Updated pullMargin to take listingAddress and tokenA (bool) instead of tokenA and tokenB, using tokenA to select tokenA or tokenB from listingAddress. Added listing validation in addExcessMargin and pullMargin using ISSAgent.getListing. Version incremented to 0.0.32.
+// - 2025-06-16: Updated addExcessMargin to take listingAddress and tokenA (bool) instead of tokenA and tokenB, using tokenA to select tokenA or tokenB from listingAddress. Version incremented to 0.0.31.
+// - 2025-06-16: Removed uint256 return type from _setCoreData to match CSDPositionPartial.sol, resolving TypeError. Version incremented to 0.0.30.
+// - 2025-06-16: Replaced PrepPositionCore with PrepPosition in _initiateEntry, replaced parseEntryPrice with _parseEntryPriceInternal in _setPriceData, fixed _setCoreData parameters (makerAddress to maker, tokenType to token) to resolve DeclarationErrors at lines 185, 108, 95, 91. Version incremented to 0.0.29.
+// - 2025-06-17: Updated closeLongPosition and closeShortPosition to use tokenB for long payouts and tokenA for short payouts, aligning with prepExitLong/Short in CSDPositionPartial.sol. Version incremented to 0.0.28.
+// - 2025-06-16: Removed positionId parameter from enterLong/enterShort, generated positionId using positionCount, corrected token usage in _validateAndInit (longs: tokenA, shorts: tokenB), added TotalActivePositionsView. Version incremented to 0.0.27.
 // - 2025-06-15: Updated closeLongPosition and closeShortPosition to use normalized amounts in ssUpdate instead of denormalized amounts. Version incremented to 0.0.26.
 // - 2025-06-14: Added updateHistoricalInterest from CSDPositionPartial.sol to resolve DeclarationError at lines 505, 507, 509. Updated _setExitData to call updateHistoricalInterest. Version incremented to 0.0.25.
 // - 2025-06-14: Refactored _processPositionEntry into _initiateEntry, moving helpers (_prepareEntryContext, _validateEntry, _computeEntryParams, _storeEntryData) to CSDPositionPartial.sol to resolve stack too deep error at line 212:94, aligning with isolatedDriver's call tree. Removed _preparePosition. Version incremented to 0.0.24.
 // - 2025-06-14: Fixed ParserError in _setMarginData. Version incremented to 0.0.23.
 // - 2025-06-14: Optimized positionByIndex. Version incremented to 0.0.22.
 
-pragma solidity 0.8.1;
+pragma solidity ^0.8.2;
 
 import "./driverUtils/CSDExecutionPartial.sol";
 
@@ -45,7 +52,7 @@ contract SSCrossDriver is ReentrancyGuard, Ownable, CSDExecutionPartial {
         return amount * DECIMAL_PRECISION / (10 ** decimals);
     }
 
-    function updateHistoricalInterest(uint256 amount, uint8 positionType, address listingAddress) internal {
+    function updateHistoricalInterest(uint256 amount, uint8 positionType, address listing) internal {
         uint256 height = block.number;
         if (positionType == 0) {
             longIOByHeight[height] += amount;
@@ -61,10 +68,10 @@ contract SSCrossDriver is ReentrancyGuard, Ownable, CSDExecutionPartial {
     }
 
     function _validateAndInit(
-        uint256 positionId,
         address listingAddress,
         uint8 positionType
     ) internal override returns (address maker, address token) {
+        uint256 positionId = positionCount + 1;
         require(positionCore1[positionId].positionId == 0, "Position ID exists");
         address tokenA = ISSListing(listingAddress).tokenA();
         address tokenB = ISSListing(listingAddress).tokenB();
@@ -72,7 +79,8 @@ contract SSCrossDriver is ReentrancyGuard, Ownable, CSDExecutionPartial {
         require(expectedListing == listingAddress, "Invalid listing");
         maker = msg.sender;
         positionCount++;
-        token = positionType == 0 ? tokenB : tokenA;
+        token = positionType == 0 ? tokenA : tokenB;
+        return (maker, token);
     }
 
     function _setCoreData(
@@ -101,7 +109,7 @@ contract SSCrossDriver is ReentrancyGuard, Ownable, CSDExecutionPartial {
         uint8 leverage,
         address token
     ) internal override {
-        (, , , uint256 priceAtEntry) = parseEntryPrice(
+        (, , , uint256 priceAtEntry) = _parseEntryPriceInternal(
             normalizePrice(token, minEntryPrice),
             normalizePrice(token, maxEntryPrice),
             listingAddress
@@ -157,7 +165,6 @@ contract SSCrossDriver is ReentrancyGuard, Ownable, CSDExecutionPartial {
 
     function _initiateEntry(
         address listingAddress,
-        uint256 positionId,
         uint256 minEntryPrice,
         uint256 maxEntryPrice,
         uint256 initialMargin,
@@ -167,6 +174,7 @@ contract SSCrossDriver is ReentrancyGuard, Ownable, CSDExecutionPartial {
         uint256 takeProfitPrice,
         uint8 positionType
     ) internal {
+        uint256 positionId = positionCount + 1;
         EntryContext memory context = _prepareEntryContext(
             listingAddress,
             positionId,
@@ -184,7 +192,6 @@ contract SSCrossDriver is ReentrancyGuard, Ownable, CSDExecutionPartial {
 
     function enterLong(
         address listingAddress,
-        uint256 positionId,
         uint256 minEntryPrice,
         uint256 maxEntryPrice,
         uint256 initialMargin,
@@ -195,7 +202,6 @@ contract SSCrossDriver is ReentrancyGuard, Ownable, CSDExecutionPartial {
     ) external nonReentrant {
         _initiateEntry(
             listingAddress,
-            positionId,
             minEntryPrice,
             maxEntryPrice,
             initialMargin,
@@ -205,12 +211,12 @@ contract SSCrossDriver is ReentrancyGuard, Ownable, CSDExecutionPartial {
             takeProfitPrice,
             0
         );
+        uint256 positionId = positionCount;
         emit PositionEntered(positionId, msg.sender, 0);
     }
 
     function enterShort(
         address listingAddress,
-        uint256 positionId,
         uint256 minEntryPrice,
         uint256 maxEntryPrice,
         uint256 initialMargin,
@@ -221,7 +227,6 @@ contract SSCrossDriver is ReentrancyGuard, Ownable, CSDExecutionPartial {
     ) external nonReentrant {
         _initiateEntry(
             listingAddress,
-            positionId,
             minEntryPrice,
             maxEntryPrice,
             initialMargin,
@@ -231,15 +236,17 @@ contract SSCrossDriver is ReentrancyGuard, Ownable, CSDExecutionPartial {
             takeProfitPrice,
             1
         );
+        uint256 positionId = positionCount;
         emit PositionEntered(positionId, msg.sender, 1);
     }
 
-    function addExcessMargin(address tokenA, address tokenB, uint256 amount, address maker) external nonReentrant {
+    function addExcessMargin(address listingAddress, bool tokenA, uint256 amount, address maker) external nonReentrant {
         require(amount > 0, "Invalid amount");
         require(maker != address(0), "Invalid maker");
-        address listingAddress = ISSAgent(agentAddress).getListing(tokenA, tokenB);
         require(listingAddress != address(0), "Invalid listing");
-        address token = ISSListing(listingAddress).tokenB();
+        (bool isValid, ) = ISSAgent(agentAddress).isValidListing(listingAddress);
+        require(isValid, "Invalid listing");
+        address token = tokenA ? ISSListing(listingAddress).tokenA() : ISSListing(listingAddress).tokenB();
         uint256 normalizedAmount = normalizeAmount(token, amount);
 
         uint256 balanceBefore = IERC20(token).balanceOf(listingAddress);
@@ -265,11 +272,12 @@ contract SSCrossDriver is ReentrancyGuard, Ownable, CSDExecutionPartial {
         updateHistoricalInterest(normalizedAmount, 0, listingAddress);
     }
 
-    function pullMargin(address tokenA, address tokenB, uint256 amount) external nonReentrant {
+    function pullMargin(address listingAddress, bool tokenA, uint256 amount) external nonReentrant {
         require(amount > 0, "Invalid amount");
-        address listingAddress = ISSAgent(agentAddress).getListing(tokenA, tokenB);
         require(listingAddress != address(0), "Invalid listing");
-        address token = ISSListing(listingAddress).tokenB();
+        (bool isValid, ) = ISSAgent(agentAddress).isValidListing(listingAddress);
+        require(isValid, "Invalid listing");
+        address token = tokenA ? ISSListing(listingAddress).tokenA() : ISSListing(listingAddress).tokenB();
         uint256 normalizedAmount = normalizeAmount(token, amount);
         require(normalizedAmount <= makerTokenMargin[msg.sender][token], "Insufficient margin");
         makerTokenMargin[msg.sender][token] -= normalizedAmount;
@@ -292,14 +300,14 @@ contract SSCrossDriver is ReentrancyGuard, Ownable, CSDExecutionPartial {
         require(core1.positionId == positionId, "Invalid position");
         require(core2.status2 == 0, "Position closed");
         require(core1.makerAddress == msg.sender, "Not maker");
+        address tokenB = ISSListing(core1.listingAddress).tokenB();
         uint256 payout = prepCloseLong(positionId, core1.listingAddress);
         removePositionIndex(positionId, core1.positionType, core1.listingAddress);
-        address token = positionToken[positionId];
         ISSListing.PayoutUpdate[] memory updates = new ISSListing.PayoutUpdate[](1);
         updates[0] = ISSListing.PayoutUpdate({
             payoutType: core1.positionType,
             recipient: msg.sender,
-            required: payout
+            required: denormalizeAmount(tokenB, payout)
         });
         ISSListing(core1.listingAddress).ssUpdate(address(this), updates);
         emit PositionClosed(positionId, msg.sender, payout);
@@ -311,14 +319,14 @@ contract SSCrossDriver is ReentrancyGuard, Ownable, CSDExecutionPartial {
         require(core1.positionId == positionId, "Invalid position");
         require(core2.status2 == 0, "Position closed");
         require(core1.makerAddress == msg.sender, "Not maker");
+        address tokenA = ISSListing(core1.listingAddress).tokenA();
         uint256 payout = prepCloseShort(positionId, core1.listingAddress);
         removePositionIndex(positionId, core1.positionType, core1.listingAddress);
-        address token = positionToken[positionId];
         ISSListing.PayoutUpdate[] memory updates = new ISSListing.PayoutUpdate[](1);
         updates[0] = ISSListing.PayoutUpdate({
             payoutType: core1.positionType,
             recipient: msg.sender,
-            required: payout
+            required: denormalizeAmount(tokenA, payout)
         });
         ISSListing(core1.listingAddress).ssUpdate(address(this), updates);
         emit PositionClosed(positionId, msg.sender, payout);
@@ -390,7 +398,7 @@ contract SSCrossDriver is ReentrancyGuard, Ownable, CSDExecutionPartial {
             core1.listingAddress,
             core1.positionType,
             price1.priceAtEntry,
-            price1.priceAtEntry,
+            price1.maxEntryPrice,
             currentPrice
         );
 
@@ -405,8 +413,16 @@ contract SSCrossDriver is ReentrancyGuard, Ownable, CSDExecutionPartial {
             PositionCore1 storage core1 = positionCore1[positionId];
             PositionCore2 storage core2 = positionCore2[positionId];
             if (core1.makerAddress != maker || core1.positionType != 0 || core2.status2 != 0 || !core2.status1) continue;
+            address tokenB = ISSListing(core1.listingAddress).tokenB();
             uint256 payout = prepCloseLong(positionId, core1.listingAddress);
-            removePositionIndex(positionId, 0, core1.listingAddress);
+            removePositionIndex(positionId, core1.positionType, core1.listingAddress);
+            ISSListing.PayoutUpdate[] memory updates = new ISSListing.PayoutUpdate[](1);
+            updates[0] = ISSListing.PayoutUpdate({
+                payoutType: core1.positionType,
+                recipient: maker,
+                required: denormalizeAmount(tokenB, payout)
+            });
+            ISSListing(core1.listingAddress).ssUpdate(address(this), updates);
             emit PositionClosed(positionId, maker, payout);
             processed++;
         }
@@ -423,13 +439,13 @@ contract SSCrossDriver is ReentrancyGuard, Ownable, CSDExecutionPartial {
             if (core1.makerAddress != maker || core1.positionType != 0 || core2.status2 != 0 || core2.status1) continue;
             address token = positionToken[positionId];
             MarginParams1 storage margin1 = marginParams1[positionId];
-            makerTokenMargin[maker][token] -= (margin1.taxedMargin + margin1.excessMargin);
+            makerTokenMargin[msg.sender][token] -= (margin1.taxedMargin + margin1.excessMargin);
             if (makerTokenMargin[maker][token] == 0) {
                 _removeToken(maker, token);
             }
             core2.status2 = 1;
             exitParams[positionId].exitPrice = 0;
-            removePositionIndex(positionId, 0, core1.listingAddress);
+            removePositionIndex(positionId, core1.positionType, core1.listingAddress);
             processed++;
         }
         emit AllLongsCancelled(maker, processed);
@@ -442,9 +458,17 @@ contract SSCrossDriver is ReentrancyGuard, Ownable, CSDExecutionPartial {
             uint256 positionId = i + 1;
             PositionCore1 storage core1 = positionCore1[positionId];
             PositionCore2 storage core2 = positionCore2[positionId];
-            if (core1.makerAddress != maker || core1.positionType != 1 || core2.status2 != 0 || !core2.status1) continue;
+            if (core1.makerAddress != maker || core1.positionType != 1 || core2.status2 !=0 || !core2.status1) continue;
+            address tokenA = ISSListing(core1.listingAddress).tokenA();
             uint256 payout = prepCloseShort(positionId, core1.listingAddress);
             removePositionIndex(positionId, 1, core1.listingAddress);
+            ISSListing.PayoutUpdate[] memory updates = new ISSListing.PayoutUpdate[](1);
+            updates[0] = ISSListing.PayoutUpdate({
+                payoutType: core1.positionType,
+                recipient: maker,
+                required: denormalizeAmount(tokenA, payout)
+            });
+            ISSListing(core1.listingAddress).ssUpdate(address(this), updates);
             emit PositionClosed(positionId, maker, payout);
             processed++;
         }
@@ -532,6 +556,14 @@ contract SSCrossDriver is ReentrancyGuard, Ownable, CSDExecutionPartial {
         token = positionToken[positionId];
     }
 
+    function TotalActivePositionsView() external view returns (uint256 count) {
+        for (uint256 i = 1; i <= positionCount; i++) {
+            if (positionCore1[i].positionId == i && positionCore2[i].status1 && positionCore2[i].status2 == 0) {
+                count++;
+            }
+        }
+    }
+
     function queryInterest(uint256 startIndex, uint256 maxIterations) external view returns (
         uint256[] memory longIO,
         uint256[] memory shortIO,
@@ -574,11 +606,12 @@ contract SSCrossDriver is ReentrancyGuard, Ownable, CSDExecutionPartial {
         MarginParams1 memory margin1 = marginParams1[positionId];
         PriceParams1 memory price1 = priceParams1[positionId];
         PriceParams2 memory price2 = priceParams2[positionId];
-        address token = positionToken[positionId];
+        address token = core1.positionType == 0 ? ISSListing(core1.listingAddress).tokenB() : ISSListing(core1.listingAddress).tokenA();
         uint256 currentPrice = normalizePrice(token, ISSListing(core1.listingAddress).prices(core1.listingAddress));
         require(currentPrice > 0, "Invalid price");
 
-        uint256 totalMargin = makerTokenMargin[core1.makerAddress][core1.positionType == 0 ? ISSListing(core1.listingAddress).tokenB() : ISSListing(core1.listingAddress).tokenA()];
+        address marginToken = positionToken[positionId];
+        uint256 totalMargin = makerTokenMargin[core1.makerAddress][marginToken];
         marginRatio = totalMargin * DECIMAL_PRECISION / (margin1.initialMargin * uint256(price1.leverage));
 
         if (core1.positionType == 0) {
@@ -586,7 +619,7 @@ contract SSCrossDriver is ReentrancyGuard, Ownable, CSDExecutionPartial {
             estimatedProfitLoss = (margin1.taxedMargin + totalMargin + uint256(price1.leverage) * margin1.initialMargin) / currentPrice - marginParams2[positionId].initialLoan;
         } else {
             distanceToLiquidation = currentPrice < price2.liquidationPrice ? price2.liquidationPrice - currentPrice : 0;
-            estimatedProfitLoss = (price1.priceAtEntry - currentPrice) * margin1.initialMargin * uint256(price1.leverage) + (margin1.taxedMargin + totalMargin) * currentPrice;
+            estimatedProfitLoss = (price1.priceAtEntry - currentPrice) * margin1.initialMargin * uint256(price1.leverage) + (margin1.taxedMargin + totalMargin) * currentPrice / DECIMAL_PRECISION;
         }
     }
 
@@ -607,7 +640,7 @@ contract SSCrossDriver is ReentrancyGuard, Ownable, CSDExecutionPartial {
 
         for (uint8 positionType = 0; positionType <= 1 && index < count; positionType++) {
             uint256[] storage positionIds = positionsByType[positionType];
-            for (uint256 i = startIndex; i < positionIds.length && index < count; i++) {
+            for (uint256 i = 0; i < positionIds.length && index < count; i++) {
                 uint256 positionId = positionIds[i];
                 address maker = positionCore1[positionId].makerAddress;
                 if (maker != address(0) && makerTokenMargin[maker][token] > 0) {
@@ -635,7 +668,7 @@ contract SSCrossDriver is ReentrancyGuard, Ownable, CSDExecutionPartial {
         uint256[] memory tempAmounts = new uint256[](positionCount);
         uint256[] memory tempTimestamps = new uint256[](positionCount);
 
-        for (uint256 i = startIndex; i < positionCount && count < maxIterations; i++) {
+        for (uint256 i = 0; i < positionCount && count < maxIterations; i++) {
             uint256 positionId = i + 1;
             if (positionCore1[positionId].listingAddress == listingAddress && positionCore2[positionId].status2 == 0) {
                 tempAmounts[count] = openInterest[positionId].leverageAmount;
@@ -659,7 +692,7 @@ contract SSCrossDriver is ReentrancyGuard, Ownable, CSDExecutionPartial {
             PositionCore1 memory core1 = positionCore1[positionId];
             PositionCore2 memory core2 = positionCore2[positionId];
             if (core1.listingAddress != listingAddress || core2.status2 != 0) continue;
-            address token = positionToken[positionId];
+            address token = core1.positionType == 0 ? ISSListing(listingAddress).tokenB() : ISSListing(listingAddress).tokenA();
             uint256 currentPrice = normalizePrice(token, ISSListing(listingAddress).prices(listingAddress));
             uint256 liquidationPrice = priceParams2[positionId].liquidationPrice;
             uint256 threshold = liquidationPrice * 5 / 100;
