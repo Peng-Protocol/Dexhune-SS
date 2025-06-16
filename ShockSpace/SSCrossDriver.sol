@@ -3,6 +3,7 @@
 */
 
 // Recent Changes:
+// - 2025-06-15: Updated closeLongPosition and closeShortPosition to use normalized amounts in ssUpdate instead of denormalized amounts. Version incremented to 0.0.26.
 // - 2025-06-14: Added updateHistoricalInterest from CSDPositionPartial.sol to resolve DeclarationError at lines 505, 507, 509. Updated _setExitData to call updateHistoricalInterest. Version incremented to 0.0.25.
 // - 2025-06-14: Refactored _processPositionEntry into _initiateEntry, moving helpers (_prepareEntryContext, _validateEntry, _computeEntryParams, _storeEntryData) to CSDPositionPartial.sol to resolve stack too deep error at line 212:94, aligning with isolatedDriver's call tree. Removed _preparePosition. Version incremented to 0.0.24.
 // - 2025-06-14: Fixed ParserError in _setMarginData. Version incremented to 0.0.23.
@@ -293,6 +294,14 @@ contract SSCrossDriver is ReentrancyGuard, Ownable, CSDExecutionPartial {
         require(core1.makerAddress == msg.sender, "Not maker");
         uint256 payout = prepCloseLong(positionId, core1.listingAddress);
         removePositionIndex(positionId, core1.positionType, core1.listingAddress);
+        address token = positionToken[positionId];
+        ISSListing.PayoutUpdate[] memory updates = new ISSListing.PayoutUpdate[](1);
+        updates[0] = ISSListing.PayoutUpdate({
+            payoutType: core1.positionType,
+            recipient: msg.sender,
+            required: payout
+        });
+        ISSListing(core1.listingAddress).ssUpdate(address(this), updates);
         emit PositionClosed(positionId, msg.sender, payout);
     }
 
@@ -304,6 +313,14 @@ contract SSCrossDriver is ReentrancyGuard, Ownable, CSDExecutionPartial {
         require(core1.makerAddress == msg.sender, "Not maker");
         uint256 payout = prepCloseShort(positionId, core1.listingAddress);
         removePositionIndex(positionId, core1.positionType, core1.listingAddress);
+        address token = positionToken[positionId];
+        ISSListing.PayoutUpdate[] memory updates = new ISSListing.PayoutUpdate[](1);
+        updates[0] = ISSListing.PayoutUpdate({
+            payoutType: core1.positionType,
+            recipient: msg.sender,
+            required: payout
+        });
+        ISSListing(core1.listingAddress).ssUpdate(address(this), updates);
         emit PositionClosed(positionId, msg.sender, payout);
     }
 
