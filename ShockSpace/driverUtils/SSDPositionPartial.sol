@@ -1,10 +1,13 @@
 // SPDX-License-Identifier: BSD-3-Clause
 pragma solidity ^0.8.1;
 
-// Version 0.0.6:
-// - Modified updateLiquidityFees to manually transfer fees from user to liquidity address, verify actual amount, and return fee for deduction from initial margin.
-// - Normalized marginInitial in updateLiquidityFees for decimal consistency.
-// - Compatible with SSDUtilityPartial.sol v0.0.5, SSDExecutionPartial.sol v0.0.9, SSIsolatedDriver.sol v0.0.6.
+// Version 0.0.7:
+// - Modified validateLeverageLimit to use loanInitial instead of leverageAmount and check yLiquid for longs, xLiquid for shorts.
+// - Retained limitPercent formula (101 - leverageVal) as per requirement.
+// - Compatible with SSDUtilityPartial.sol v0.0.5, SSDExecutionPartial.sol v0.0.27, SSIsolatedDriver.sol v0.0.11.
+// - v0.0.6:
+//   - Modified updateLiquidityFees to manually transfer fees from user to liquidity address, verify actual amount, and return fee for deduction from initial margin.
+//   - Normalized marginInitial in updateLiquidityFees for decimal consistency.
 // - v0.0.5:
 //   - Split finalizePosition into modular functions: updateHistoricalInterest, updateLiquidityFees.
 //   - Adjusted prepareEnterLong/prepareEnterShort to return only positionId, minPrice, maxPrice.
@@ -208,9 +211,10 @@ contract SSDPositionPartial is SSDUtilityPartial {
         (uint256 xLiquid, uint256 yLiquid,,) = ISSLiquidityTemplate(liquidityAddress).liquidityDetailsView();
         uint256 limitPercent = 101 - leverageVal;
         uint256 limit = positionType == 0
-            ? (xLiquid * limitPercent) / 100
-            : (yLiquid * limitPercent) / 100;
-        require(leverageAmount <= limit, "Leverage exceeds liquidity limit");
+            ? (yLiquid * limitPercent) / 100
+            : (xLiquid * limitPercent) / 100;
+        LeverageParams memory leverageParams = leverageParams[positionIdCounter - 1];
+        require(leverageParams.loanInitial <= limit, "Loan exceeds liquidity limit");
     }
 
     // Validate stop loss and take profit
