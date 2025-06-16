@@ -3,6 +3,7 @@
 */
 
 // Recent Changes:
+// - 2025-06-16: Updated _checkLiquidityLimitLong and _checkLiquidityLimitShort to use initialLoan instead of leverageAmount for liquidity checks, aligning with payout tokens (tokenB for long, tokenA for short). Reordered prepEnterLong and prepEnterShort to compute initialLoan before liquidity check. Version incremented to 0.0.27.
 // - 2025-06-16: Clarified margin deduction in prepCloseShort for tokenB. Version remains 0.0.26.
 // - 2025-06-16: Renamed parseEntryPrice to _parseEntryPriceInternal to resolve duplicate declaration with SSCrossDriver.sol. Corrected prepEnterShort return type to PrepPosition memory, ensuring no duplicates. Reordered functions to declare before calls. Version incremented to 0.0.26.
 // - 2025-06-16: Updated prepCloseLong, prepCloseShort, _computePayoutLong, _computePayoutShort to use tokenB for long payouts and tokenA for short payouts. Version incremented to 0.0.25.
@@ -116,27 +117,27 @@ contract CSDPositionPartial is CSDUtilityPartial {
 
     function _checkLiquidityLimitLong(
         address listingAddress,
-        uint256 leverageAmount,
+        uint256 initialLoan,
         uint8 leverage
     ) internal view returns (address tokenB) {
         address liquidityAddr = ISSListing(listingAddress).liquidityAddressView(listingAddress);
-        (uint256 xLiquid,,,) = ISSLiquidityTemplate(liquidityAddr).liquidityDetailsView(address(this));
+        (, uint256 yLiquid,,) = ISSLiquidityTemplate(liquidityAddr).liquidityDetailsView(address(this));
         uint256 limitPercent = 101 - uint256(leverage);
-        uint256 limit = xLiquid * limitPercent / 100;
-        require(leverageAmount <= limit, "Leverage amount exceeds limit");
+        uint256 limit = yLiquid * limitPercent / 100;
+        require(initialLoan <= limit, "Initial loan exceeds limit");
         return ISSListing(listingAddress).tokenB();
     }
 
     function _checkLiquidityLimitShort(
         address listingAddress,
-        uint256 leverageAmount,
+        uint256 initialLoan,
         uint8 leverage
     ) internal view returns (address tokenA) {
         address liquidityAddr = ISSListing(listingAddress).liquidityAddressView(listingAddress);
-        (, uint256 yLiquid,,) = ISSLiquidityTemplate(liquidityAddr).liquidityDetailsView(address(this));
+        (uint256 xLiquid,,,) = ISSLiquidityTemplate(liquidityAddr).liquidityDetailsView(address(this));
         uint256 limitPercent = 101 - uint256(leverage);
-        uint256 limit = yLiquid * limitPercent / 100;
-        require(leverageAmount <= limit, "Leverage amount exceeds limit");
+        uint256 limit = xLiquid * limitPercent / 100;
+        require(initialLoan <= limit, "Initial loan exceeds limit");
         return ISSListing(listingAddress).tokenA();
     }
 
@@ -374,7 +375,14 @@ contract CSDPositionPartial is CSDUtilityPartial {
         params.fee = computeFee(context.initialMargin, context.leverage);
         params.taxedMargin = normalizeAmount(context.token, context.initialMargin) - params.fee;
         params.leverageAmount = normalizeAmount(context.token, context.initialMargin) * uint256(context.leverage);
-        address tokenA = _checkLiquidityLimitLong(context.listingAddress, params.leverageAmount, context.leverage);
+        address tokenA = ISSListing(context.listingAddress).tokenA();
+        (params.initialLoan, params.liquidationPrice) = _computeLoanAndLiquidationLong(
+            params.leverageAmount,
+            minPrice,
+            context.maker,
+            tokenA
+        );
+        address tokenB = _checkLiquidityLimitLong(context.listingAddress, params.initialLoan, context.leverage);
         _transferMarginToListing(
             tokenA,
             context.listingAddress,
@@ -383,12 +391,6 @@ contract CSDPositionPartial is CSDUtilityPartial {
             normalizeAmount(context.token, context.excessMargin),
             params.fee,
             0
-        );
-        (params.initialLoan, params.liquidationPrice) = _computeLoanAndLiquidationLong(
-            params.leverageAmount,
-            minPrice,
-            context.maker,
-            tokenA
         );
         return params;
     }
@@ -405,7 +407,14 @@ contract CSDPositionPartial is CSDUtilityPartial {
         params.fee = computeFee(context.initialMargin, context.leverage);
         params.taxedMargin = normalizeAmount(context.token, context.initialMargin) - params.fee;
         params.leverageAmount = normalizeAmount(context.token, context.initialMargin) * uint256(context.leverage);
-        address tokenB = _checkLiquidityLimitShort(context.listingAddress, params.leverageAmount, context.leverage);
+        address tokenB = ISSListing(context.listingAddress).tokenB();
+        (params.initialLoan, params.liquidationPrice) = _computeLoanAndLiquidationShort(
+            params.leverageAmount,
+            minPrice,
+            context.maker,
+            tokenB
+        );
+        address tokenA = _checkLiquidityLimitShort(context.listingAddress, params.initialLoan, context.leverage);
         _transferMarginToListing(
             tokenB,
             context.listingAddress,
@@ -414,12 +423,6 @@ contract CSDPositionPartial is CSDUtilityPartial {
             normalizeAmount(context.token, context.excessMargin),
             params.fee,
             1
-        );
-        (params.initialLoan, params.liquidationPrice) = _computeLoanAndLiquidationShort(
-            params.leverageAmount,
-            minPrice,
-            context.maker,
-            tokenB
         );
         return params;
     }
