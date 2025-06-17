@@ -1,9 +1,16 @@
 // SPDX-License-Identifier: BSD-3-Clause
 pragma solidity ^0.8.1;
 
-// Version 0.0.27:
-// - Updated updatePositionStatusHelper to move position IDs from pendingPositions to positionsByType when status1 is set to true.
-// - Compatible with SSDUtilityPartial.sol v0.0.5, SSDPositionPartial.sol v0.0.6, SSIsolatedDriver.sol v0.0.10.
+// Version 0.0.30:
+// - Added updateSLInternal and updateTPInternal to update stop loss and take profit prices in riskParams.
+// - Compatible with SSDUtilityPartial.sol v0.0.5, SSDPositionPartial.sol v0.0.7, SSIsolatedDriver.sol v0.0.13.
+// - v0.0.29:
+//   - Fixed ParserError in processActiveActionsInternal by correcting parameter syntax from 'ExecutionContextBasepillar: ExecutionContextBase' to 'ExecutionContextBase memory contextBase'.
+// - v0.0.28:
+//   - Refactored addExcessMarginInternal into modular helper functions: validateExcessMargin, transferExcessMargin, updateMarginAndInterest, updateLiquidationPrice.
+//   - Added updateLiquidationPrice to recalculate priceLiquidation after updating marginExcess.
+// - v0.0.27:
+//   - Updated updatePositionStatusHelper to move position IDs from pendingPositions to positionsByType when status1 is set to true.
 // - v0.0.26:
 //   - Fixed DeclarationError by replacing PositionActionType with PositionAction in finalizeActions.
 //   - Fixed SyntaxError by adding internal visibility to processPendingActions and restoring correct implementation.
@@ -34,7 +41,7 @@ contract SSDExecutionPartial is SSDPositionPartial {
     event AllShortsCancelled(address indexed user, uint256 count);
     event AllLongsClosed(address indexed user, uint256 count);
     event AllLongsCancelled(address indexed user, uint256 count);
-    event PositionsExecuted(address indexed listingAddress, uint256 resultCount);
+    event PositionsExecuted(address indexed user, uint256 resultCount);
 
     // Internal struct for close params
     struct CloseParams {
@@ -270,7 +277,7 @@ contract SSDExecutionPartial is SSDPositionPartial {
         uint8 positionType = coreBase.positionType;
         address listingAddress = coreBase.listingAddress;
         uint256[] storage pending = pendingPositions[listingAddress][positionType];
-        for (uint256 i = 0; i < pending.length; i++) {
+        for (uint256 i = uint256(0); i < pending.length; i++) {
             if (pending[i] == positionId) {
                 pending[i] = pending[pending.length - 1];
                 pending.pop();
@@ -326,18 +333,6 @@ contract SSDExecutionPartial is SSDPositionPartial {
             : computeShortPayout(closeMargin, priceParamsLocal, marginParamsLocal, leverageParamsLocal, close.currentPrice);
     }
 
-    // Helper: Denormalize payout
-    function denormalizePayout(uint256 payout, uint8 decimals) internal pure returns (uint256) {
-        if (decimals != uint8(18)) {
-            if (decimals < uint8(18)) {
-                return payout / (10 ** (uint256(uint8(18)) - uint256(decimals)));
-            } else {
-                return payout * (10 ** (uint256(decimals) - uint256(uint8(18))));
-            }
-        }
-        return payout;
-    }
-
     // Helper: Remove position from indexes
     function removePositionIndex(
         uint256 positionId,
@@ -387,6 +382,117 @@ contract SSDExecutionPartial is SSDPositionPartial {
         shortIOByHeight[historicalInterestHeight] -= positionType == uint8(1) ? io : uint256(0);
         removePositionIndex(closeBase.positionId, positionType, closeBase.listingAddress, closeBase.makerAddress);
         historicalInterestHeight++;
+    }
+
+    // Helper: Validate excess margin
+    function validateExcessMargin(
+        uint256 positionId,
+        uint256 normalizedAmount
+    ) internal view {
+        // Validates that the added margin does not exceed the leverage amount
+        require(normalizedAmount <= leverageParams[positionId].leverageAmount, "Excess margin exceeds leverage");
+    }
+
+    // Helper: Transfer excess margin to listing
+    function transferExcessMargin(
+        uint256 positionId,
+        uint256 amount,
+        address tokenAddr,
+        address listingAddress
+    ) internal returns (uint256) {
+        // Transfers margin and verifies the actual amount transferred
+        uint256 balanceBefore = IERC20(tokenAddr).balanceOf(listingAddress);
+        IERC20(tokenAddr).transferFrom(msg.sender, listingAddress, amount);
+        uint256 actualAmount = checkTransferAmount(tokenAddr, listingAddress, amount, balanceBefore);
+        return actualAmount;
+    }
+
+    // Helper: Update margin and historical interest
+    function updateMarginAndInterest(
+        uint256 positionId,
+        uint256 actualNormalized,
+        uint8 positionType,
+        address listingAddress
+    ) internal {
+        // Updates marginExcess and historical interest
+        marginParams[positionId].marginExcess += actualNormalized;
+        transferMarginToListing(listingAddress, actualNormalized, positionType);
+        updateHistoricalInterest(
+            historicalInterestHeight,
+            positionType == uint8(0) ? actualNormalized : uint256(0),
+            positionType == uint8(1) ? actualNormalized : uint256(0),
+            block.timestamp
+        );
+    }
+
+    // Helper: Update liquidation price
+    function updateLiquidationPrice(
+        uint256 positionId,
+        uint8 positionType
+    ) internal {
+        // Recalculates and updates priceLiquidation based on updated marginExcess
+        MarginParams memory marginParamsLocal = marginParams[positionId];
+        LeverageParams memory leverageParamsLocal = leverageParams[positionId];
+        PriceParams memory priceParamsLocal = priceParams[positionId];
+        (, , RiskParams memory calcRiskParams) = computeParamsHelper(
+            marginParamsLocal.marginInitial,
+            marginParamsLocal.marginExcess,
+            leverageParamsLocal.leverageVal,
+            priceParamsLocal.priceMin,
+            positionType
+        );
+        riskParams[positionId].priceLiquidation = calcRiskParams.priceLiquidation;
+    }
+
+    // Helper: Update stop loss price
+    function updateSLInternal(
+        uint256 positionId,
+        uint256 newStopLossPrice
+    ) internal {
+        // Updates the stop loss price in riskParams for the given position
+        require(positionId > 0, "Invalid position ID");
+        require(positionCoreStatus[positionId].status2 == uint8(0), "Position not open");
+        riskParams[positionId].priceStopLoss = newStopLossPrice;
+    }
+
+    // Helper: Update take profit price
+    function updateTPInternal(
+        uint256 positionId,
+        uint256 newTakeProfitPrice
+    ) internal {
+        // Updates the take profit price in riskParams for the given position
+        require(positionId > 0, "Invalid position ID");
+        require(positionCoreStatus[positionId].status2 == uint8(0), "Position not open");
+        riskParams[positionId].priceTakeProfit = newTakeProfitPrice;
+    }
+
+    // Helper: Check transfer amount
+    function checkTransferAmount(
+        address tokenAddr,
+        address to,
+        uint256 expectedAmount,
+        uint256 balanceBefore
+    ) internal view virtual returns (uint256) {
+        uint256 balanceAfter = IERC20(tokenAddr).balanceOf(to);
+        uint256 actualAmount = balanceAfter - balanceBefore;
+        require(actualAmount >= expectedAmount, "Transfer amount mismatch");
+        return actualAmount;
+    }
+
+    // Add excess margin
+    function addExcessMarginInternal(
+        uint256 positionId,
+        uint256 amount,
+        address tokenAddr,
+        address listingAddress,
+        uint8 positionType,
+        uint256 normalizedAmount
+    ) internal {
+        validateExcessMargin(positionId, normalizedAmount);
+        uint256 actualAmount = transferExcessMargin(positionId, amount, tokenAddr, listingAddress);
+        uint256 actualNormalized = normalizeAmount(tokenAddr, actualAmount);
+        updateMarginAndInterest(positionId, actualNormalized, positionType, listingAddress);
+        updateLiquidationPrice(positionId, positionType);
     }
 
     // Internal Helper: Close long position
@@ -446,59 +552,6 @@ contract SSDExecutionPartial is SSDPositionPartial {
         longIOByHeight[historicalInterestHeight] -= positionType == uint8(0) ? io : uint256(0);
         shortIOByHeight[historicalInterestHeight] -= positionType == uint8(1) ? io : uint256(0);
         historicalInterestHeight++;
-    }
-
-    // Helper: Check transfer amount
-    function checkTransferAmount(
-        address tokenAddr,
-        address to,
-        uint256 expectedAmount,
-        uint256 balanceBefore
-    ) internal view virtual returns (uint256) {
-        uint256 balanceAfter = IERC20(tokenAddr).balanceOf(to);
-        uint256 actualAmount = balanceAfter - balanceBefore;
-        require(actualAmount >= expectedAmount, "Transfer amount mismatch");
-        return actualAmount;
-    }
-
-    // Add excess margin
-    function addExcessMarginInternal(
-        uint256 positionId,
-        uint256 amount,
-        address tokenAddr,
-        address listingAddress,
-        uint8 positionType,
-        uint256 normalizedAmount
-    ) internal {
-        require(normalizedAmount <= leverageParams[positionId].leverageAmount, "Excess margin exceeds leverage");
-        uint256 balanceBefore = IERC20(tokenAddr).balanceOf(listingAddress);
-        IERC20(tokenAddr).transferFrom(msg.sender, listingAddress, amount);
-        uint256 actualAmount = checkTransferAmount(tokenAddr, listingAddress, amount, balanceBefore);
-        uint256 actualNormalized = normalizeAmount(tokenAddr, actualAmount);
-        marginParams[positionId].marginExcess += actualNormalized;
-        transferMarginToListing(listingAddress, actualNormalized, positionType);
-        updateHistoricalInterest(
-            historicalInterestHeight,
-            positionType == uint8(0) ? actualNormalized : uint256(0),
-            positionType == uint8(1) ? actualNormalized : uint256(0),
-            block.timestamp
-        );
-    }
-
-    // Update stop loss
-    function updateSLInternal(
-        uint256 positionId,
-        uint256 newStopLossPrice
-    ) internal {
-        riskParams[positionId].priceStopLoss = newStopLossPrice;
-    }
-
-    // Update take profit
-    function updateTPInternal(
-        uint256 positionId,
-        uint256 newTakeProfitPrice
-    ) internal {
-        riskParams[positionId].priceTakeProfit = newTakeProfitPrice;
     }
 
     // Close all short
