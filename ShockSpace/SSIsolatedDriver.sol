@@ -1,11 +1,22 @@
 // SPDX-License-Identifier: BSD-3-Clause
 pragma solidity ^0.8.1;
 
-// Version 0.0.11:
-// - Removed tokenAddr parameter from enterLong and enterShort functions.
-// - Modified prepareEntryContext to compute tokenAddr internally using ISSListing.tokenA() for longs and ISSListing.tokenB() for shorts.
-// - Retained fixes from v0.0.10 (updateEntryParamsStore), v0.0.9 (closeShortPosition), v0.0.8 (updateEntryParams), v0.0.7 (finalizeEntry).
-// - Compatible with SSDUtilityPartial.sol v0.0.5, SSDPositionPartial.sol v0.0.7, SSDExecutionPartial.sol v0.0.27.
+// Version 0.0.13:
+// - Updated compatibility with SSDExecutionPartial.sol v0.0.30 to support new updateSLInternal and updateTPInternal functions.
+// - Compatible with SSDUtilityPartial.sol v0.0.5, SSDPositionPartial.sol v0.0.7, SSDExecutionPartial.sol v0.0.30.
+// - v0.0.12:
+//   - Updated compatibility with SSDExecutionPartial.sol v0.0.28 to support addExcessMarginInternal changes.
+// - v0.0.11:
+//   - Removed tokenAddr parameter from enterLong and enterShort functions.
+//   - Modified prepareEntryContext to compute tokenAddr internally using ISSListing.tokenA() for longs and ISSListing.tokenB() for shorts.
+// - v0.0.10:
+//   - Fixed updateEntryParamsStore.
+// - v0.0.9:
+//   - Fixed closeShortPosition.
+// - v0.0.8:
+//   - Fixed updateEntryParams.
+// - v0.0.7:
+//   - Fixed finalizeEntry.
 
 import "./driverUtils/SSDExecutionPartial.sol";
 import "./imports/ReentrancyGuard.sol";
