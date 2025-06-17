@@ -3,6 +3,9 @@
 */
 
 // Recent Changes:
+// - 2025-06-17: Refactored addExcessMargin and pullMargin to resolve stack too deep error by extracting internal helpers (_transferMarginToListing, _updateListingMargin, _updatePositionLiquidationPrices, _updateMakerMargin, _validateAndNormalizePullMargin, _executeMarginPayout, _reduceMakerMargin). Version incremented to 0.0.36.
+// - 2025-06-17: Fixed TypeError by passing core1.positionType instead of token to _updateLiquidationPrices in addExcessMargin and pullMargin. Version incremented to 0.0.35.
+// - 2025-06-17: Updated addExcessMargin and pullMargin to call _updateLiquidationPrices for each relevant position after/before margin updates. Removed maxIterations from liquidation price updates. Version incremented to 0.0.34.
 // - 2025-06-16: Updated addExcessMargin and pullMargin to use ISSAgent.isValidListing for listing validation instead of ISSAgent.getListing. Version incremented to 0.0.33.
 // - 2025-06-16: Updated pullMargin to take listingAddress and tokenA (bool) instead of tokenA and tokenB, using tokenA to select tokenA or tokenB from listingAddress. Added listing validation in addExcessMargin and pullMargin using ISSAgent.getListing. Version incremented to 0.0.32.
 // - 2025-06-16: Updated addExcessMargin to take listingAddress and tokenA (bool) instead of tokenA and tokenB, using tokenA to select tokenA or tokenB from listingAddress. Version incremented to 0.0.31.
@@ -34,6 +37,84 @@ contract SSCrossDriver is ReentrancyGuard, Ownable, CSDExecutionPartial {
     mapping(uint256 => uint256) public longIOByHeight;
     mapping(uint256 => uint256) public shortIOByHeight;
     mapping(uint256 => uint256) public historicalInterestTimestamps;
+
+    // Transfers margin to listing contract and verifies balance
+    function _transferMarginToListing(address token, uint256 amount, address listingAddress) internal returns (uint256 normalizedAmount) {
+        normalizedAmount = normalizeAmount(token, amount);
+        uint256 balanceBefore = IERC20(token).balanceOf(listingAddress);
+        bool success = IERC20(token).transferFrom(msg.sender, listingAddress, amount);
+        require(success, "TransferFrom failed");
+        uint256 balanceAfter = IERC20(token).balanceOf(listingAddress);
+        require(balanceAfter - balanceBefore == amount, "Balance update failed");
+    }
+
+    // Updates listing contract with new margin
+    function _updateListingMargin(address listingAddress, uint256 amount) internal {
+        ISSListing.UpdateType[] memory updates = new ISSListing.UpdateType[](1);
+        updates[0] = ISSListing.UpdateType({
+            updateType: 0,
+            index: 0,
+            value: amount,
+            addr: address(0),
+            recipient: address(0)
+        });
+        ISSListing(listingAddress).update(address(this), updates);
+    }
+
+    // Updates liquidation prices for positions matching maker, token, and listing
+    function _updatePositionLiquidationPrices(address maker, address token, address listingAddress) internal {
+        for (uint256 i = 1; i <= positionCount; i++) {
+            PositionCore1 storage core1 = positionCore1[i];
+            PositionCore2 storage core2 = positionCore2[i];
+            if (
+                core1.positionId == i &&
+                core2.status2 == 0 &&
+                core1.makerAddress == maker &&
+                positionToken[i] == token &&
+                core1.listingAddress == listingAddress
+            ) {
+                _updateLiquidationPrices(i, maker, core1.positionType, listingAddress);
+            }
+        }
+    }
+
+    // Updates maker's margin balance and token list
+    function _updateMakerMargin(address maker, address token, uint256 normalizedAmount) internal {
+        makerTokenMargin[maker][token] += normalizedAmount;
+        if (makerTokenMargin[maker][token] == normalizedAmount) {
+            makerMarginTokens[maker].push(token);
+        }
+    }
+
+    // Validates and normalizes pull margin request
+    function _validateAndNormalizePullMargin(address listingAddress, bool tokenA, uint256 amount) internal view returns (address token, uint256 normalizedAmount) {
+        require(amount > 0, "Invalid amount");
+        require(listingAddress != address(0), "Invalid listing");
+        (bool isValid, ) = ISSAgent(agentAddress).isValidListing(listingAddress);
+        require(isValid, "Invalid listing");
+        token = tokenA ? ISSListing(listingAddress).tokenA() : ISSListing(listingAddress).tokenB();
+        normalizedAmount = normalizeAmount(token, amount);
+        require(normalizedAmount <= makerTokenMargin[msg.sender][token], "Insufficient margin");
+    }
+
+    // Executes payout for margin withdrawal
+    function _executeMarginPayout(address listingAddress, address recipient, uint256 amount) internal {
+        ISSListing.PayoutUpdate[] memory updates = new ISSListing.PayoutUpdate[](1);
+        updates[0] = ISSListing.PayoutUpdate({
+            payoutType: 0,
+            recipient: recipient,
+            required: amount
+        });
+        ISSListing(listingAddress).ssUpdate(address(this), updates);
+    }
+
+    // Reduces maker's margin balance and updates token list
+    function _reduceMakerMargin(address maker, address token, uint256 normalizedAmount) internal {
+        makerTokenMargin[maker][token] -= normalizedAmount;
+        if (makerTokenMargin[maker][token] == 0) {
+            _removeToken(maker, token);
+        }
+    }
 
     function normalizePrice(address token, uint256 price) internal view override returns (uint256) {
         uint8 decimals = IERC20(token).decimals();
@@ -241,56 +322,44 @@ contract SSCrossDriver is ReentrancyGuard, Ownable, CSDExecutionPartial {
     }
 
     function addExcessMargin(address listingAddress, bool tokenA, uint256 amount, address maker) external nonReentrant {
+        // Validate input parameters
         require(amount > 0, "Invalid amount");
         require(maker != address(0), "Invalid maker");
         require(listingAddress != address(0), "Invalid listing");
         (bool isValid, ) = ISSAgent(agentAddress).isValidListing(listingAddress);
         require(isValid, "Invalid listing");
+
+        // Determine token and transfer margin
         address token = tokenA ? ISSListing(listingAddress).tokenA() : ISSListing(listingAddress).tokenB();
-        uint256 normalizedAmount = normalizeAmount(token, amount);
+        uint256 normalizedAmount = _transferMarginToListing(token, amount, listingAddress);
 
-        uint256 balanceBefore = IERC20(token).balanceOf(listingAddress);
-        bool success = IERC20(token).transferFrom(msg.sender, listingAddress, amount);
-        require(success, "TransferFrom failed");
-        uint256 balanceAfter = IERC20(token).balanceOf(listingAddress);
-        require(balanceAfter - balanceBefore == amount, "Balance update failed");
+        // Update listing contract
+        _updateListingMargin(listingAddress, amount);
 
-        ISSListing.UpdateType[] memory updates = new ISSListing.UpdateType[](1);
-        updates[0] = ISSListing.UpdateType({
-            updateType: 0,
-            index: 0,
-            value: amount,
-            addr: address(0),
-            recipient: address(0)
-        });
-        ISSListing(listingAddress).update(address(this), updates);
+        // Update maker's margin
+        _updateMakerMargin(maker, token, normalizedAmount);
 
-        makerTokenMargin[maker][token] += normalizedAmount;
-        if (makerTokenMargin[maker][token] == normalizedAmount) {
-            makerMarginTokens[maker].push(token);
-        }
+        // Update liquidation prices
+        _updatePositionLiquidationPrices(maker, token, listingAddress);
+
+        // Record historical interest
         updateHistoricalInterest(normalizedAmount, 0, listingAddress);
     }
 
     function pullMargin(address listingAddress, bool tokenA, uint256 amount) external nonReentrant {
-        require(amount > 0, "Invalid amount");
-        require(listingAddress != address(0), "Invalid listing");
-        (bool isValid, ) = ISSAgent(agentAddress).isValidListing(listingAddress);
-        require(isValid, "Invalid listing");
-        address token = tokenA ? ISSListing(listingAddress).tokenA() : ISSListing(listingAddress).tokenB();
-        uint256 normalizedAmount = normalizeAmount(token, amount);
-        require(normalizedAmount <= makerTokenMargin[msg.sender][token], "Insufficient margin");
-        makerTokenMargin[msg.sender][token] -= normalizedAmount;
-        if (makerTokenMargin[msg.sender][token] == 0) {
-            _removeToken(msg.sender, token);
-        }
-        ISSListing.PayoutUpdate[] memory updates = new ISSListing.PayoutUpdate[](1);
-        updates[0] = ISSListing.PayoutUpdate({
-            payoutType: 0,
-            recipient: msg.sender,
-            required: amount
-        });
-        ISSListing(listingAddress).ssUpdate(address(this), updates);
+        // Validate and normalize pull request
+        (address token, uint256 normalizedAmount) = _validateAndNormalizePullMargin(listingAddress, tokenA, amount);
+
+        // Update liquidation prices
+        _updatePositionLiquidationPrices(msg.sender, token, listingAddress);
+
+        // Reduce maker's margin
+        _reduceMakerMargin(msg.sender, token, normalizedAmount);
+
+        // Execute payout
+        _executeMarginPayout(listingAddress, msg.sender, amount);
+
+        // Record historical interest
         updateHistoricalInterest(normalizedAmount, 1, listingAddress);
     }
 
@@ -693,7 +762,7 @@ contract SSCrossDriver is ReentrancyGuard, Ownable, CSDExecutionPartial {
             PositionCore2 memory core2 = positionCore2[positionId];
             if (core1.listingAddress != listingAddress || core2.status2 != 0) continue;
             address token = core1.positionType == 0 ? ISSListing(listingAddress).tokenB() : ISSListing(listingAddress).tokenA();
-            uint256 currentPrice = normalizePrice(token, ISSListing(listingAddress).prices(listingAddress));
+            uint256 currentPrice = normalizePrice(token, ISSListing(listingAddress).prices(token));
             uint256 liquidationPrice = priceParams2[positionId].liquidationPrice;
             uint256 threshold = liquidationPrice * 5 / 100;
 
