@@ -3,6 +3,7 @@
 */
 
 // Recent Changes:
+// - 2025-06-17: Reordered prepEnterLong and prepEnterShort to update makerTokenMargin before liquidation price calculation, ensuring new margin is included. Moved _transferMarginToListing after liquidation price calculation. Added inline comments. Version incremented to 0.0.28.
 // - 2025-06-16: Updated _checkLiquidityLimitLong and _checkLiquidityLimitShort to use initialLoan instead of leverageAmount for liquidity checks, aligning with payout tokens (tokenB for long, tokenA for short). Reordered prepEnterLong and prepEnterShort to compute initialLoan before liquidity check. Version incremented to 0.0.27.
 // - 2025-06-16: Clarified margin deduction in prepCloseShort for tokenB. Version remains 0.0.26.
 // - 2025-06-16: Renamed parseEntryPrice to _parseEntryPriceInternal to resolve duplicate declaration with SSCrossDriver.sol. Corrected prepEnterShort return type to PrepPosition memory, ensuring no duplicates. Reordered functions to declare before calls. Version incremented to 0.0.26.
@@ -109,10 +110,7 @@ contract CSDPositionPartial is CSDUtilityPartial {
             });
             ISSListing(listingAddress).update(address(this), updates);
         }
-        makerTokenMargin[maker][token] += transferAmount;
-        if (makerTokenMargin[maker][token] == transferAmount) {
-            makerMarginTokens[maker].push(token);
-        }
+        // Margin already updated before liquidation price calculation
     }
 
     function _checkLiquidityLimitLong(
@@ -366,23 +364,40 @@ contract CSDPositionPartial is CSDUtilityPartial {
     function prepEnterLong(
         EntryContext memory context
     ) internal virtual returns (PrepPosition memory params) {
+        // Get current price and validate entry price range
         (uint256 currentPrice, uint256 minPrice, uint256 maxPrice,) = _parseEntryPriceInternal(
             normalizePrice(context.token, context.minEntryPrice),
             normalizePrice(context.token, context.maxEntryPrice),
             context.listingAddress
         );
 
+        // Calculate fee and taxed margin
         params.fee = computeFee(context.initialMargin, context.leverage);
         params.taxedMargin = normalizeAmount(context.token, context.initialMargin) - params.fee;
+
+        // Calculate leverage amount
         params.leverageAmount = normalizeAmount(context.token, context.initialMargin) * uint256(context.leverage);
+
+        // Update maker margin before liquidation price calculation
         address tokenA = ISSListing(context.listingAddress).tokenA();
+        uint256 transferAmount = params.taxedMargin + normalizeAmount(context.token, context.excessMargin);
+        makerTokenMargin[context.maker][tokenA] += transferAmount;
+        if (makerTokenMargin[context.maker][tokenA] == transferAmount) {
+            makerMarginTokens[context.maker].push(tokenA);
+        }
+
+        // Calculate initial loan and liquidation price with updated margin
         (params.initialLoan, params.liquidationPrice) = _computeLoanAndLiquidationLong(
             params.leverageAmount,
             minPrice,
             context.maker,
             tokenA
         );
+
+        // Check liquidity limit for long position
         address tokenB = _checkLiquidityLimitLong(context.listingAddress, params.initialLoan, context.leverage);
+
+        // Transfer margin to listing contract after calculations
         _transferMarginToListing(
             tokenA,
             context.listingAddress,
@@ -392,29 +407,47 @@ contract CSDPositionPartial is CSDUtilityPartial {
             params.fee,
             0
         );
+
         return params;
     }
 
     function prepEnterShort(
         EntryContext memory context
     ) internal virtual returns (PrepPosition memory params) {
+        // Get current price and validate entry price range
         (uint256 currentPrice, uint256 minPrice, uint256 maxPrice,) = _parseEntryPriceInternal(
             normalizePrice(context.token, context.minEntryPrice),
             normalizePrice(context.token, context.maxEntryPrice),
             context.listingAddress
         );
 
+        // Calculate fee and taxed margin
         params.fee = computeFee(context.initialMargin, context.leverage);
         params.taxedMargin = normalizeAmount(context.token, context.initialMargin) - params.fee;
+
+        // Calculate leverage amount
         params.leverageAmount = normalizeAmount(context.token, context.initialMargin) * uint256(context.leverage);
+
+        // Update maker margin before liquidation price calculation
         address tokenB = ISSListing(context.listingAddress).tokenB();
+        uint256 transferAmount = params.taxedMargin + normalizeAmount(context.token, context.excessMargin);
+        makerTokenMargin[context.maker][tokenB] += transferAmount;
+        if (makerTokenMargin[context.maker][tokenB] == transferAmount) {
+            makerMarginTokens[context.maker].push(tokenB);
+        }
+
+        // Calculate initial loan and liquidation price with updated margin
         (params.initialLoan, params.liquidationPrice) = _computeLoanAndLiquidationShort(
             params.leverageAmount,
             minPrice,
             context.maker,
             tokenB
         );
+
+        // Check liquidity limit for short position
         address tokenA = _checkLiquidityLimitShort(context.listingAddress, params.initialLoan, context.leverage);
+
+        // Transfer margin to listing contract after calculations
         _transferMarginToListing(
             tokenB,
             context.listingAddress,
@@ -424,6 +457,7 @@ contract CSDPositionPartial is CSDUtilityPartial {
             params.fee,
             1
         );
+
         return params;
     }
 
