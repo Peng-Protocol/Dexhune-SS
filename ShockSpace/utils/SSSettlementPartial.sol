@@ -1,8 +1,9 @@
 // SPDX-License-Identifier: BSD-3-Clause
 pragma solidity ^0.8.1;
 
-// Version: 0.0.37 (Updated)
+// Version: 0.0.38 (Updated)
 // Changes:
+// - v0.0.38: Fixed token assignment in _prepPayoutContext to align with expected behavior: long payouts (isLong = true) use tokenB (tokenY) and decimalsB (decimalY), short payouts (isLong = false) use tokenA (tokenX) and decimalsA (decimalX). Swapped tokenOut and tokenDecimals assignments to correct payout token usage (lines 38-45).
 // - v0.0.37: Removed interface declarations for ISSListingTemplate, ISSLiquidityTemplate, and IERC20, as they are now declared in SSMainPartial.sol. Fixed DeclarationError in executeLongPayout by correcting return type to PayoutUpdate[] from PayoutPathUpdate[] to match struct in SSMainPartial.sol.
 // - v0.0.36: Removed post-transfer balance checks in _checkRecipientTransfer, _prepBuyOrderUpdate, and _prepSellOrderUpdate. Assumes denormalized input amounts are transferred correctly, with users footing any fee-on-transfer costs, not LPs.
 // - v0.0.35: Added denormalization in executeBuyOrder and executeSellOrder before calling _checkRecipientTransfer to ensure correct token amounts are sent to recipients based on token decimals.
@@ -34,8 +35,8 @@ contract SSSettlementPartial is SSOrderPartial {
         return PayoutContext({
             listingAddress: listingAddress,
             liquidityAddr: listingContract.liquidityAddressView(),
-            tokenOut: isLong ? listingContract.tokenA() : listingContract.tokenB(),
-            tokenDecimals: isLong ? listingContract.decimalsA() : listingContract.decimalsB(),
+            tokenOut: isLong ? listingContract.tokenB() : listingContract.tokenA(), // Use tokenB for long, tokenA for short
+            tokenDecimals: isLong ? listingContract.decimalsB() : listingContract.decimalsA(), // Use decimalsB for long, decimalsA for short
             amountOut: 0,
             recipientAddress: address(0)
         });
