@@ -1,15 +1,22 @@
 // SPDX-License-Identifier: BSD-3-Clause
-pragma solidity ^0.8.1;
+pragma solidity ^0.8.2;
 
-// Version: 0.0.38 (Updated)
+// Version: 0.0.45 (Updated)
 // Changes:
-// - v0.0.38: Fixed token assignment in _prepPayoutContext to align with expected behavior: long payouts (isLong = true) use tokenB (tokenY) and decimalsB (decimalY), short payouts (isLong = false) use tokenA (tokenX) and decimalsA (decimalX). Swapped tokenOut and tokenDecimals assignments to correct payout token usage (lines 38-45).
-// - v0.0.37: Removed interface declarations for ISSListingTemplate, ISSLiquidityTemplate, and IERC20, as they are now declared in SSMainPartial.sol. Fixed DeclarationError in executeLongPayout by correcting return type to PayoutUpdate[] from PayoutPathUpdate[] to match struct in SSMainPartial.sol.
-// - v0.0.36: Removed post-transfer balance checks in _checkRecipientTransfer, _prepBuyOrderUpdate, and _prepSellOrderUpdate. Assumes denormalized input amounts are transferred correctly, with users footing any fee-on-transfer costs, not LPs.
-// - v0.0.35: Added denormalization in executeBuyOrder and executeSellOrder before calling _checkRecipientTransfer to ensure correct token amounts are sent to recipients based on token decimals.
-// - v0.0.34: Fixed TypeError in _prepLongPayoutLiquid, _prepShortPayoutLiquid, executeLongPayout, and executeShortPayout by adding context.amountOut as the second argument to _transferPayoutAmount and _transferListingPayoutAmount calls, aligning with their function signatures.
-// - v0.0.33: Refactored executeLongPayout and executeShortPayout to support partial settlement by measuring actual amount transferred via new _transferListingPayoutAmount helper. Updates payoutPendingAmounts only for actual normalizedReceived, returns empty array if transfer fails, ensuring accurate state for insufficient balances.
-// - v0.0.32: Added _prepPayoutContext, _checkLiquidityBalance, _transferPayoutAmount, _createPayoutUpdate helpers to modularize payout processing for settleLongLiquid and settleShortLiquid, reducing stack usage and improving readability. Refactored _prepLongPayoutLiquid and _prepShortPayoutLiquid to use these new helpers.
+// - v0.0.45: Fixed TypeError at lines 254 and 272 in _executeBuyOrderUpdate and _executeSellOrderUpdate by replacing 'return;' with 'return new ISSListingTemplate.UpdateType[](0);' to provide required return arguments. Fixed TypeError at line 119 in _computeImpact by removing 'override' keyword, as no virtual function exists in SSOrderPartial.sol.
+// - v0.0.44: Fixed ParserError at line 508 in executeLongPayouts by correcting for loop condition from 'i < iterationCount; i < orderIdentifiers.length' to 'i < iterationCount'. Fixed executeLongPayouts and executeShortPayouts: replaced recursive calls with executeLongPayout/executeShortPayout, corrected payoutUpdates.length == address(0) to == 0, fixed iterationCount in executeShortPayouts, corrected loop bounds, and added updateIndex increments.
+// - v0.0.43: Fixed ParserError in _transferListingPayoutAmount by correcting misplaced curly brace at line 86. Fixed _transferPayoutAmount and _transferListingPayoutAmount by replacing context.tokenAddress with context.tokenOut. Corrected _createPayoutUpdate by updating updateType to payoutType, requiredAmount to required, normalizedReceivedAmount to normalizedReceived, and struct to PayoutUpdate.
+// - v0.0.42: Added _executeBuyOrderUpdate and _executeSellOrderUpdate from v0.0.38 to fix DeclarationError for undeclared identifiers in executeBuyOrder and executeSellOrder (lines 358, 394). Functions reduce orderPendingAmounts and call _createOrderUpdates.
+// - v0.0.41: Skipped due to incomplete implementation of _executeBuyOrderUpdate and _executeSellOrderUpdate.
+// - v0.0.40: Fixed _computeImpact to account for inputAmount already included in balances from listingVolumeBalancesView. For buy orders, inputAmount is in yBalance (tokenB), calculate amountOut as (inputAmount * xBalance) / yBalance, subtract from xBalance. For sell orders, inputAmount is in xBalance (tokenA), calculate amountOut as (inputAmount * yBalance) / xBalance, subtract from yBalance. Returns post-settlement price (newXBalance * 1e18) / newYBalance.
+// - v0.0.39: Incorrectly assumed inputAmount needed re-adding in _computeImpact. Fixed in v0.0.40.
+// - v0.0.38: Fixed token assignment in _prepPayoutContext to align with expected behavior: long payouts use tokenB and decimalsB, short payouts use tokenA and decimalsA.
+// - v0.0.37: Removed interface declarations for ISSListingTemplate, ISSLiquidityTemplate, and IERC20, as they are in SSMainPartial.sol. Fixed DeclarationError in executeLongPayout.
+// - v0.0.36: Removed post-transfer balance checks in _checkRecipientTransfer, _prepBuyOrderUpdate, and _prepSellOrderUpdate.
+// - v0.0.35: Added denormalization in executeBuyOrder and executeSellOrder before _checkRecipientTransfer.
+// - v0.0.34: Fixed TypeError in _prepLongPayoutLiquid, _prepShortPayoutLiquid, executeLongPayout, and executeShortPayout.
+// - v0.0.33: Refactored executeLongPayout and executeShortPayout for partial settlement.
+// - v0.0.32: Added _prepPayoutContext, _checkLiquidityBalance, _transferPayoutAmount, _createPayoutUpdate helpers.
 
 import "./SSOrderPartial.sol";
 
@@ -30,13 +37,14 @@ contract SSSettlementPartial is SSOrderPartial {
         address listingAddress,
         uint256 orderId,
         bool isLong
-    ) internal view returns (PayoutContext memory) {
+    ) internal view returns (PayoutContext memory context) {
+        // Initializes payout context with listing and liquidity details
         ISSListingTemplate listingContract = ISSListingTemplate(listingAddress);
-        return PayoutContext({
+        context = PayoutContext({
             listingAddress: listingAddress,
             liquidityAddr: listingContract.liquidityAddressView(),
-            tokenOut: isLong ? listingContract.tokenB() : listingContract.tokenA(), // Use tokenB for long, tokenA for short
-            tokenDecimals: isLong ? listingContract.decimalsB() : listingContract.decimalsA(), // Use decimalsB for long, decimalsA for short
+            tokenOut: isLong ? listingContract.tokenB() : listingContract.tokenA(), // tokenB for long, tokenA for short
+            tokenDecimals: isLong ? listingContract.decimalsB() : listingContract.decimalsA(), // decimalsB for long, decimalsA for short
             amountOut: 0,
             recipientAddress: address(0)
         });
@@ -46,16 +54,18 @@ contract SSSettlementPartial is SSOrderPartial {
         PayoutContext memory context,
         uint256 requiredAmount,
         bool isLong
-    ) internal view returns (bool) {
+    ) internal view returns (bool sufficient) {
+        // Checks if liquidity pool has sufficient balance for payout
         ISSLiquidityTemplate liquidityContract = ISSLiquidityTemplate(context.liquidityAddr);
         (uint256 xAmount, uint256 yAmount) = liquidityContract.liquidityAmounts();
-        return isLong ? xAmount >= requiredAmount : yAmount >= requiredAmount;
+        sufficient = isLong ? xAmount >= requiredAmount : yAmount >= requiredAmount;
     }
 
     function _transferPayoutAmount(
         PayoutContext memory context,
         uint256 amountOut
     ) internal returns (uint256 amountReceived, uint256 normalizedReceived) {
+        // Transfers tokens from liquidity pool to recipient, measures actual amount
         ISSLiquidityTemplate liquidityContract = ISSLiquidityTemplate(context.liquidityAddr);
         uint256 preBalance = context.tokenOut == address(0)
             ? context.recipientAddress.balance
@@ -74,6 +84,7 @@ contract SSSettlementPartial is SSOrderPartial {
         PayoutContext memory context,
         uint256 amountOut
     ) internal returns (uint256 amountReceived, uint256 normalizedReceived) {
+        // Transfers tokens from listing contract to recipient, measures actual amount
         ISSListingTemplate listingContract = ISSListingTemplate(context.listingAddress);
         uint256 preBalance = context.tokenOut == address(0)
             ? context.recipientAddress.balance
@@ -92,45 +103,48 @@ contract SSSettlementPartial is SSOrderPartial {
         uint256 normalizedReceived,
         address recipientAddress,
         bool isLong
-    ) internal pure returns (ISSListingTemplate.PayoutUpdate[] memory) {
-        ISSListingTemplate.PayoutUpdate[] memory updates = new ISSListingTemplate.PayoutUpdate[](1);
+    ) internal pure returns (ISSListingTemplate.PayoutUpdate[] memory updates) {
+        // Creates payout update struct for state changes
+        updates = new ISSListingTemplate.PayoutUpdate[](1);
         updates[0] = ISSListingTemplate.PayoutUpdate({
             payoutType: isLong ? 0 : 1,
             recipient: recipientAddress,
             required: normalizedReceived
         });
-        return updates;
     }
 
     function _computeImpact(
         address listingAddress,
         uint256 inputAmount,
         bool isBuyOrder
-    ) internal view virtual returns (uint256) {
+    ) internal view virtual returns (uint256 price) {
+        // Computes post-settlement price based on balances with inputAmount already included
         ISSListingTemplate listingContract = ISSListingTemplate(listingAddress);
         (uint256 xBalance, uint256 yBalance,,) = listingContract.listingVolumeBalancesView();
         require(yBalance > 0, "Zero yBalance");
-        uint256 currentPrice = (xBalance * 1e18) / yBalance;
         uint256 amountOut;
         uint256 newXBalance = xBalance;
         uint256 newYBalance = yBalance;
         if (isBuyOrder) {
-            amountOut = (inputAmount * currentPrice) / 1e18;
+            // Buy order: inputAmount (tokenB) in yBalance, output tokenA (x)
+            amountOut = (inputAmount * xBalance) / yBalance; // Constant product formula
             require(xBalance >= amountOut, "Insufficient xBalance");
-            newXBalance -= amountOut;
+            newXBalance -= amountOut; // Subtract output from xBalance
         } else {
-            amountOut = (inputAmount * 1e18) / currentPrice;
+            // Sell order: inputAmount (tokenA) in xBalance, output tokenB (y)
+            amountOut = (inputAmount * yBalance) / xBalance; // Constant product formula
             require(yBalance >= amountOut, "Insufficient yBalance");
-            newYBalance -= amountOut;
+            newYBalance -= amountOut; // Subtract output from yBalance
         }
         require(newYBalance > 0, "Zero new yBalance");
-        return (newXBalance * 1e18) / newYBalance;
+        price = (newXBalance * 1e18) / newYBalance; // Post-settlement price
     }
 
     function _getTokenAndDecimals(
         address listingAddress,
         bool isBuyOrder
     ) internal view returns (address tokenAddress, uint8 tokenDecimals) {
+        // Retrieves token address and decimals for order type
         ISSListingTemplate listingContract = ISSListingTemplate(listingAddress);
         tokenAddress = isBuyOrder ? listingContract.tokenA() : listingContract.tokenB();
         tokenDecimals = isBuyOrder ? listingContract.decimalsA() : listingContract.decimalsB();
@@ -142,13 +156,13 @@ contract SSSettlementPartial is SSOrderPartial {
         uint256 inputAmount,
         address recipientAddress
     ) internal returns (uint256 amountReceived, uint256 normalizedReceived) {
+        // Transfers tokens to recipient, assumes success
         ISSListingTemplate listingContract = ISSListingTemplate(targetContract);
         uint8 tokenDecimals = tokenAddress == address(0) ? 18 : IERC20(tokenAddress).decimals();
         try listingContract.transact(address(this), tokenAddress, inputAmount, recipientAddress) {} catch {
             return (0, 0);
         }
-        // Assume transfer succeeds, user foots any fee-on-transfer costs, not LPs
-        amountReceived = inputAmount;
+        amountReceived = inputAmount; // User foots fee-on-transfer costs
         normalizedReceived = normalize(inputAmount, tokenDecimals);
     }
 
@@ -160,8 +174,9 @@ contract SSSettlementPartial is SSOrderPartial {
         uint8 orderStatus,
         bool isBuyOrder,
         uint256 pendingAmount
-    ) internal pure returns (ISSListingTemplate.UpdateType[] memory) {
-        ISSListingTemplate.UpdateType[] memory updates = new ISSListingTemplate.UpdateType[](2);
+    ) internal pure returns (ISSListingTemplate.UpdateType[] memory updates) {
+        // Creates update structs for order state changes
+        updates = new ISSListingTemplate.UpdateType[](2);
         updates[0] = ISSListingTemplate.UpdateType({
             updateType: isBuyOrder ? 1 : 2,
             structId: 2,
@@ -182,7 +197,6 @@ contract SSSettlementPartial is SSOrderPartial {
             maxPrice: 0,
             minPrice: 0
         });
-        return updates;
     }
 
     function _prepBuyOrderUpdate(
@@ -198,11 +212,11 @@ contract SSSettlementPartial is SSOrderPartial {
         uint256 amountReceived,
         uint256 normalizedReceived
     ) {
+        // Prepares buy order update, transfers output tokens
         ISSListingTemplate listingContract = ISSListingTemplate(listingAddress);
         (tokenAddress, tokenDecimals) = _getTokenAndDecimals(listingAddress, true);
         (makerAddress, recipientAddress, orderStatus) = listingContract.getBuyOrderCore(orderIdentifier);
         uint256 denormalizedAmount = denormalize(inputAmount, tokenDecimals);
-        // Assume transfer succeeds, user foots any fee-on-transfer costs, not LPs
         (amountReceived, normalizedReceived) = _checkRecipientTransfer(listingAddress, tokenAddress, denormalizedAmount, recipientAddress);
     }
 
@@ -219,19 +233,54 @@ contract SSSettlementPartial is SSOrderPartial {
         uint256 amountReceived,
         uint256 normalizedReceived
     ) {
+        // Prepares sell order update, transfers output tokens
         ISSListingTemplate listingContract = ISSListingTemplate(listingAddress);
         (tokenAddress, tokenDecimals) = _getTokenAndDecimals(listingAddress, false);
         (makerAddress, recipientAddress, orderStatus) = listingContract.getSellOrderCore(orderIdentifier);
         uint256 denormalizedAmount = denormalize(inputAmount, tokenDecimals);
-        // Assume transfer succeeds, user foots any fee-on-transfer costs, not LPs
         (amountReceived, normalizedReceived) = _checkRecipientTransfer(listingAddress, tokenAddress, denormalizedAmount, recipientAddress);
+    }
+
+    function _executeBuyOrderUpdate(
+        address listingAddress,
+        uint256 orderIdentifier,
+        uint256 normalizedReceivedAmount,
+        address makerAddress,
+        address recipientAddress,
+        uint8 orderStatus
+    ) internal returns (ISSListingTemplate.UpdateType[] memory updates) {
+        // Processes buy order update, reduces pending amount
+        if (normalizedReceivedAmount == 0) {
+            return new ISSListingTemplate.UpdateType[](0);
+        }
+        (uint256 pendingAmount,) = ISSListingTemplate(listingAddress).getBuyOrderAmounts(orderIdentifier);
+        orderPendingAmounts[listingAddress][orderIdentifier] -= normalizedReceivedAmount;
+        updates = _createOrderUpdates(orderIdentifier, normalizedReceivedAmount, makerAddress, recipientAddress, orderStatus, true, pendingAmount);
+    }
+
+    function _executeSellOrderUpdate(
+        address listingAddress,
+        uint256 orderIdentifier,
+        uint256 normalizedReceivedAmount,
+        address makerAddress,
+        address recipientAddress,
+        uint8 orderStatus
+    ) internal returns (ISSListingTemplate.UpdateType[] memory updates) {
+        // Processes sell order update, reduces pending amount
+        if (normalizedReceivedAmount == 0) {
+            return new ISSListingTemplate.UpdateType[](0);
+        }
+        (uint256 pendingAmount,) = ISSListingTemplate(listingAddress).getSellOrderAmounts(orderIdentifier);
+        orderPendingAmounts[listingAddress][orderIdentifier] -= normalizedReceivedAmount;
+        updates = _createOrderUpdates(orderIdentifier, normalizedReceivedAmount, makerAddress, recipientAddress, orderStatus, false, pendingAmount);
     }
 
     function _prepLongPayoutLiquid(
         address listingAddress,
         uint256 orderIdentifier,
         ISSListingTemplate.LongPayoutStruct memory payout
-    ) internal returns (ISSListingTemplate.PayoutUpdate[] memory) {
+    ) internal returns (ISSListingTemplate.PayoutUpdate[] memory updates) {
+        // Processes long payout from liquidity pool
         if (payout.required == 0) {
             return new ISSListingTemplate.PayoutUpdate[](0);
         }
@@ -246,14 +295,15 @@ contract SSSettlementPartial is SSOrderPartial {
             return new ISSListingTemplate.PayoutUpdate[](0);
         }
         payoutPendingAmounts[listingAddress][orderIdentifier] -= normalizedReceived;
-        return _createPayoutUpdate(normalizedReceived, payout.recipientAddress, true);
+        updates = _createPayoutUpdate(normalizedReceived, payout.recipientAddress, true);
     }
 
     function _prepShortPayoutLiquid(
         address listingAddress,
         uint256 orderIdentifier,
         ISSListingTemplate.ShortPayoutStruct memory payout
-    ) internal returns (ISSListingTemplate.PayoutUpdate[] memory) {
+    ) internal returns (ISSListingTemplate.PayoutUpdate[] memory updates) {
+        // Processes short payout from liquidity pool
         if (payout.amount == 0) {
             return new ISSListingTemplate.PayoutUpdate[](0);
         }
@@ -268,45 +318,14 @@ contract SSSettlementPartial is SSOrderPartial {
             return new ISSListingTemplate.PayoutUpdate[](0);
         }
         payoutPendingAmounts[listingAddress][orderIdentifier] -= normalizedReceived;
-        return _createPayoutUpdate(normalizedReceived, payout.recipientAddress, false);
-    }
-
-    function _executeBuyOrderUpdate(
-        address listingAddress,
-        uint256 orderIdentifier,
-        uint256 normalizedReceivedAmount,
-        address makerAddress,
-        address recipientAddress,
-        uint8 orderStatus
-    ) internal returns (ISSListingTemplate.UpdateType[] memory) {
-        if (normalizedReceivedAmount == 0) {
-            return new ISSListingTemplate.UpdateType[](0);
-        }
-        (uint256 pendingAmount,) = ISSListingTemplate(listingAddress).getBuyOrderAmounts(orderIdentifier);
-        orderPendingAmounts[listingAddress][orderIdentifier] -= normalizedReceivedAmount;
-        return _createOrderUpdates(orderIdentifier, normalizedReceivedAmount, makerAddress, recipientAddress, orderStatus, true, pendingAmount);
-    }
-
-    function _executeSellOrderUpdate(
-        address listingAddress,
-        uint256 orderIdentifier,
-        uint256 normalizedReceivedAmount,
-        address makerAddress,
-        address recipientAddress,
-        uint8 orderStatus
-    ) internal returns (ISSListingTemplate.UpdateType[] memory) {
-        if (normalizedReceivedAmount == 0) {
-            return new ISSListingTemplate.UpdateType[](0);
-        }
-        (uint256 pendingAmount,) = ISSListingTemplate(listingAddress).getSellOrderAmounts(orderIdentifier);
-        orderPendingAmounts[listingAddress][orderIdentifier] -= normalizedReceivedAmount;
-        return _createOrderUpdates(orderIdentifier, normalizedReceivedAmount, makerAddress, recipientAddress, orderStatus, false, pendingAmount);
+        updates = _createPayoutUpdate(normalizedReceived, payout.recipientAddress, false);
     }
 
     function executeLongPayout(
         address listingAddress,
         uint256 orderIdentifier
-    ) internal returns (ISSListingTemplate.PayoutUpdate[] memory) {
+    ) internal returns (ISSListingTemplate.PayoutUpdate[] memory updates) {
+        // Executes long payout from listing contract
         ISSListingTemplate listingContract = ISSListingTemplate(listingAddress);
         ISSListingTemplate.LongPayoutStruct memory payout = listingContract.getLongPayout(orderIdentifier);
         if (payout.required == 0) {
@@ -320,13 +339,14 @@ contract SSSettlementPartial is SSOrderPartial {
             return new ISSListingTemplate.PayoutUpdate[](0);
         }
         payoutPendingAmounts[listingAddress][orderIdentifier] -= normalizedReceived;
-        return _createPayoutUpdate(normalizedReceived, payout.recipientAddress, true);
+        updates = _createPayoutUpdate(normalizedReceived, payout.recipientAddress, true);
     }
 
     function executeShortPayout(
         address listingAddress,
         uint256 orderIdentifier
-    ) internal returns (ISSListingTemplate.PayoutUpdate[] memory) {
+    ) internal returns (ISSListingTemplate.PayoutUpdate[] memory updates) {
+        // Executes short payout from listing contract
         ISSListingTemplate listingContract = ISSListingTemplate(listingAddress);
         ISSListingTemplate.ShortPayoutStruct memory payout = listingContract.getShortPayout(orderIdentifier);
         if (payout.amount == 0) {
@@ -340,26 +360,32 @@ contract SSSettlementPartial is SSOrderPartial {
             return new ISSListingTemplate.PayoutUpdate[](0);
         }
         payoutPendingAmounts[listingAddress][orderIdentifier] -= normalizedReceived;
-        return _createPayoutUpdate(normalizedReceived, payout.recipientAddress, false);
+        updates = _createPayoutUpdate(normalizedReceived, payout.recipientAddress, false);
     }
 
     function executeBuyOrder(
         address listingAddress,
         uint256 orderIdentifier,
         uint256 inputAmount
-    ) internal returns (ISSListingTemplate.UpdateType[] memory) {
+    ) internal returns (ISSListingTemplate.UpdateType[] memory updates) {
+        // Executes buy order with price validation
         ISSListingTemplate listingContract = ISSListingTemplate(listingAddress);
+        uint256 amountOut;
         {
             (uint256 maxPrice, uint256 minPrice) = listingContract.getBuyOrderPricing(orderIdentifier);
             (uint256 pendingAmount,) = listingContract.getBuyOrderAmounts(orderIdentifier);
             if (pendingAmount == 0 || inputAmount == 0) {
                 return new ISSListingTemplate.UpdateType[](0);
             }
+            // Calculate amountOut using constant product formula
+            (uint256 xBalance, uint256 yBalance,,) = listingContract.listingVolumeBalancesView();
+            amountOut = (inputAmount * xBalance) / yBalance;
+            require(xBalance >= amountOut, "Insufficient xBalance");
+            // Validate impact price
             uint256 impactPrice = _computeImpact(listingAddress, inputAmount, true);
             if (impactPrice > maxPrice || impactPrice < minPrice) {
                 return new ISSListingTemplate.UpdateType[](0);
             }
-            inputAmount = (inputAmount * impactPrice) / 1e18;
         }
         (
             address tokenAddress,
@@ -369,27 +395,33 @@ contract SSSettlementPartial is SSOrderPartial {
             uint8 orderStatus,
             uint256 amountReceived,
             uint256 normalizedReceived
-        ) = _prepBuyOrderUpdate(listingAddress, orderIdentifier, inputAmount);
-        return _executeBuyOrderUpdate(listingAddress, orderIdentifier, normalizedReceived, makerAddress, recipientAddress, orderStatus);
+        ) = _prepBuyOrderUpdate(listingAddress, orderIdentifier, amountOut);
+        updates = _executeBuyOrderUpdate(listingAddress, orderIdentifier, normalizedReceived, makerAddress, recipientAddress, orderStatus);
     }
 
     function executeSellOrder(
         address listingAddress,
         uint256 orderIdentifier,
         uint256 inputAmount
-    ) internal returns (ISSListingTemplate.UpdateType[] memory) {
+    ) internal returns (ISSListingTemplate.UpdateType[] memory updates) {
+        // Executes sell order with price validation
         ISSListingTemplate listingContract = ISSListingTemplate(listingAddress);
+        uint256 amountOut;
         {
             (uint256 maxPrice, uint256 minPrice) = listingContract.getSellOrderPricing(orderIdentifier);
             (uint256 pendingAmount,) = listingContract.getSellOrderAmounts(orderIdentifier);
             if (pendingAmount == 0 || inputAmount == 0) {
                 return new ISSListingTemplate.UpdateType[](0);
             }
+            // Calculate amountOut using constant product formula
+            (uint256 xBalance, uint256 yBalance,,) = listingContract.listingVolumeBalancesView();
+            amountOut = (inputAmount * yBalance) / xBalance;
+            require(yBalance >= amountOut, "Insufficient yBalance");
+            // Validate impact price
             uint256 impactPrice = _computeImpact(listingAddress, inputAmount, false);
             if (impactPrice > maxPrice || impactPrice < minPrice) {
                 return new ISSListingTemplate.UpdateType[](0);
             }
-            inputAmount = (inputAmount * 1e18) / impactPrice;
         }
         (
             address tokenAddress,
@@ -399,11 +431,12 @@ contract SSSettlementPartial is SSOrderPartial {
             uint8 orderStatus,
             uint256 amountReceived,
             uint256 normalizedReceived
-        ) = _prepSellOrderUpdate(listingAddress, orderIdentifier, inputAmount);
-        return _executeSellOrderUpdate(listingAddress, orderIdentifier, normalizedReceived, makerAddress, recipientAddress, orderStatus);
+        ) = _prepSellOrderUpdate(listingAddress, orderIdentifier, amountOut);
+        updates = _executeSellOrderUpdate(listingAddress, orderIdentifier, normalizedReceived, makerAddress, recipientAddress, orderStatus);
     }
 
     function executeBuyOrders(address listingAddress, uint256 maxIterations) internal onlyValidListing(listingAddress) {
+        // Processes multiple buy orders
         ISSListingTemplate listingContract = ISSListingTemplate(listingAddress);
         uint256[] memory orderIdentifiers = listingContract.pendingBuyOrdersView();
         uint256 iterationCount = maxIterations < orderIdentifiers.length ? maxIterations : orderIdentifiers.length;
@@ -435,6 +468,7 @@ contract SSSettlementPartial is SSOrderPartial {
     }
 
     function executeSellOrders(address listingAddress, uint256 maxIterations) internal onlyValidListing(listingAddress) {
+        // Processes multiple sell orders
         ISSListingTemplate listingContract = ISSListingTemplate(listingAddress);
         uint256[] memory orderIdentifiers = listingContract.pendingSellOrdersView();
         uint256 iterationCount = maxIterations < orderIdentifiers.length ? maxIterations : orderIdentifiers.length;
@@ -466,6 +500,7 @@ contract SSSettlementPartial is SSOrderPartial {
     }
 
     function executeLongPayouts(address listingAddress, uint256 maxIterations) internal onlyValidListing(listingAddress) {
+        // Processes multiple long payouts
         ISSListingTemplate listingContract = ISSListingTemplate(listingAddress);
         uint256[] memory orderIdentifiers = listingContract.longPayoutByIndexView();
         uint256 iterationCount = maxIterations < orderIdentifiers.length ? maxIterations : orderIdentifiers.length;
@@ -491,6 +526,7 @@ contract SSSettlementPartial is SSOrderPartial {
     }
 
     function executeShortPayouts(address listingAddress, uint256 maxIterations) internal onlyValidListing(listingAddress) {
+        // Processes multiple short payouts
         ISSListingTemplate listingContract = ISSListingTemplate(listingAddress);
         uint256[] memory orderIdentifiers = listingContract.shortPayoutByIndexView();
         uint256 iterationCount = maxIterations < orderIdentifiers.length ? maxIterations : orderIdentifiers.length;
