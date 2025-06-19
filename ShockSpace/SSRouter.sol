@@ -1,23 +1,20 @@
 // SPDX-License-Identifier: BSD-3-Clause
 pragma solidity ^0.8.1;
 
-// Version: 0.0.43 (Updated)
+// Version: 0.0.44 (Updated)
 // Changes:
-// - v0.0.43: Removed onlyValidListing modifier, inherited from SSMainPartial.sol to resolve TypeError (previously lines 72-80).
-// - v0.0.43: Replaced safeTransferFrom with transferFrom in _checkTransferAmount and deposit (lines 166, 551-552).
-// - v0.0.43: Added pre/post balance checks in deposit to handle fee-on-transfer tokens, using actual received amount (lines 549-556).
-// - v0.0.43: Changed deposit to use bool isTokenA instead of tokenAddress, fetching token from listing contract (line 543).
-// - v0.0.42: Added onlyValidListing modifier to validate listingAddress and tokens (lines 72-80).
-// - v0.0.41: Split _updateLiquidity logic to reduce stack depth. Added _checkAndTransferPrincipal helper to handle
-//   pre- and post-transfer balance checks for listing and liquidity contracts, compute actual amount moved, and perform
-//   the transfer. _updateLiquidity now uses the returned amount for the liquidity update, reducing local variables.
-// - v0.0.40: Modified _updateLiquidity to check listing and liquidity contract balances before and after transfer.
-//   Computes actual amount moved from listing to liquidity, then uses normalized amount for updateLiquidity call.
-//   Added error handling for insufficient balance changes and ensured compatibility with token decimals.
-// - v0.0.39: Fixed TypeError in settleSingleLongLiquid and settleSingleShortLiquid by correctly destructuring LongPayoutStruct and ShortPayoutStruct from getLongPayout and getShortPayout, then mapping fields to PayoutUpdate struct for compatibility.
-// - v0.0.38: Removed post-transfer balance checks in settlement functions (_prepBuyLiquidUpdates, _prepSellLiquidUpdates, settleSingleLongLiquid, settleSingleShortLiquid). Assumes input amounts are transferred correctly, with users footing any fee-on-transfer costs, not LPs.
-// - v0.0.37: Added denormalization of amounts before transfers in settleBuyLiquid, settleSellLiquid, settleBuyOrders, and settleSellOrders to ensure correct token amounts are sent to recipients based on token decimals.
-// - v0.0.36: Refactored settleLongLiquid and settleShortLiquid to use new helpers from SSSettlementPartial (_prepPayoutContext, _checkLiquidityBalance, _transferPayoutAmount, _createPayoutUpdate). Added settleSingleLongLiquid and settleSingleShortLiquid to handle individual payouts, inspired by executeSingleBuyLiquid and executeSingleSellLiquid.
+// - v0.0.44: Modified caller handling in changeDepositor, deposit, withdraw, claimFees to pass user parameter as caller to SSLiquidityTemplate, representing the actual user (e.g., slot owner). Ensured msg.sender is router. Updated to align with SSLiquidityTemplate.sol v0.0.6.
+// - v0.0.43: Removed onlyValidListing modifier, inherited from SSMainPartial.sol to resolve TypeError.
+// - v0.0.43: Replaced safeTransferFrom with transferFrom in _checkTransferAmount and deposit.
+// - v0.0.43: Added pre/post balance checks in deposit for fee-on-transfer tokens.
+// - v0.0.43: Changed deposit to use bool isTokenA instead of tokenAddress.
+// - v0.0.42: Added onlyValidListing modifier to validate listingAddress and tokens.
+// - v0.0.41: Split _updateLiquidity logic to reduce stack depth. Added _checkAndTransferPrincipal helper.
+// - v0.0.40: Modified _updateLiquidity to check balances before/after transfer.
+// - v0.0.39: Fixed TypeError in settleSingleLongLiquid and settleSingleShortLiquid.
+// - v0.0.38: Removed post-transfer balance checks in settlement functions.
+// - v0.0.37: Added denormalization of amounts before transfers.
+// - v0.0.36: Refactored settleLongLiquid and settleShortLiquid to use new helpers.
 
 import "./utils/SSSettlementPartial.sol";
 
@@ -47,7 +44,6 @@ contract SSRouter is SSSettlementPartial {
         uint256 normalizedReceived;
     }
 
-    // Helper function to check balances and transfer principal, reducing stack depth in _updateLiquidity
     function _checkAndTransferPrincipal(
         address listingAddress,
         address tokenIn,
@@ -274,7 +270,6 @@ contract SSRouter is SSSettlementPartial {
             try ISSLiquidityTemplate(context.liquidityAddr).transact(address(this), tokenOut, denormalizedAmount, updateContext.recipient) {} catch {
                 return new ISSListingTemplate.UpdateType[](0);
             }
-            // Assume transfer succeeds, user foots any fee-on-transfer costs, not LPs
             updateContext.amountReceived = denormalizedAmount;
             updateContext.normalizedReceived = normalize(denormalizedAmount, tokenDecimals);
         }
@@ -312,7 +307,6 @@ contract SSRouter is SSSettlementPartial {
             try ISSLiquidityTemplate(context.liquidityAddr).transact(address(this), tokenOut, denormalizedAmount, updateContext.recipient) {} catch {
                 return new ISSListingTemplate.UpdateType[](0);
             }
-            // Assume transfer succeeds, user foots any fee-on-transfer costs, not LPs
             updateContext.amountReceived = denormalizedAmount;
             updateContext.normalizedReceived = normalize(denormalizedAmount, tokenDecimals);
         }
@@ -493,7 +487,6 @@ contract SSRouter is SSSettlementPartial {
         try ISSLiquidityTemplate(context.liquidityAddr).transact(address(this), context.tokenOut, context.amountOut, context.recipientAddress) {} catch {
             return new ISSListingTemplate.PayoutUpdate[](0);
         }
-        // Assume transfer succeeds, user foots any fee-on-transfer costs, not LPs
         uint256 normalizedReceived = normalize(context.amountOut, context.tokenDecimals);
         payoutPendingAmounts[listingAddress][orderIdentifier] -= normalizedReceived;
         return _createPayoutUpdate(normalizedReceived, longPayout.recipientAddress, true);
@@ -517,7 +510,6 @@ contract SSRouter is SSSettlementPartial {
         try ISSLiquidityTemplate(context.liquidityAddr).transact(address(this), context.tokenOut, context.amountOut, context.recipientAddress) {} catch {
             return new ISSListingTemplate.PayoutUpdate[](0);
         }
-        // Assume transfer succeeds, user foots any fee-on-transfer costs, not LPs
         uint256 normalizedReceived = normalize(context.amountOut, context.tokenDecimals);
         payoutPendingAmounts[listingAddress][orderIdentifier] -= normalizedReceived;
         return _createPayoutUpdate(normalizedReceived, shortPayout.recipientAddress, false);
@@ -627,69 +619,66 @@ contract SSRouter is SSSettlementPartial {
         executeShortPayouts(listingAddress, maxIterations);
     }
 
-    function deposit(address listingAddress, bool isTokenA, uint256 inputAmount) external payable onlyValidListing(listingAddress) nonReentrant {
-        // Fetches listing contract and liquidity contract for deposit
+    function deposit(address listingAddress, bool isTokenA, uint256 inputAmount, address user) external payable onlyValidListing(listingAddress) nonReentrant {
         ISSListingTemplate listingContract = ISSListingTemplate(listingAddress);
         address liquidityAddr = listingContract.liquidityAddressView();
         ISSLiquidityTemplate liquidityContract = ISSLiquidityTemplate(liquidityAddr);
-        // Ensures router is registered with liquidity contract
         require(liquidityContract.routers(address(this)), "Router not registered");
-        // Selects tokenA or tokenB based on isTokenA parameter
+        require(user != address(0), "Invalid user address");
         address tokenAddress = isTokenA ? listingContract.tokenA() : listingContract.tokenB();
         if (tokenAddress == address(0)) {
-            // Handles ETH deposits, ensuring msg.value matches inputAmount
             require(msg.value == inputAmount, "Incorrect ETH amount");
-            try liquidityContract.deposit{value: inputAmount}(address(this), tokenAddress, inputAmount) {} catch {
+            try liquidityContract.deposit{value: inputAmount}(user, tokenAddress, inputAmount) {} catch {
                 revert("Deposit failed");
             }
         } else {
-            // Handles ERC20 deposits with pre/post balance checks for fee-on-transfer tokens
             uint256 preBalance = IERC20(tokenAddress).balanceOf(address(this));
             IERC20(tokenAddress).transferFrom(msg.sender, address(this), inputAmount);
             uint256 postBalance = IERC20(tokenAddress).balanceOf(address(this));
             uint256 receivedAmount = postBalance - preBalance;
             require(receivedAmount > 0, "No tokens received");
-            // Approves liquidity contract to spend received amount
             IERC20(tokenAddress).approve(liquidityAddr, receivedAmount);
-            try liquidityContract.deposit(address(this), tokenAddress, receivedAmount) {} catch {
+            try liquidityContract.deposit(user, tokenAddress, receivedAmount) {} catch {
                 revert("Deposit failed");
             }
         }
     }
 
-    function withdraw(address listingAddress, uint256 inputAmount, uint256 index, bool isX) external onlyValidListing(listingAddress) nonReentrant {
+    function withdraw(address listingAddress, uint256 inputAmount, uint256 index, bool isX, address user) external onlyValidListing(listingAddress) nonReentrant {
         ISSListingTemplate listingContract = ISSListingTemplate(listingAddress);
         address liquidityAddr = listingContract.liquidityAddressView();
         ISSLiquidityTemplate liquidityContract = ISSLiquidityTemplate(liquidityAddr);
         require(liquidityContract.routers(address(this)), "Router not registered");
+        require(user != address(0), "Invalid user address");
         ISSLiquidityTemplate.PreparedWithdrawal memory withdrawal;
         if (isX) {
-            try liquidityContract.xPrepOut(address(this), inputAmount, index) returns (ISSLiquidityTemplate.PreparedWithdrawal memory w) {
+            try liquidityContract.xPrepOut(user, inputAmount, index) returns (ISSLiquidityTemplate.PreparedWithdrawal memory w) {
                 withdrawal = w;
             } catch {
                 revert("Withdrawal preparation failed");
             }
-            try liquidityContract.xExecuteOut(address(this), index, withdrawal) {} catch {
+            try liquidityContract.xExecuteOut(user, index, withdrawal) {} catch {
                 revert("Withdrawal execution failed");
             }
         } else {
-            try liquidityContract.yPrepOut(address(this), inputAmount, index) returns (ISSLiquidityTemplate.PreparedWithdrawal memory w) {
+            try liquidityContract.yPrepOut(user, inputAmount, index) returns (ISSLiquidityTemplate.PreparedWithdrawal memory w) {
                 withdrawal = w;
             } catch {
                 revert("Withdrawal preparation failed");
             }
-            try liquidityContract.yExecuteOut(address(this), index, withdrawal) {} catch {
+            try liquidityContract.yExecuteOut(user, index, withdrawal) {} catch {
                 revert("Withdrawal execution failed");
             }
         }
     }
 
-    function claimFees(address listingAddress, uint256 liquidityIndex, bool isX, uint256 volumeAmount) external onlyValidListing(listingAddress) nonReentrant {
+    function claimFees(address listingAddress, uint256 liquidityIndex, bool isX, uint256 volumeAmount, address user) external onlyValidListing(listingAddress) nonReentrant {
         ISSListingTemplate listingContract = ISSListingTemplate(listingAddress);
         address liquidityAddr = listingContract.liquidityAddressView();
         ISSLiquidityTemplate liquidityContract = ISSLiquidityTemplate(liquidityAddr);
         require(liquidityContract.routers(address(this)), "Router not registered");
-        try liquidityContract.claimFees(address(this), listingAddress, liquidityIndex, isX, volumeAmount) {} catch {
+        require(user != address(0), "Invalid user address");
+        try liquidityContract.claimFees(user, listingAddress, liquidityIndex, isX, volumeAmount) {} catch {
             revert("Claim fees failed");
         }
     }
@@ -716,14 +705,17 @@ contract SSRouter is SSSettlementPartial {
         address listingAddress,
         bool isX,
         uint256 slotIndex,
-        address newDepositor
+        address newDepositor,
+        address user
     ) external onlyValidListing(listingAddress) nonReentrant {
         ISSListingTemplate listingContract = ISSListingTemplate(listingAddress);
         address liquidityAddr = listingContract.liquidityAddressView();
         ISSLiquidityTemplate liquidityContract = ISSLiquidityTemplate(liquidityAddr);
         require(liquidityContract.routers(address(this)), "Router not registered");
-        try liquidityContract.changeSlotDepositor(msg.sender, isX, slotIndex, newDepositor) {} catch {
-            revert("Failed to change");
+        require(user != address(0), "Invalid user address");
+        require(newDepositor != address(0), "Invalid new depositor");
+        try liquidityContract.changeSlotDepositor(user, isX, slotIndex, newDepositor) {} catch {
+            revert("Failed to change depositor");
         }
     }
 }
