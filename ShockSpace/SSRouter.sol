@@ -1,8 +1,13 @@
 // SPDX-License-Identifier: BSD-3-Clause
 pragma solidity ^0.8.1;
 
-// Version: 0.0.41 (Updated)
+// Version: 0.0.43 (Updated)
 // Changes:
+// - v0.0.43: Removed onlyValidListing modifier, inherited from SSMainPartial.sol to resolve TypeError (previously lines 72-80).
+// - v0.0.43: Replaced safeTransferFrom with transferFrom in _checkTransferAmount and deposit (lines 166, 551-552).
+// - v0.0.43: Added pre/post balance checks in deposit to handle fee-on-transfer tokens, using actual received amount (lines 549-556).
+// - v0.0.43: Changed deposit to use bool isTokenA instead of tokenAddress, fetching token from listing contract (line 543).
+// - v0.0.42: Added onlyValidListing modifier to validate listingAddress and tokens (lines 72-80).
 // - v0.0.41: Split _updateLiquidity logic to reduce stack depth. Added _checkAndTransferPrincipal helper to handle
 //   pre- and post-transfer balance checks for listing and liquidity contracts, compute actual amount moved, and perform
 //   the transfer. _updateLiquidity now uses the returned amount for the liquidity update, reducing local variables.
@@ -622,22 +627,59 @@ contract SSRouter is SSSettlementPartial {
         executeShortPayouts(listingAddress, maxIterations);
     }
 
-    function deposit(address listingAddress, address tokenAddress, uint256 inputAmount) external payable onlyValidListing(listingAddress) nonReentrant {
+    function deposit(address listingAddress, bool isTokenA, uint256 inputAmount) external payable onlyValidListing(listingAddress) nonReentrant {
+        // Fetches listing contract and liquidity contract for deposit
         ISSListingTemplate listingContract = ISSListingTemplate(listingAddress);
         address liquidityAddr = listingContract.liquidityAddressView();
         ISSLiquidityTemplate liquidityContract = ISSLiquidityTemplate(liquidityAddr);
+        // Ensures router is registered with liquidity contract
         require(liquidityContract.routers(address(this)), "Router not registered");
-        require(tokenAddress == listingContract.tokenA() || tokenAddress == listingContract.tokenB(), "Invalid token");
+        // Selects tokenA or tokenB based on isTokenA parameter
+        address tokenAddress = isTokenA ? listingContract.tokenA() : listingContract.tokenB();
         if (tokenAddress == address(0)) {
+            // Handles ETH deposits, ensuring msg.value matches inputAmount
             require(msg.value == inputAmount, "Incorrect ETH amount");
             try liquidityContract.deposit{value: inputAmount}(address(this), tokenAddress, inputAmount) {} catch {
                 revert("Deposit failed");
             }
         } else {
+            // Handles ERC20 deposits with pre/post balance checks for fee-on-transfer tokens
+            uint256 preBalance = IERC20(tokenAddress).balanceOf(address(this));
             IERC20(tokenAddress).transferFrom(msg.sender, address(this), inputAmount);
-            IERC20(tokenAddress).approve(liquidityAddr, inputAmount);
-            try liquidityContract.deposit(address(this), tokenAddress, inputAmount) {} catch {
+            uint256 postBalance = IERC20(tokenAddress).balanceOf(address(this));
+            uint256 receivedAmount = postBalance - preBalance;
+            require(receivedAmount > 0, "No tokens received");
+            // Approves liquidity contract to spend received amount
+            IERC20(tokenAddress).approve(liquidityAddr, receivedAmount);
+            try liquidityContract.deposit(address(this), tokenAddress, receivedAmount) {} catch {
                 revert("Deposit failed");
+            }
+        }
+    }
+
+    function withdraw(address listingAddress, uint256 inputAmount, uint256 index, bool isX) external onlyValidListing(listingAddress) nonReentrant {
+        ISSListingTemplate listingContract = ISSListingTemplate(listingAddress);
+        address liquidityAddr = listingContract.liquidityAddressView();
+        ISSLiquidityTemplate liquidityContract = ISSLiquidityTemplate(liquidityAddr);
+        require(liquidityContract.routers(address(this)), "Router not registered");
+        ISSLiquidityTemplate.PreparedWithdrawal memory withdrawal;
+        if (isX) {
+            try liquidityContract.xPrepOut(address(this), inputAmount, index) returns (ISSLiquidityTemplate.PreparedWithdrawal memory w) {
+                withdrawal = w;
+            } catch {
+                revert("Withdrawal preparation failed");
+            }
+            try liquidityContract.xExecuteOut(address(this), index, withdrawal) {} catch {
+                revert("Withdrawal execution failed");
+            }
+        } else {
+            try liquidityContract.yPrepOut(address(this), inputAmount, index) returns (ISSLiquidityTemplate.PreparedWithdrawal memory w) {
+                withdrawal = w;
+            } catch {
+                revert("Withdrawal preparation failed");
+            }
+            try liquidityContract.yExecuteOut(address(this), index, withdrawal) {} catch {
+                revert("Withdrawal execution failed");
             }
         }
     }
@@ -649,32 +691,6 @@ contract SSRouter is SSSettlementPartial {
         require(liquidityContract.routers(address(this)), "Router not registered");
         try liquidityContract.claimFees(address(this), listingAddress, liquidityIndex, isX, volumeAmount) {} catch {
             revert("Claim fees failed");
-        }
-    }
-
-    function withdraw(address listingAddress, uint256 inputAmount, uint256 index, bool isX) external onlyValidListing(listingAddress) nonReentrant {
-        ISSListingTemplate listingContract = ISSListingTemplate(listingAddress);
-        address liquidityAddr = listingContract.liquidityAddressView();
-        ISSLiquidityTemplate liquidityContract = ISSLiquidityTemplate(liquidityAddr);
-        require(liquidityContract.routers(address(this)), "Router not registered");
-        ISSLiquidityTemplate.PreparedWithdrawal memory withdrawal;
-        try liquidityContract.xPrepOut(address(this), inputAmount, index) returns (ISSLiquidityTemplate.PreparedWithdrawal memory w) {
-            withdrawal = w;
-        } catch {
-            try liquidityContract.yPrepOut(address(this), inputAmount, index) returns (ISSLiquidityTemplate.PreparedWithdrawal memory w) {
-                withdrawal = w;
-            } catch {
-                revert("Withdrawal preparation failed");
-            }
-        }
-        if (isX) {
-            try liquidityContract.xExecuteOut(address(this), index, withdrawal) {} catch {
-                revert("Withdrawal execution failed");
-            }
-        } else {
-            try liquidityContract.yExecuteOut(address(this), index, withdrawal) {} catch {
-                revert("Withdrawal execution failed");
-            }
         }
     }
 
