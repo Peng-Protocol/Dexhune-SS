@@ -1,8 +1,11 @@
 // SPDX-License-Identifier: BSD-3-Clause
 pragma solidity ^0.8.1;
 
-// Version: 0.0.4 (Updated)
+// Version: 0.0.5 (Updated)
 // Changes:
+// - v0.0.5: Replaced safeTransferFrom with transferFrom in deposit function (line 410).
+// - v0.0.5: Added GlobalizeUpdateFailed and UpdateRegistryFailed events for error handling (lines 151-152).
+// - v0.0.5: Emitted error events in globalizeUpdate and updateRegistry on failure (lines 337, 351).
 // - v0.0.4: Added changeSlotDepositor to transfer x or y slot ownership, with note that SS router must implement a function to utilize it (lines 376-401).
 // - v0.0.4: Added liquidityAmounts() view function for ISSListingTemplate compatibility (lines 583-587).
 // - v0.0.4: Added agent state variable and setAgent function for SSAgent compatibility (lines 54, 248-253).
@@ -96,6 +99,8 @@ contract SSLiquidityTemplate is ReentrancyGuard {
     event FeesUpdated(uint256 listingId, uint256 xFees, uint256 yFees);
     event FeesClaimed(uint256 listingId, uint256 liquidityIndex, uint256 xFees, uint256 yFees);
     event SlotDepositorChanged(bool isX, uint256 slotIndex, address indexed oldDepositor, address indexed newDepositor);
+    event GlobalizeUpdateFailed(address indexed caller, uint256 listingId, bool isX, uint256 amount);
+    event UpdateRegistryFailed(address indexed caller, bool isX);
 
     function normalize(uint256 amount, uint8 decimals) internal pure returns (uint256) {
         if (decimals == 18) return amount;
@@ -240,7 +245,9 @@ contract SSLiquidityTemplate is ReentrancyGuard {
             caller,
             normalizedAmount,
             isDeposit
-        ) {} catch {}
+        ) {} catch {
+            emit GlobalizeUpdateFailed(caller, listingId, isX, amount);
+        }
     }
 
     function updateRegistry(address caller, bool isX) internal {
@@ -248,13 +255,19 @@ contract SSLiquidityTemplate is ReentrancyGuard {
         try ISSListing(listingAddress).getRegistryAddress() returns (address reg) {
             registry = reg;
         } catch {
+            emit UpdateRegistryFailed(caller, isX);
             return;
         }
-        if (registry == address(0)) return;
+        if (registry == address(0)) {
+            emit UpdateRegistryFailed(caller, isX);
+            return;
+        }
         address token = isX ? tokenA : tokenB;
         address[] memory users = new address[](1);
         users[0] = caller;
-        try ITokenRegistry(registry).initializeBalances(token, users) {} catch {}
+        try ITokenRegistry(registry).initializeBalances(token, users) {} catch {
+            emit UpdateRegistryFailed(caller, isX);
+        }
     }
 
     // Note: The SS router must implement a function to call changeSlotDepositor to facilitate slot ownership transfers.
@@ -285,7 +298,7 @@ contract SSLiquidityTemplate is ReentrancyGuard {
         if (token == address(0)) {
             require(msg.value == amount, "Incorrect ETH amount");
         } else {
-            IERC20(token).safeTransferFrom(msg.sender, address(this), amount);
+            IERC20(token).transferFrom(msg.sender, address(this), amount);
         }
         uint256 postBalance = token == address(0) ? address(this).balance : IERC20(token).balanceOf(address(this));
         uint256 receivedAmount = postBalance - preBalance;
@@ -492,7 +505,7 @@ contract SSLiquidityTemplate is ReentrancyGuard {
         this.update(msg.sender, updates);
     }
 
-function getListingAddress(uint256) external view returns (address) {
+    function getListingAddress(uint256) external view returns (address) {
         return listingAddress;
     }
 
