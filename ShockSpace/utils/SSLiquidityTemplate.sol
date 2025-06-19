@@ -1,35 +1,25 @@
 // SPDX-License-Identifier: BSD-3-Clause
 pragma solidity ^0.8.1;
 
-// Version: 0.0.5 (Updated)
+// Version: 0.0.7 (Updated)
 // Changes:
-// - v0.0.5: Replaced safeTransferFrom with transferFrom in deposit function (line 410).
-// - v0.0.5: Added GlobalizeUpdateFailed and UpdateRegistryFailed events for error handling (lines 151-152).
-// - v0.0.5: Emitted error events in globalizeUpdate and updateRegistry on failure (lines 337, 351).
-// - v0.0.4: Added changeSlotDepositor to transfer x or y slot ownership, with note that SS router must implement a function to utilize it (lines 376-401).
-// - v0.0.4: Added liquidityAmounts() view function for ISSListingTemplate compatibility (lines 583-587).
-// - v0.0.4: Added agent state variable and setAgent function for SSAgent compatibility (lines 54, 248-253).
-// - v0.0.4: Added globalizeUpdate to sync liquidity with SSAgent.globalizeLiquidity, called in deposit, xExecuteOut, yExecuteOut (lines 314-329, 411, 448, 486).
-// - v0.0.4: Added updateRegistry to sync depositor balances with TokenRegistry, called in deposit, xExecuteOut, yExecuteOut (lines 331-347, 412, 449, 487).
-// - v0.0.4: Updated xPrepOut, yPrepOut to use ISSListing.getPrice() instead of prices(listingId) (lines 418, 452).
-// - v0.0.4: Simplified mappings: liquidityDetails to liquidityDetail, x/yLiquiditySlots to remove listingId key, activeX/YLiquiditySlots to arrays (lines 68-73).
-// - v0.0.4: Removed taxCollector, taxCollectorSet, and setCollector; removed 10% fee logic in xExecuteOut, yExecuteOut (lines 54-58, 429-430, 465-467).
-// - v0.0.4: Updated ISSListing interface to include getPrice, getRegistryAddress (lines 34-37).
-// - v0.0.4: Added ISSAgent interface for globalizeLiquidity (lines 28-34).
-// - v0.0.4: Added ITokenRegistry interface for updateRegistry (lines 39-41).
-// - v0.0.3: Modified claimFees to align with fee-swapping: xSlots claim yFees (tokenB), ySlots claim xFees (tokenA); updated FeesClaimed event (lines 496-523).
-// - Note: Preserved fee-swapping in claimFees, unlike OMF-LiquidityTemplate.sol's same-token fees.
-// - Note: Maintained routers mapping instead of OMF's single router.
-// - Note: Maintained ETH support unlike OMF's non-native token requirement.
-// - Note: DecimalsA/decimalsB not addressed, as deferred previously.
-// - Compatible with SS-ListingTemplate.sol (v0.0.5), SSAgent.sol (v0.0.2).
+// - v0.0.7: Refactored claimFees to resolve stack too deep error by using FeeClaimContext struct to store intermediate values, reducing stack usage. Modified _processFeeClaim to accept FeeClaimContext, minimizing parameters. Aligned with SSRouter.sol v0.0.44.
+// - v0.0.6: Removed transferLiquidity function entirely due to redundancy with changeSlotDepositor and potential exploit risks. Updated caller handling in changeSlotDepositor, deposit, xPrepOut, xExecuteOut, yPrepOut, yExecuteOut, claimFees to represent the user (e.g., slot owner). Ensured msg.sender is a registered router. Aligned with SSRouter.sol v0.0.44.
+// - v0.0.5: Replaced safeTransferFrom with transferFrom in deposit.
+// - v0.0.5: Added GlobalizeUpdateFailed and UpdateRegistryFailed events.
+// - v0.0.5: Emitted error events in globalizeUpdate and updateRegistry.
+// - v0.0.4: Added changeSlotDepositor, liquidityAmounts, agent, globalizeUpdate, updateRegistry.
+// - v0.0.4: Simplified mappings: liquidityDetails to liquidityDetail, removed listingId key.
+// - v0.0.4: Removed taxCollector and 10% fee logic.
+// - v0.0.4: Updated ISSListing interface to include getPrice, getRegistryAddress.
+// - v0.0.3: Modified claimFees for fee-swapping (xSlots claim yFees, ySlots claim xFees).
+// - Compatible with SSListingTemplate.sol (v0.0.8), SSAgent.sol (v0.0.2).
 
 import "../imports/SafeERC20.sol";
 import "../imports/ReentrancyGuard.sol";
 
 interface ISSListing {
     function volumeBalances(uint256 listingId) external view returns (uint256 xBalance, uint256 yBalance, uint256 xVolume, uint256 yVolume);
-    function prices(uint256 listingId) external view returns (uint256);
     function getPrice() external view returns (uint256);
     function getRegistryAddress() external view returns (address);
 }
@@ -88,6 +78,18 @@ contract SSLiquidityTemplate is ReentrancyGuard {
         uint256 amountB;
     }
 
+    // Struct to reduce stack usage in claimFees
+    struct FeeClaimContext {
+        address caller;
+        bool isX;
+        uint256 volume;
+        uint256 dVolume;
+        uint256 liquid;
+        uint256 allocation;
+        uint256 fees;
+        uint256 liquidityIndex;
+    }
+
     LiquidityDetails public liquidityDetail;
     mapping(uint256 => Slot) public xLiquiditySlots;
     mapping(uint256 => Slot) public yLiquiditySlots;
@@ -130,6 +132,27 @@ contract SSLiquidityTemplate is ReentrancyGuard {
         return (feeShare, updates);
     }
 
+    // Helper to process fee claims, using struct to reduce stack depth
+    function _processFeeClaim(FeeClaimContext memory context) internal {
+        // Calculates fee share and prepares updates
+        (uint256 feeShare, UpdateType[] memory updates) = _claimFeeShare(
+            context.volume,
+            context.dVolume,
+            context.liquid,
+            context.allocation,
+            context.fees
+        );
+        if (feeShare > 0) {
+            // Updates fees and slot allocation
+            updates[0] = UpdateType(1, context.isX ? 1 : 0, context.fees - feeShare, address(0), address(0));
+            updates[1] = UpdateType(context.isX ? 2 : 3, context.liquidityIndex, context.allocation, context.caller, address(0));
+            this.update(context.caller, updates);
+            // Transfers fee share to caller
+            this.transact(context.caller, context.isX ? tokenB : tokenA, feeShare, context.caller);
+            emit FeesClaimed(listingId, context.liquidityIndex, context.isX ? 0 : feeShare, context.isX ? feeShare : 0);
+        }
+    }
+
     function setRouters(address[] memory _routers) external {
         require(!routersSet, "Routers already set");
         require(_routers.length > 0, "No routers provided");
@@ -166,7 +189,7 @@ contract SSLiquidityTemplate is ReentrancyGuard {
     }
 
     function update(address caller, UpdateType[] memory updates) external nonReentrant {
-        require(routers[caller], "Router only");
+        require(routers[msg.sender], "Router only");
         LiquidityDetails storage details = liquidityDetail;
 
         for (uint256 i = 0; i < updates.length; i++) {
@@ -270,12 +293,12 @@ contract SSLiquidityTemplate is ReentrancyGuard {
         }
     }
 
-    // Note: The SS router must implement a function to call changeSlotDepositor to facilitate slot ownership transfers.
     function changeSlotDepositor(address caller, bool isX, uint256 slotIndex, address newDepositor) external nonReentrant {
-        require(routers[caller], "Router only");
+        require(routers[msg.sender], "Router only");
         require(newDepositor != address(0), "Invalid new depositor");
+        require(caller != address(0), "Invalid caller");
         Slot storage slot = isX ? xLiquiditySlots[slotIndex] : yLiquiditySlots[slotIndex];
-        require(slot.depositor == caller, "Not depositor");
+        require(slot.depositor == caller, "Caller not depositor");
         require(slot.allocation > 0, "Invalid slot");
         address oldDepositor = slot.depositor;
         slot.depositor = newDepositor;
@@ -291,8 +314,9 @@ contract SSLiquidityTemplate is ReentrancyGuard {
     }
 
     function deposit(address caller, address token, uint256 amount) external payable nonReentrant {
-        require(routers[caller], "Router only");
+        require(routers[msg.sender], "Router only");
         require(token == tokenA || token == tokenB, "Invalid token");
+        require(caller != address(0), "Invalid caller");
         uint8 decimals = token == address(0) ? 18 : IERC20(token).decimals();
         uint256 preBalance = token == address(0) ? address(this).balance : IERC20(token).balanceOf(address(this));
         if (token == address(0)) {
@@ -306,16 +330,18 @@ contract SSLiquidityTemplate is ReentrancyGuard {
 
         UpdateType[] memory updates = new UpdateType[](1);
         uint256 index = token == tokenA ? activeXLiquiditySlots.length : activeYLiquiditySlots.length;
-        updates[0] = UpdateType(token == tokenA ? 2 : 3, index, normalizedAmount, msg.sender, address(0));
+        updates[0] = UpdateType(token == tokenA ? 2 : 3, index, normalizedAmount, caller, address(0));
         this.update(caller, updates);
         globalizeUpdate(caller, token == tokenA, receivedAmount, true);
         updateRegistry(caller, token == tokenA);
     }
 
     function xPrepOut(address caller, uint256 amount, uint256 index) external nonReentrant returns (PreparedWithdrawal memory) {
-        require(routers[caller], "Router only");
+        require(routers[msg.sender], "Router only");
+        require(caller != address(0), "Invalid caller");
         LiquidityDetails storage details = liquidityDetail;
         Slot storage slot = xLiquiditySlots[index];
+        require(slot.depositor == caller, "Caller not depositor");
         require(slot.allocation >= amount, "Amount exceeds allocation");
 
         uint256 withdrawAmountA = amount > details.xLiquid ? details.xLiquid : amount;
@@ -333,8 +359,10 @@ contract SSLiquidityTemplate is ReentrancyGuard {
     }
 
     function xExecuteOut(address caller, uint256 index, PreparedWithdrawal memory withdrawal) external nonReentrant {
-        require(routers[caller], "Router only");
+        require(routers[msg.sender], "Router only");
+        require(caller != address(0), "Invalid caller");
         Slot storage slot = xLiquiditySlots[index];
+        require(slot.depositor == caller, "Caller not depositor");
 
         UpdateType[] memory updates = new UpdateType[](1);
         updates[0] = UpdateType(2, index, slot.allocation - withdrawal.amountA, slot.depositor, address(0));
@@ -344,10 +372,10 @@ contract SSLiquidityTemplate is ReentrancyGuard {
             uint8 decimalsA = tokenA == address(0) ? 18 : IERC20(tokenA).decimals();
             uint256 amountA = denormalize(withdrawal.amountA, decimalsA);
             if (tokenA == address(0)) {
-                (bool success, ) = slot.depositor.call{value: amountA}("");
+                (bool success, ) = caller.call{value: amountA}("");
                 require(success, "ETH transfer failed");
             } else {
-                IERC20(tokenA).safeTransfer(slot.depositor, amountA);
+                IERC20(tokenA).safeTransfer(caller, amountA);
             }
             globalizeUpdate(caller, true, withdrawal.amountA, false);
             updateRegistry(caller, true);
@@ -356,10 +384,10 @@ contract SSLiquidityTemplate is ReentrancyGuard {
             uint8 decimalsB = tokenB == address(0) ? 18 : IERC20(tokenB).decimals();
             uint256 amountB = denormalize(withdrawal.amountB, decimalsB);
             if (tokenB == address(0)) {
-                (bool success, ) = slot.depositor.call{value: amountB}("");
+                (bool success, ) = caller.call{value: amountB}("");
                 require(success, "ETH transfer failed");
             } else {
-                IERC20(tokenB).safeTransfer(slot.depositor, amountB);
+                IERC20(tokenB).safeTransfer(caller, amountB);
             }
             globalizeUpdate(caller, false, withdrawal.amountB, false);
             updateRegistry(caller, false);
@@ -367,9 +395,11 @@ contract SSLiquidityTemplate is ReentrancyGuard {
     }
 
     function yPrepOut(address caller, uint256 amount, uint256 index) external nonReentrant returns (PreparedWithdrawal memory) {
-        require(routers[caller], "Router only");
+        require(routers[msg.sender], "Router only");
+        require(caller != address(0), "Invalid caller");
         LiquidityDetails storage details = liquidityDetail;
         Slot storage slot = yLiquiditySlots[index];
+        require(slot.depositor == caller, "Caller not depositor");
         require(slot.allocation >= amount, "Amount exceeds allocation");
 
         uint256 withdrawAmountB = amount > details.yLiquid ? details.yLiquid : amount;
@@ -387,8 +417,10 @@ contract SSLiquidityTemplate is ReentrancyGuard {
     }
 
     function yExecuteOut(address caller, uint256 index, PreparedWithdrawal memory withdrawal) external nonReentrant {
-        require(routers[caller], "Router only");
+        require(routers[msg.sender], "Router only");
+        require(caller != address(0), "Invalid caller");
         Slot storage slot = yLiquiditySlots[index];
+        require(slot.depositor == caller, "Caller not depositor");
 
         UpdateType[] memory updates = new UpdateType[](1);
         updates[0] = UpdateType(3, index, slot.allocation - withdrawal.amountB, slot.depositor, address(0));
@@ -398,10 +430,10 @@ contract SSLiquidityTemplate is ReentrancyGuard {
             uint8 decimalsB = tokenB == address(0) ? 18 : IERC20(tokenB).decimals();
             uint256 amountB = denormalize(withdrawal.amountB, decimalsB);
             if (tokenB == address(0)) {
-                (bool success, ) = slot.depositor.call{value: amountB}("");
+                (bool success, ) = caller.call{value: amountB}("");
                 require(success, "ETH transfer failed");
             } else {
-                IERC20(tokenB).safeTransfer(slot.depositor, amountB);
+                IERC20(tokenB).safeTransfer(caller, amountB);
             }
             globalizeUpdate(caller, false, withdrawal.amountB, false);
             updateRegistry(caller, false);
@@ -410,10 +442,10 @@ contract SSLiquidityTemplate is ReentrancyGuard {
             uint8 decimalsA = tokenA == address(0) ? 18 : IERC20(tokenA).decimals();
             uint256 amountA = denormalize(withdrawal.amountA, decimalsA);
             if (tokenA == address(0)) {
-                (bool success, ) = slot.depositor.call{value: amountA}("");
+                (bool success, ) = caller.call{value: amountA}("");
                 require(success, "ETH transfer failed");
             } else {
-                IERC20(tokenA).safeTransfer(slot.depositor, amountA);
+                IERC20(tokenA).safeTransfer(caller, amountA);
             }
             globalizeUpdate(caller, true, withdrawal.amountA, false);
             updateRegistry(caller, true);
@@ -421,32 +453,33 @@ contract SSLiquidityTemplate is ReentrancyGuard {
     }
 
     function claimFees(address caller, address _listingAddress, uint256 liquidityIndex, bool isX, uint256 volume) external nonReentrant {
-        require(routers[caller], "Router only");
-        require(_listingAddress == listingAddress, "Invalid listing address");
+        require(routers[msg.sender], "Router only"); // Ensures msg.sender is a registered router
+        require(_listingAddress == listingAddress, "Invalid listing address"); // Validates listing address
+        require(caller != address(0), "Invalid caller"); // Ensures caller (user) is non-zero
+        // Fetches volume balances and validates listing
         (uint256 xBalance, , , ) = ISSListing(_listingAddress).volumeBalances(listingId);
         require(xBalance > 0, "Invalid listing");
+        // Creates context to reduce stack usage
+        FeeClaimContext memory context;
+        context.caller = caller;
+        context.isX = isX;
+        context.volume = volume;
+        context.liquidityIndex = liquidityIndex;
+        // Accesses liquidity details and slot
         LiquidityDetails storage details = liquidityDetail;
         Slot storage slot = isX ? xLiquiditySlots[liquidityIndex] : yLiquiditySlots[liquidityIndex];
-        require(slot.depositor == msg.sender, "Not depositor");
-
-        uint256 liquid = isX ? details.xLiquid : details.yLiquid;
-        uint256 fees = isX ? details.yFees : details.xFees;
-        uint256 allocation = slot.allocation;
-        uint256 dVolume = slot.dVolume;
-
-        (uint256 feeShare, UpdateType[] memory updates) = _claimFeeShare(volume, dVolume, liquid, allocation, fees);
-        if (feeShare > 0) {
-            updates[0] = UpdateType(1, isX ? 1 : 0, fees - feeShare, address(0), address(0));
-            updates[1] = UpdateType(isX ? 2 : 3, liquidityIndex, allocation, msg.sender, address(0));
-            this.update(caller, updates);
-
-            this.transact(caller, isX ? tokenB : tokenA, feeShare, msg.sender);
-            emit FeesClaimed(listingId, liquidityIndex, isX ? 0 : feeShare, isX ? feeShare : 0);
-        }
+        require(slot.depositor == caller, "Caller not depositor"); // Ensures caller owns the slot
+        // Populates context with relevant values
+        context.liquid = isX ? details.xLiquid : details.yLiquid;
+        context.fees = isX ? details.yFees : details.xFees;
+        context.allocation = slot.allocation;
+        context.dVolume = slot.dVolume;
+        // Processes fee claim via helper
+        _processFeeClaim(context);
     }
 
     function transact(address caller, address token, uint256 amount, address recipient) external nonReentrant {
-        require(routers[caller], "Router only");
+        require(routers[msg.sender], "Router only");
         LiquidityDetails storage details = liquidityDetail;
         uint8 decimals = token == address(0) ? 18 : IERC20(token).decimals();
         uint256 normalizedAmount = normalize(amount, decimals);
@@ -476,14 +509,14 @@ contract SSLiquidityTemplate is ReentrancyGuard {
     }
 
     function addFees(address caller, bool isX, uint256 fee) external nonReentrant {
-        require(routers[caller], "Router only");
+        require(routers[msg.sender], "Router only");
         UpdateType[] memory feeUpdates = new UpdateType[](1);
         feeUpdates[0] = UpdateType(1, isX ? 0 : 1, fee, address(0), address(0));
         this.update(caller, feeUpdates);
     }
 
     function updateLiquidity(address caller, bool isX, uint256 amount) external nonReentrant {
-        require(routers[caller], "Router only");
+        require(routers[msg.sender], "Router only");
         LiquidityDetails storage details = liquidityDetail;
         if (isX) {
             require(details.xLiquid >= amount, "Insufficient xLiquid");
@@ -493,16 +526,6 @@ contract SSLiquidityTemplate is ReentrancyGuard {
             details.yLiquid -= amount;
         }
         emit LiquidityUpdated(listingId, details.xLiquid, details.yLiquid);
-    }
-
-    function transferLiquidity(uint256 liquidityIndex, address newDepositor) external nonReentrant {
-        Slot storage xSlot = xLiquiditySlots[liquidityIndex];
-        require(xSlot.depositor == msg.sender, "Not depositor");
-
-        UpdateType[] memory updates = new UpdateType[](2);
-        updates[0] = UpdateType(2, liquidityIndex, xSlot.allocation, newDepositor, address(0));
-        updates[1] = UpdateType(3, liquidityIndex, xSlot.allocation, newDepositor, address(0));
-        this.update(msg.sender, updates);
     }
 
     function getListingAddress(uint256) external view returns (address) {
