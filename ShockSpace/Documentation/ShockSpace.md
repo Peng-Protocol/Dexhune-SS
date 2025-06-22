@@ -383,94 +383,173 @@ The System comprises of SSAgent  SSListingLogic - SSLiquidityLogic - SSLiquidity
   - **Returns:**
     - `uint256`: Total number of listed tokens.
 
+
 # SSListing and SSLiquidity Contract Documentation
 
 ## Overview
-The `SSListingTemplate` and `SSLiquidityTemplate` contracts, implemented in Solidity (^0.8.1), form the core of a decentralized trading platform. `SSListingTemplate` manages buy/sell orders, payouts, and volume balances, while `SSLiquidityTemplate` handles liquidity deposits, withdrawals, and fee claims. Both inherit `ReentrancyGuard` for security and use `SafeERC20` for token operations, integrating with `ISSAgent` and `ITokenRegistry` for global updates and registry synchronization. State variables are private, accessed via view functions, and amounts are normalized to 1e18 for consistency across token decimals.
+The `SSListingTemplate` and `SSLiquidityTemplate` contracts, implemented in Solidity (^0.8.2), form the core of a decentralized trading platform. `SSListingTemplate` manages buy/sell orders, payouts, and volume balances, while `SSLiquidityTemplate` handles liquidity deposits, withdrawals, and fee claims. Both inherit `ReentrancyGuard` for security and use `SafeERC20` for token operations, integrating with `ISSAgent` and `ITokenRegistry` for global updates and synchronization. State variables are private, accessed via view functions, and amounts are normalized to 1e18 for consistency across token decimals.
 
-**SPDX License:** BSD-3-Clause
+**SPDX License**: BSD-3-Clause
 
-**Version:** 0.0.8 (last updated 2025-06-19)
+**Version**: 0.0.8 (Updated 2025-06-19)
 
 ## SSListingTemplate Documentation
 
+### State Variables
+- **`routersSet`**: `bool public` - Tracks if routers are set, prevents re-setting.
+- **`tokenX`**: `address private` - Address of token X (or ETH if zero).
+- **`tokenY`**: `address private` - Address of token Y (or ETH if zero).
+- **`decimalX`**: `uint8 private` - Decimals of token X (18 for ETH).
+- **`decimalY`**: `uint8 private` - Decimals of token Y (18 for ETH).
+- **`listingId`**: `uint256 public` - Unique identifier for the listing.
+- **`agent`**: `address public` - Address of the agent contract for global updates.
+- **`registryAddress`**: `address public` - Address of the token registry contract.
+- **`liquidityAddress`**: `address public` - Address of the liquidity contract.
+- **`nextOrderId`**: `uint256 public` - Next available order ID for payouts/orders.
+- **`lastDayFee`**: `LastDayFee public` - Stores `xFees`, `yFees`, and `timestamp` for daily fee tracking.
+- **`volumeBalance`**: `VolumeBalance public` - Stores `xBalance`, `yBalance`, `xVolume`, `yVolume`.
+- **`price`**: `uint256 public` - Current price, calculated as `(xBalance * 1e18) / yBalance`.
+- **`pendingBuyOrders`**: `uint256[] public` - Array of pending buy order IDs.
+- **`pendingSellOrders`**: `uint256[] public` - Array of pending sell order IDs.
+- **`longPayoutsByIndex`**: `uint256[] public` - Array of long payout order IDs.
+- **`shortPayoutsByIndex`**: `uint256[] public` - Array of short payout order IDs.
+- **`historicalData`**: `HistoricalData[] public` - Array of historical market data.
+
 ### Mappings
-- **routers**: Maps addresses to boolean, indicating authorized routers.
-- **buyOrderCores**: Maps order ID to `BuyOrderCore` (makerAddress, recipientAddress, status).
-- **buyOrderPricings**: Maps order ID to `BuyOrderPricing` (maxPrice, minPrice).
-- **buyOrderAmounts**: Maps order ID to `BuyOrderAmounts` (pending, filled).
-- **sellOrderCores**: Maps order ID to `SellOrderCore` (makerAddress, recipientAddress, status).
-- **sellOrderPricings**: Maps order ID to `SellOrderPricing` (maxPrice, minPrice).
-- **sellOrderAmounts**: Maps order ID to `SellOrderAmounts` (pending, filled).
-- **longPayouts**: Maps order ID to `LongPayoutStruct` (makerAddress, recipientAddress, required, filled, orderId, status).
-- **shortPayouts**: Maps order ID to `ShortPayoutStruct` (makerAddress, recipientAddress, amount, filled, orderId, status).
-- **makerPendingOrders**: Maps maker address to array of pending order IDs.
-- **userPayoutIDs**: Maps user address to array of payout order IDs.
+- **`routers`**: `mapping(address => bool)` - Maps addresses to authorized routers.
+- **`buyOrderCores`**: `mapping(uint256 => BuyOrderCore)` - Maps order ID to buy order core data (`makerAddress`, `recipientAddress`, `status`).
+- **`buyOrderPricings`**: `mapping(uint256 => BuyOrderPricing)` - Maps order ID to buy order pricing (`maxPrice`, `minPrice`).
+- **`buyOrderAmounts`**: `mapping(uint256 => BuyOrderAmounts)` - Maps order ID to buy order amounts (`pending`, `filled`).
+- **`sellOrderCores`**: `mapping(uint256 => SellOrderCore)` - Maps order ID to sell order core data (`makerAddress`, `recipientAddress`, `status`).
+- **`sellOrderPricings`**: `mapping(uint256 => SellOrderPricing)` - Maps order ID to sell order pricing (`maxPrice`, `minPrice`).
+- **`sellOrderAmounts`**: `mapping(uint256 => SellOrderAmounts)` - Maps order ID to sell order amounts (`pending`, `filled`).
+- **`longPayouts`**: `mapping(uint256 => LongPayoutStruct)` - Maps order ID to long payout data (`makerAddress`, `recipientAddress`, `required`, `filled`, `orderId`, `status`).
+- **`shortPayouts`**: `mapping(uint256 => ShortPayoutStruct)` - Maps order ID to short payout data (`makerAddress`, `recipientAddress`, `amount`, `filled`, `orderId`, `status`).
+- **`makerPendingOrders`**: `mapping(address => uint256[])` - Maps maker address to their pending order IDs.
+- **`userPayoutIDs`**: `mapping(address => uint256[])` - Maps user address to their payout order IDs.
 
 ### Structs
-- **VolumeBalance**: Stores `xBalance` (tokenX), `yBalance` (tokenY), `xVolume`, `yVolume` (normalized).
-- **LastDayFee**: Stores `xFees`, `yFees`, `timestamp` for daily fee tracking.
-- **BuyOrderCore**: Contains `makerAddress`, `recipientAddress`, `status` (0=cancelled, 1=pending, 2=partially filled, 3=filled).
-- **BuyOrderPricing**: Contains `maxPrice`, `minPrice` (normalized).
-- **BuyOrderAmounts**: Contains `pending`, `filled` (normalized).
-- **SellOrderCore**: Same as `BuyOrderCore` for sell orders.
-- **SellOrderPricing**: Same as `BuyOrderPricing` for sell orders.
-- **SellOrderAmounts**: Same as `BuyOrderAmounts` for sell orders.
-- **PayoutUpdate**: Contains `payoutType` (0=long, 1=short), `recipient`, `required` (normalized).
-- **LongPayoutStruct**: Contains `makerAddress`, `recipientAddress`, `required`, `filled`, `orderId`, `status`.
-- **ShortPayoutStruct**: Contains `makerAddress`, `recipientAddress`, `amount`, `filled`, `orderId`, `status`.
-- **HistoricalData**: Stores `price`, `xBalance`, `yBalance`, `xVolume`, `yVolume`, `timestamp`.
-- **UpdateType**: Contains `updateType` (0=balance, 1=buy order, 2=sell order, 3=historical), `structId` (0=core, 1=pricing, 2=amounts), `index`, `value`, `addr`, `recipient`, `maxPrice`, `minPrice`.
+1. **LastDayFee**:
+   - `xFees`: `uint256` - Token X fees at start of day.
+   - `yFees`: `uint256` - Token Y fees at start of day.
+   - `timestamp`: `uint256` - Timestamp of last fee update.
+
+2. **VolumeBalance**:
+   - `xBalance`: `uint256` - Normalized balance of token X.
+   - `yBalance`: `uint256` - Normalized balance of token Y.
+   - `xVolume`: `uint256` - Normalized trading volume of token X.
+   - `yVolume`: `uint256` - Normalized trading volume of token Y.
+
+3. **BuyOrderCore**:
+   - `makerAddress`: `address` - Address of the order creator.
+   - `recipientAddress`: `address` - Address to receive tokens.
+   - `status`: `uint8` - Order status (0=cancelled, 1=pending, 2=partially filled, 3=filled).
+
+4. **BuyOrderPricing**:
+   - `maxPrice`: `uint256` - Maximum acceptable price (normalized).
+   - `minPrice`: `uint256` - Minimum acceptable price (normalized).
+
+5. **BuyOrderAmounts**:
+   - `pending`: `uint256` - Normalized pending amount.
+   - `filled`: `uint256` - Normalized filled amount.
+
+6. **SellOrderCore**:
+   - Same as `BuyOrderCore` for sell orders.
+
+7. **SellOrderPricing**:
+   - Same as `BuyOrderPricing` for sell orders.
+
+8. **SellOrderAmounts**:
+   - Same as `BuyOrderAmounts` for sell orders.
+
+9. **PayoutUpdate**:
+   - `payoutType`: `uint8` - Type of payout (0=long, 1=short).
+   - `recipient`: `address` - Address to receive payout.
+   - `required`: `uint256` - Normalized amount required.
+
+10. **LongPayoutStruct**:
+    - `makerAddress`: `address` - Address of the payout creator.
+    - `recipientAddress`: `address` - Address to receive payout.
+    - `required`: `uint256` - Normalized amount required.
+    - `filled`: `uint256` - Normalized amount filled.
+    - `orderId`: `uint256` - Unique payout order ID.
+    - `status`: `uint8` - Payout status (0=pending, others undefined).
+
+11. **ShortPayoutStruct**:
+    - `makerAddress`: `address` - Address of the payout creator.
+    - `recipientAddress`: `address` - Address to receive payout.
+    - `amount`: `uint256` - Normalized payout amount.
+    - `filled`: `uint256` - Normalized amount filled.
+    - `orderId`: `uint256` - Unique payout order ID.
+    - `status`: `uint8` - Payout status (0=pending, others undefined).
+
+12. **HistoricalData**:
+    - `price`: `uint256` - Market price at timestamp (normalized).
+    - `xBalance`: `uint256` - Token X balance (normalized).
+    - `yBalance`: `uint256` - Token Y balance (normalized).
+    - `xVolume`: `uint256` - Token X volume (normalized).
+    - `yVolume`: `uint256` - Token Y volume (normalized).
+    - `timestamp`: `uint256` - Time of data snapshot.
+
+13. **UpdateType**:
+    - `updateType`: `uint8` - Update type (0=balance, 1=buy order, 2=sell order, 3=historical).
+    - `structId`: `uint8` - Struct to update (0=core, 1=pricing, 2=amounts).
+    - `index`: `uint256` - Order ID or balance index (0=xBalance, 1=yBalance, 2=xVolume, 3=yVolume).
+    - `value`: `uint256` - Normalized amount or price.
+    - `addr`: `address` - Maker address.
+    - `recipient`: `address` - Recipient address.
+    - `maxPrice`: `uint256` - Max price or packed xBalance/yBalance (historical).
+    - `minPrice`: `uint256` - Min price or packed xVolume/yVolume (historical).
 
 ### Formulas
 1. **Price Calculation**:
    - **Formula**: `price = (xBalance * 1e18) / yBalance`
-   - **Used in**: `update`, `transact`.
+   - **Used in**: `update`, `transact`
    - **Description**: Computes current price when `xBalance` and `yBalance` are non-zero, used for order pricing and historical data.
 
 2. **Daily Yield**:
    - **Formula**: `dailyYield = ((feeDifference * 0.0005) * 1e18) / liquidity * 365`
-   - **Used in**: `queryYield`.
+   - **Used in**: `queryYield`
    - **Description**: Calculates annualized yield from `feeDifference` (`xVolume - lastDayFee.xFees` or `yVolume - lastDayFee.yFees`), using 0.05% fee rate and liquidity from `SSLiquidityTemplate`.
 
 ### External Functions
 #### setRouters(address[] memory _routers)
-- **Parameters**: `_routers` (array of router addresses).
+- **Parameters**: `_routers` - Array of router addresses.
 - **Behavior**: Sets authorized routers, callable once.
 - **Internal Call Flow**: Updates `routers` mapping, sets `routersSet` to true.
-- **Restrictions**: Reverts if `routersSet` or `_routers` is empty/invalid.
+- **Restrictions**: Reverts if `routersSet` is true or `_routers` is empty/invalid.
 - **Gas Usage Controls**: Single loop, minimal state writes.
 
 #### setListingId(uint256 _listingId)
-- **Parameters**: `_listingId` (uint256).
+- **Parameters**: `_listingId` - Listing ID.
 - **Behavior**: Sets `listingId`, callable once.
 - **Internal Call Flow**: Direct state update.
 - **Restrictions**: Reverts if `listingId` already set.
 - **Gas Usage Controls**: Minimal, single state write.
 
 #### setLiquidityAddress(address _liquidityAddress)
-- **Parameters**: `_liquidityAddress` (address).
+- **Parameters**: `_liquidityAddress` - Liquidity contract address.
 - **Behavior**: Sets `liquidityAddress`, callable once.
 - **Internal Call Flow**: Direct state update.
 - **Restrictions**: Reverts if `liquidityAddress` already set or invalid.
 - **Gas Usage Controls**: Minimal, single state write.
 
 #### setTokens(address _tokenA, address _tokenB)
-- **Parameters**: `_tokenA`, `_tokenB` (addresses).
+- **Parameters**: `_tokenA`, `_tokenB` - Token addresses.
 - **Behavior**: Sets `tokenX`, `tokenY`, `decimalX`, `decimalY`, callable once.
 - **Internal Call Flow**: Fetches decimals via `IERC20.decimals` (18 for ETH).
 - **Restrictions**: Reverts if tokens already set, same, or both zero.
 - **Gas Usage Controls**: Minimal, state writes and external calls.
 
 #### setAgent(address _agent)
-- **Parameters**: `_agent` (address).
+- **Parameters**: `_agent` - Agent contract address.
 - **Behavior**: Sets `agent`, callable once.
 - **Internal Call Flow**: Direct state update.
 - **Restrictions**: Reverts if `agent` already set or invalid.
 - **Gas Usage Controls**: Minimal, single state write.
 
 #### setRegistry(address _registryAddress)
-- **Parameters**: `_registryAddress` (address).
+- **Parameters**: `_registryAddress` - Registry contract address.
 - **Behavior**: Sets `registryAddress`, callable once.
 - **Internal Call Flow**: Direct state update.
 - **Restrictions**: Reverts if `registryAddress` already set or invalid.
@@ -478,8 +557,8 @@ The `SSListingTemplate` and `SSLiquidityTemplate` contracts, implemented in Soli
 
 #### update(address caller, UpdateType[] memory updates)
 - **Parameters**:
-  - `caller` (address): Router address.
-  - `updates` (UpdateType[]): Array of updates.
+  - `caller` - Router address.
+  - `updates` - Array of update structs.
 - **Behavior**: Updates balances, orders, or historical data, triggers `globalizeUpdate`.
 - **Internal Call Flow**:
   - Checks `volumeUpdated` to update `lastDayFee` if new day.
@@ -490,29 +569,26 @@ The `SSListingTemplate` and `SSLiquidityTemplate` contracts, implemented in Soli
     - `updateType=3`: Adds `HistoricalData`.
   - Updates `price`, calls `globalizeUpdate`, emits `BalancesUpdated` or `OrderUpdated`.
 - **Balance Checks**: Updates `xBalance`, `yBalance` for orders.
-- **Mappings/Structs Used**: All mappings, `UpdateType`, `VolumeBalance`, `LastDayFee`, `HistoricalData`.
 - **Restrictions**: `nonReentrant`, `routers[caller]`.
 - **Gas Usage Controls**: Dynamic array resizing, loop over `updates`.
 
 #### ssUpdate(address caller, PayoutUpdate[] memory payoutUpdates)
 - **Parameters**:
-  - `caller` (address): Router address.
-  - `payoutUpdates` (PayoutUpdate[]): Array of payout updates.
+  - `caller` - Router address.
+  - `payoutUpdates` - Array of payout updates.
 - **Behavior**: Creates long/short payout orders, increments `nextOrderId`.
 - **Internal Call Flow**:
   - Creates `LongPayoutStruct` or `ShortPayoutStruct`, updates `longPayoutsByIndex`, `shortPayoutsByIndex`, `userPayoutIDs`.
   - Emits `PayoutOrderCreated`.
-- **Balance Checks**: None.
-- **Mappings/Structs Used**: `longPayouts`, `shortPayouts`, `longPayoutsByIndex`, `shortPayoutsByIndex`, `userPayoutIDs`, `PayoutUpdate`.
 - **Restrictions**: `nonReentrant`, `routers[caller]`.
 - **Gas Usage Controls**: Loop over `payoutUpdates`, dynamic arrays.
 
 #### transact(address caller, address token, uint256 amount, address recipient)
 - **Parameters**:
-  - `caller` (address): Router address.
-  - `token` (address): TokenX or tokenY.
-  - `amount` (uint256): Denormalized amount.
-  - `recipient` (address): Recipient address.
+  - `caller` - Router address.
+  - `token` - TokenX or tokenY.
+  - `amount` - Denormalized amount.
+  - `recipient` - Recipient address.
 - **Behavior**: Transfers tokens/ETH, updates balances, and registry.
 - **Internal Call Flow**:
   - Normalizes `amount`, checks `xBalance`/`yBalance`.
@@ -520,22 +596,120 @@ The `SSListingTemplate` and `SSLiquidityTemplate` contracts, implemented in Soli
   - Updates `xVolume`/`yVolume`, `lastDayFee`, `price`.
   - Calls `_updateRegistry`, emits `BalancesUpdated`.
 - **Balance Checks**: Pre-transfer balance check.
-- **Mappings/Structs Used**: `volumeBalance`, `LastDayFee`.
 - **Restrictions**: `nonReentrant`, `routers[caller]`.
 - **Gas Usage Controls**: Single transfer, minimal state updates.
 
 #### queryYield(bool isA, uint256 maxIterations)
 - **Parameters**:
-  - `isA` (bool): True for tokenX, false for tokenY.
-  - `maxIterations` (uint256): Max historical data iterations.
+  - `isA` - True for tokenX, false for tokenY.
+  - `maxIterations` - Max historical data iterations.
 - **Behavior**: Returns annualized yield based on daily fees.
 - **Internal Call Flow**:
   - Checks `lastDayFee` timestamp, fetches liquidity from `liquidityAddress`.
   - Computes `feeDifference`, calculates yield.
-- **Balance Checks**: None.
-- **Mappings/Structs Used**: `lastDayFee`, `volumeBalance`.
 - **Restrictions**: Reverts if `maxIterations` is zero.
 - **Gas Usage Controls**: Minimal, external call to `liquidityAmounts`.
+
+#### prices(uint256) view returns (uint256)
+- **Parameters**: Ignored listing ID.
+- **Behavior**: Returns current `price`.
+
+#### volumeBalances(uint256) view returns (uint256 xBalance, uint256 yBalance)
+- **Parameters**: Ignored listing ID.
+- **Behavior**: Returns `xBalance`, `yBalance` from `volumeBalance`.
+
+#### liquidityAddressView(uint256) view returns (address)
+- **Parameters**: Ignored listing ID.
+- **Behavior**: Returns `liquidityAddress`.
+
+#### tokenA() view returns (address)
+- **Behavior**: Returns `tokenX`.
+
+#### tokenB() view returns (address)
+- **Behavior**: Returns `tokenY`.
+
+#### decimalsA() view returns (uint8)
+- **Behavior**: Returns `decimalX`.
+
+#### decimalsB() view returns (uint8)
+- **Behavior**: Returns `decimalY`.
+
+#### getListingId() view returns (uint256)
+- **Behavior**: Returns `listingId`.
+
+#### getNextOrderId() view returns (uint256)
+- **Behavior**: Returns `nextOrderId`.
+
+#### listingVolumeBalancesView() view returns (uint256 xBalance, uint256 yBalance, uint256 xVolume, uint256 yVolume)
+- **Behavior**: Returns all fields from `volumeBalance`.
+
+#### listingPriceView() view returns (uint256)
+- **Behavior**: Returns `price`.
+
+#### pendingBuyOrdersView() view returns (uint256[] memory)
+- **Behavior**: Returns `pendingBuyOrders`.
+
+#### pendingSellOrdersView() view returns (uint256[] memory)
+- **Behavior**: Returns `pendingSellOrders`.
+
+#### makerPendingOrdersView(address maker) view returns (uint256[] memory)
+- **Parameters**: `maker` - Maker address.
+- **Behavior**: Returns maker's pending order IDs.
+
+#### longPayoutByIndexView() view returns (uint256[] memory)
+- **Behavior**: Returns `longPayoutsByIndex`.
+
+#### shortPayoutByIndexView() view returns (uint256[] memory)
+- **Behavior**: Returns `shortPayoutsByIndex`.
+
+#### userPayoutIDsView(address user) view returns (uint256[] memory)
+- **Parameters**: `user` - User address.
+- **Behavior**: Returns user's payout order IDs.
+
+#### getLongPayout(uint256 orderId) view returns (LongPayoutStruct memory)
+- **Parameters**: `orderId` - Payout order ID.
+- **Behavior**: Returns `LongPayoutStruct` for given `orderId`.
+
+#### getShortPayout(uint256 orderId) view returns (ShortPayoutStruct memory)
+- **Parameters**: `orderId` - Payout order ID.
+- **Behavior**: Returns `ShortPayoutStruct` for given `orderId`.
+
+#### getBuyOrderCore(uint256 orderId) view returns (address makerAddress, address recipientAddress, uint8 status)
+- **Parameters**: `orderId` - Buy order ID.
+- **Behavior**: Returns fields from `buyOrderCores[orderId]`.
+
+#### getBuyOrderPricing(uint256 orderId) view returns (uint256 maxPrice, uint256 minPrice)
+- **Parameters**: `orderId` - Buy order ID.
+- **Behavior**: Returns fields from `buyOrderPricings[orderId]`.
+
+#### getBuyOrderAmounts(uint256 orderId) view returns (uint256 pending, uint256 filled)
+- **Parameters**: `orderId` - Buy order ID.
+- **Behavior**: Returns fields from `buyOrderAmounts[orderId]`.
+
+#### getSellOrderCore(uint256 orderId) view returns (address makerAddress, address recipientAddress, uint8 status)
+- **Parameters**: `orderId` - Sell order ID.
+- **Behavior**: Returns fields from `sellOrderCores[orderId]`.
+
+#### getSellOrderPricing(uint256 orderId) view returns (uint256 maxPrice, uint256 minPrice)
+- **Parameters**: `orderId` - Sell order ID.
+- **Behavior**: Returns fields from `sellOrderPricings[orderId]`.
+
+#### getSellOrderAmounts(uint256 orderId) view returns (uint256 pending, uint256 filled)
+- **Parameters**: `orderId` - Sell order ID.
+- **Behavior**: Returns fields from `sellOrderAmounts[orderId]`.
+
+#### getHistoricalDataView(uint256 index) view returns (HistoricalData memory)
+- **Parameters**: `index` - Historical data index.
+- **Behavior**: Returns `HistoricalData` at given index.
+- **Restrictions**: Reverts if `index` is invalid.
+
+#### historicalDataLengthView() view returns (uint256)
+- **Behavior**: Returns length of `historicalData`.
+
+#### getHistoricalDataByNearestTimestamp(uint256 targetTimestamp) view returns (HistoricalData memory)
+- **Parameters**: `targetTimestamp` - Target timestamp.
+- **Behavior**: Returns `HistoricalData` with closest timestamp.
+- **Restrictions**: Reverts if no historical data exists.
 
 ### Additional Details
 - **Decimal Handling**: Uses `normalize` and `denormalize` (1e18) for amounts, fetched via `IERC20.decimals` or `decimalX`/`decimalY`.
@@ -544,62 +718,102 @@ The `SSListingTemplate` and `SSLiquidityTemplate` contracts, implemented in Soli
 - **Token Usage**: Buy orders use tokenY input, tokenX output; sell orders use tokenX input, tokenY output; long payouts use tokenY, short payouts use tokenX.
 - **Events**: `OrderUpdated`, `PayoutOrderCreated`, `BalancesUpdated`.
 - **Safety**: Balance checks, explicit casting, no inline assembly, try-catch error handling.
-- **Compatibility**: Aligned with `SSRouter` (v0.0.44), `SSAgent` (v0.0.2).
+- **Compatibility**: Aligned with `SSRouter` (v0.0.44), `SSAgent` (v0.0.2), `SSLiquidityTemplate` (v0.0.7).
 
 ## SSLiquidityTemplate Documentation
 
+### State Variables
+- **`routersSet`**: `bool public` - Tracks if routers are set, prevents re-setting.
+- **`listingAddress`**: `address public` - Address of the listing contract.
+- **`tokenA`**: `address public` - Address of token A (or ETH if zero).
+- **`tokenB`**: `address public` - Address of token B (or ETH if zero).
+- **`listingId`**: `uint256 public` - Unique identifier for the listing.
+- **`agent`**: `address public` - Address of the agent contract for global updates.
+- **`liquidityDetail`**: `LiquidityDetails public` - Stores `xLiquid`, `yLiquid`, `xFees`, `yFees`.
+- **`activeXLiquiditySlots`**: `uint256[] public` - Array of active xSlot indices.
+- **`activeYLiquiditySlots`**: `uint256[] public` - Array of active ySlot indices.
+
 ### Mappings
-- **routers**: Maps addresses to boolean, indicating authorized routers.
-- **xLiquiditySlots**: Maps slot index to `Slot` for tokenA (depositor, recipient, allocation, dVolume, timestamp).
-- **yLiquiditySlots**: Maps slot index to `Slot` for tokenB.
-- **activeXLiquiditySlots**: Array of active xSlot indices.
-- **activeYLiquiditySlots**: Array of active ySlot indices.
-- **userIndex**: Maps user address to array of slot indices.
+- **`routers`**: `mapping(address => bool)` - Maps addresses to authorized routers.
+- **`xLiquiditySlots`**: `mapping(uint256 => Slot)` - Maps slot index to token A slot data.
+- **`yLiquiditySlots`**: `mapping(uint256 => Slot)` - Maps slot index to token B slot data.
+- **`userIndex`**: `mapping(address => uint256[])` - Maps user address to their slot indices.
 
 ### Structs
-- **LiquidityDetails**: Stores `xLiquid`, `yLiquid` (normalized liquidity), `xFees`, `yFees` (normalized fees).
-- **Slot**: Contains `depositor`, `recipient`, `allocation` (normalized), `dVolume`, `timestamp`.
-- **UpdateType**: Contains `updateType` (0=balance, 1=fees, 2=xSlot, 3=ySlot), `index` (0=xFees/xLiquid, 1=yFees/yLiquid, or slot index), `value` (normalized), `addr` (depositor), `recipient` (unused).
-- **PreparedWithdrawal**: Contains `amountA`, `amountB` (normalized).
-- **FeeClaimContext**: Contains `caller` (address), `isX` (bool), `volume`, `dVolume`, `liquid`, `allocation`, `fees`, `liquidityIndex` (uint256) for `claimFees` stack optimization.
+1. **LiquidityDetails**:
+   - `xLiquid`: `uint256` - Normalized liquidity for token A.
+   - `yLiquid`: `uint256` - Normalized liquidity for token B.
+   - `xFees`: `uint256` - Normalized fees for token A.
+   - `yFees`: `uint256` - Normalized fees for token B.
+
+2. **Slot**:
+   - `depositor`: `address` - Address of the slot owner.
+   - `recipient`: `address` - Unused recipient address.
+   - `allocation`: `uint256` - Normalized liquidity allocation.
+   - `dVolume`: `uint256` - Volume at deposit time.
+   - `timestamp`: `uint256` - Slot creation timestamp.
+
+3. **UpdateType**:
+   - `updateType`: `uint8` - Update type (0=balance, 1=fees, 2=xSlot, 3=ySlot).
+   - `index`: `uint256` - Index (0=xFees/xLiquid, 1=yFees/yLiquid, or slot index).
+   - `value`: `uint256` - Normalized amount or allocation.
+   - `addr`: `address` - Depositor address.
+   - `recipient`: `address` - Unused recipient address.
+
+4. **PreparedWithdrawal**:
+   - `amountA`: `uint256` - Normalized withdrawal amount for token A.
+   - `amountB`: `uint256` - Normalized withdrawal amount for token B.
+
+5. **FeeClaimContext**:
+   - `caller`: `address` - User address.
+   - `isX`: `bool` - True for token A, false for token B.
+   - `volume`: `uint256` - Trading volume for fee calculation.
+   - `dVolume`: `uint256` - Volume at deposit.
+   - `liquid`: `uint256` - Total liquidity (xLiquid or yLiquid).
+   - `allocation`: `uint256` - Slot allocation.
+   - `fees`: `uint256` - Available fees (yFees for xSlots, xFees for ySlots).
+   - `liquidityIndex`: `uint256` - Slot index.
 
 ### Formulas
 1. **Fee Share**:
-   - **Formula**: `feeShare = (feesAccrued * liquidityContribution) / 1e18`, where `feesAccrued = (contributedVolume * 0.0005)`, `contributedVolume = volume - dVolume`, `liquidityContribution = (allocation * 1e18) / liquid`
-   - **Used in**: `_claimFeeShare`.
+   - **Formula**: `feeShare = (feesAccrued * liquidityContribution) / 1e18`
+     - `feesAccrued = (contributedVolume * 0.0005)`
+     - `contributedVolume = volume - dVolume`
+     - `liquidityContribution = (allocation * 1e18) / liquid`
+   - **Used in**: `_claimFeeShare`
    - **Description**: Computes fee share for a liquidity slot based on volume contribution and liquidity proportion.
 
 ### External Functions
 #### setRouters(address[] memory _routers)
-- **Parameters**: `_routers` (array of router addresses).
+- **Parameters**: `_routers` - Array of router addresses.
 - **Behavior**: Sets authorized routers, callable once.
 - **Internal Call Flow**: Updates `routers` mapping, sets `routersSet`.
 - **Restrictions**: Reverts if `routersSet` or `_routers` is empty/invalid.
 - **Gas Usage Controls**: Single loop, minimal state writes.
 
 #### setListingId(uint256 _listingId)
-- **Parameters**: `_listingId` (uint256).
+- **Parameters**: `_listingId` - Listing ID.
 - **Behavior**: Sets `listingId`, callable once.
 - **Internal Call Flow**: Direct state update.
 - **Restrictions**: Reverts if `listingId` already set.
 - **Gas Usage Controls**: Minimal, single state write.
 
 #### setListingAddress(address _listingAddress)
-- **Parameters**: `_listingAddress` (address).
+- **Parameters**: `_listingAddress` - Listing contract address.
 - **Behavior**: Sets `listingAddress`, callable once.
 - **Internal Call Flow**: Direct state update.
 - **Restrictions**: Reverts if `listingAddress` already set or invalid.
 - **Gas Usage Controls**: Minimal, single state write.
 
 #### setTokens(address _tokenA, address _tokenB)
-- **Parameters**: `_tokenA`, `_tokenB` (addresses).
+- **Parameters**: `_tokenA`, `_tokenB` - Token addresses.
 - **Behavior**: Sets `tokenA`, `tokenB`, callable once.
 - **Internal Call Flow**: Direct state update.
 - **Restrictions**: Reverts if tokens already set, same, or both zero.
 - **Gas Usage Controls**: Minimal, state writes.
 
 #### setAgent(address _agent)
-- **Parameters**: `_agent` (address).
+- **Parameters**: `_agent` - Agent contract address.
 - **Behavior**: Sets `agent`, callable once.
 - **Internal Call Flow**: Direct state update.
 - **Restrictions**: Reverts if `agent` already set or invalid.
@@ -607,8 +821,8 @@ The `SSListingTemplate` and `SSLiquidityTemplate` contracts, implemented in Soli
 
 #### update(address caller, UpdateType[] memory updates)
 - **Parameters**:
-  - `caller` (address): User address.
-  - `updates` (UpdateType[]): Array of updates.
+  - `caller` - User address.
+  - `updates` - Array of update structs.
 - **Behavior**: Updates liquidity or fees, manages slots.
 - **Internal Call Flow**:
   - Processes `updates`:
@@ -617,156 +831,169 @@ The `SSListingTemplate` and `SSLiquidityTemplate` contracts, implemented in Soli
     - `updateType=2`: Updates `xLiquiditySlots`, `activeXLiquiditySlots`, `userIndex`, fetches `xVolume`.
     - `updateType=3`: Same for `yLiquiditySlots`, `activeYLiquiditySlots`, fetches `yVolume`.
   - Emits `LiquidityUpdated`.
-- **Balance Checks**: None.
-- **Mappings/Structs Used**: `liquidityDetail`, `xLiquiditySlots`, `yLiquiditySlots`, `activeXLiquiditySlots`, `activeYLiquiditySlots`, `userIndex`, `UpdateType`.
 - **Restrictions**: `nonReentrant`, `routers[msg.sender]`.
 - **Gas Usage Controls**: Dynamic array resizing, loop over `updates`.
 
 #### changeSlotDepositor(address caller, bool isX, uint256 slotIndex, address newDepositor)
 - **Parameters**:
-  - `caller` (address): User address.
-  - `isX` (bool): True for tokenA, false for tokenB.
-  - `slotIndex` (uint256): Slot index.
-  - `newDepositor` (address): New depositor.
+  - `caller` - User address.
+  - `isX` - True for token A, false for token B.
+  - `slotIndex` - Slot index.
+  - `newDepositor` - New depositor address.
 - **Behavior**: Transfers slot ownership.
 - **Internal Call Flow**:
   - Updates `xLiquiditySlots` or `yLiquiditySlots`, `userIndex`.
   - Emits `SlotDepositorChanged`.
 - **Balance Checks**: Checks slot `allocation`.
-- **Mappings/Structs Used**: `xLiquiditySlots`, `yLiquiditySlots`, `userIndex`.
 - **Restrictions**: `nonReentrant`, `routers[msg.sender]`, caller must be depositor.
 - **Gas Usage Controls**: Single slot update, array adjustments.
 
 #### deposit(address caller, address token, uint256 amount)
 - **Parameters**:
-  - `caller` (address): User address.
-  - `token` (address): TokenA or tokenB.
-  - `amount` (uint256): Denormalized amount.
+  - `caller` - User address.
+  - `token` - Token A or B.
+  - `amount` - Denormalized amount.
 - **Behavior**: Deposits tokens/ETH to liquidity pool.
 - **Internal Call Flow**:
   - Performs pre/post balance checks, transfers via `transferFrom` or ETH.
   - Normalizes amount, creates `UpdateType` for slot allocation.
   - Calls `update`, `globalizeUpdate`, `updateRegistry`.
 - **Balance Checks**: Pre/post balance for tokens, `msg.value` for ETH.
-- **Mappings/Structs Used**: `UpdateType`, `activeXLiquiditySlots`, `activeYLiquiditySlots`.
 - **Restrictions**: `nonReentrant`, `routers[msg.sender]`, valid token.
 - **Gas Usage Controls**: Single transfer, minimal updates.
 
-#### xPrepOut(address caller, uint256 amount, uint256 index)
+#### xPrepOut(address caller, uint256 amount, uint256 index) returns (PreparedWithdrawal memory)
 - **Parameters**:
-  - `caller` (address): User address.
-  - `amount` (uint256): Normalized amount.
-  - `index` (uint256): Slot index.
-- **Behavior**: Prepares tokenA withdrawal, calculates compensation.
+  - `caller` - User address.
+  - `amount` - Normalized amount.
+  - `index` - Slot index.
+- **Behavior**: Prepares token A withdrawal, calculates compensation.
 - **Internal Call Flow**:
   - Checks `xLiquid` and slot `allocation`.
   - Fetches `getPrice`, computes `withdrawAmountB` if deficit.
   - Returns `PreparedWithdrawal`.
 - **Balance Checks**: Checks `xLiquid`, `yLiquid`.
-- **Mappings/Structs Used**: `liquidityDetail`, `xLiquiditySlots`, `PreparedWithdrawal`.
 - **Restrictions**: `nonReentrant`, `routers[msg.sender]`.
 - **Gas Usage Controls**: Minimal, external call to `getPrice`.
 
 #### xExecuteOut(address caller, uint256 index, PreparedWithdrawal memory withdrawal)
 - **Parameters**:
-  - `caller` (address): User address.
-  - `index` (uint256): Slot index.
-  - `withdrawal` (PreparedWithdrawal): Withdrawal amounts.
-- **Behavior**: Executes tokenA withdrawal, transfers tokens/ETH.
+  - `caller` - User address.
+  - `index` - Slot index.
+  - `withdrawal` - Withdrawal amounts.
+- **Behavior**: Executes token A withdrawal, transfers tokens/ETH.
 - **Internal Call Flow**:
   - Updates `xLiquiditySlots` via `update`.
-  - Transfers `amountA` (tokenA), `amountB` (tokenB) via `SafeERC20` or ETH.
+  - Transfers `amountA` (token A), `amountB` (token B) via `SafeERC20` or ETH.
   - Calls `globalizeUpdate`, `updateRegistry` for both tokens.
-- **Balance Checks**: None, assumes `xPrepOut` validation.
-- **Mappings/Structs Used**: `xLiquiditySlots`, `UpdateType`, `PreparedWithdrawal`.
 - **Restrictions**: `nonReentrant`, `routers[msg.sender]`.
 - **Gas Usage Controls**: Two transfers, minimal updates.
 
-#### yPrepOut(address caller, uint256 amount, uint256 index)
+#### yPrepOut(address caller, uint256 amount, uint256 index) returns (PreparedWithdrawal memory)
 - **Parameters**: Same as `xPrepOut`.
-- **Behavior**: Prepares tokenB withdrawal, calculates compensation.
+- **Behavior**: Prepares token B withdrawal, calculates compensation.
 - **Internal Call Flow**: Similar to `xPrepOut`, uses `yLiquid`, computes `withdrawAmountA`.
 - **Balance Checks**: Checks `yLiquid`, `xLiquid`.
-- **Mappings/Structs Used**: `yLiquiditySlots`, `liquidityDetail`, `PreparedWithdrawal`.
 - **Restrictions**: Same as `xPrepOut`.
 - **Gas Usage Controls**: Same as `xPrepOut`.
 
 #### yExecuteOut(address caller, uint256 index, PreparedWithdrawal memory withdrawal)
 - **Parameters**: Same as `xExecuteOut`.
-- **Behavior**: Executes tokenB withdrawal, transfers tokens/ETH.
+- **Behavior**: Executes token B withdrawal, transfers tokens/ETH.
 - **Internal Call Flow**: Similar to `xExecuteOut`, uses `yLiquiditySlots`.
-- **Balance Checks**: None, assumes `yPrepOut` validation.
-- **Mappings/Structs Used**: `yLiquiditySlots`, `UpdateType`, `PreparedWithdrawal`.
 - **Restrictions**: Same as `xExecuteOut`.
 - **Gas Usage Controls**: Same as `xExecuteOut`.
 
 #### claimFees(address caller, address _listingAddress, uint256 liquidityIndex, bool isX, uint256 volume)
 - **Parameters**:
-  - `caller` (address): User address.
-  - `_listingAddress` (address): Listing contract.
-  - `liquidityIndex` (uint256): Slot index.
-  - `isX` (bool): True for tokenA, false for tokenB.
-  - `volume` (uint256): Volume for fee calculation.
-- **Behavior**: Claims fees (tokenB for xSlots, tokenA for ySlots).
+  - `caller` - User address.
+  - `_listingAddress` - Listing contract address.
+  - `liquidityIndex` - Slot index.
+  - `isX` - True for token A, false for token B.
+  - `volume` - Volume for fee calculation.
+- **Behavior**: Claims fees (token B for xSlots, token A for ySlots).
 - **Internal Call Flow**:
-  - Creates `FeeClaimContext` to store `caller`, `isX`, `volume`, `dVolume`, `liquid`, `allocation`, `fees`, `liquidityIndex`.
+  - Creates `FeeClaimContext` to optimize stack.
   - Calls `_processFeeClaim` with `FeeClaimContext`.
   - `_processFeeClaim` calls `_claimFeeShare` to compute `feeShare`, updates fees and slot via `update`, transfers via `transact`.
   - Emits `FeesClaimed`.
 - **Balance Checks**: Checks `xBalance` (from `volumeBalances`), `xLiquid`/`yLiquid`, `xFees`/`yFees`.
-- **Mappings/Structs Used**: `liquidityDetail`, `xLiquiditySlots`, `yLiquiditySlots`, `UpdateType`, `FeeClaimContext`.
 - **Restrictions**: `nonReentrant`, `routers[msg.sender]`, caller must be depositor.
 - **Gas Usage Controls**: Single transfer, struct-based stack optimization.
 
 #### transact(address caller, address token, uint256 amount, address recipient)
 - **Parameters**:
-  - `caller` (address): User address.
-  - `token` (address): TokenA or tokenB.
-  - `amount` (uint256): Denormalized amount.
-  - `recipient` (address): Recipient address.
+  - `caller` - User address.
+  - `token` - Token A or B.
+  - `amount` - Denormalized amount.
+  - `recipient` - Recipient address.
 - **Behavior**: Transfers tokens/ETH, updates liquidity.
 - **Internal Call Flow**:
   - Normalizes `amount`, checks `xLiquid`/`yLiquid`.
   - Transfers via `SafeERC20` or ETH, updates `liquidityDetail`.
   - Emits `LiquidityUpdated`.
 - **Balance Checks**: Pre-transfer liquidity check.
-- **Mappings/Structs Used**: `liquidityDetail`.
 - **Restrictions**: `nonReentrant`, `routers[msg.sender]`.
 - **Gas Usage Controls**: Single transfer, minimal updates.
 
 #### addFees(address caller, bool isX, uint256 fee)
 - **Parameters**:
-  - `caller` (address): User address.
-  - `isX` (bool): True for tokenA, false for tokenB.
-  - `fee` (uint256): Normalized fee amount.
+  - `caller` - User address.
+  - `isX` - True for token A, false for token B.
+  - `fee` - Normalized fee amount.
 - **Behavior**: Adds fees to `xFees` or `yFees`.
 - **Internal Call Flow**: Creates `UpdateType`, calls `update`, emits `FeesUpdated`.
-- **Balance Checks**: None.
-- **Mappings/Structs Used**: `UpdateType`, `liquidityDetail`.
 - **Restrictions**: `nonReentrant`, `routers[msg.sender]`.
 - **Gas Usage Controls**: Minimal, single update.
 
 #### updateLiquidity(address caller, bool isX, uint256 amount)
 - **Parameters**:
-  - `caller` (address): User address.
-  - `isX` (bool): True for tokenA, false for tokenB.
-  - `amount` (uint256): Normalized amount.
+  - `caller` - User address.
+  - `isX` - True for token A, false for token B.
+  - `amount` - Normalized amount.
 - **Behavior**: Reduces `xLiquid` or `yLiquid`.
 - **Internal Call Flow**: Updates `liquidityDetail`, emits `LiquidityUpdated`.
 - **Balance Checks**: Checks `xLiquid` or `yLiquid`.
-- **Mappings/Structs Used**: `liquidityDetail`.
 - **Restrictions**: `nonReentrant`, `routers[msg.sender]`.
 - **Gas Usage Controls**: Minimal, single update.
+
+#### getListingAddress(uint256) view returns (address)
+- **Parameters**: Ignored parameter.
+- **Behavior**: Returns `listingAddress`.
+
+#### liquidityAmounts() view returns (uint256 xAmount, uint256 yAmount)
+- **Behavior**: Returns `xLiquid`, `yLiquid` from `liquidityDetail`.
+
+#### liquidityDetailsView() view returns (uint256 xLiquid, uint256 yLiquid, uint256 xFees, uint256 yFees)
+- **Behavior**: Returns all fields from `liquidityDetail`.
+
+#### activeXLiquiditySlotsView() view returns (uint256[] memory)
+- **Behavior**: Returns `activeXLiquiditySlots`.
+
+#### activeYLiquiditySlotsView() view returns (uint256[] memory)
+- **Behavior**: Returns `activeYLiquiditySlots`.
+
+#### userIndexView(address user) view returns (uint256[] memory)
+- **Parameters**: `user` - User address.
+- **Behavior**: Returns user's slot indices.
+
+#### getXSlotView(uint256 index) view returns (Slot memory)
+- **Parameters**: `index` - Slot index.
+- **Behavior**: Returns `xLiquiditySlots[index]`.
+
+#### getYSlotView(uint256 index) view returns (Slot memory)
+- **Parameters**: `index` - Slot index.
+- **Behavior**: Returns `yLiquiditySlots[index]`.
 
 ### Additional Details
 - **Decimal Handling**: Uses `normalize` and `denormalize` (1e18) for amounts, fetched via `IERC20.decimals`.
 - **Reentrancy Protection**: All state-changing functions use `nonReentrant`.
 - **Gas Optimization**: Dynamic arrays, minimal external calls, struct-based stack management in `claimFees`.
-- **Token Usage**: xSlots claim tokenB fees, ySlots claim tokenA fees.
+- **Token Usage**: xSlots claim token B fees, ySlots claim token A fees.
 - **Events**: `LiquidityUpdated`, `FeesUpdated`, `FeesClaimed`, `SlotDepositorChanged`, `GlobalizeUpdateFailed`, `UpdateRegistryFailed`.
 - **Safety**: Balance checks, explicit casting, no inline assembly, try-catch error handling.
 - **Compatibility**: Aligned with `SSRouter` (v0.0.44), `SSAgent` (v0.0.2), `SSListingTemplate` (v0.0.8).
-- **Caller Param**: functionally unused in `addFees` and `updateLiquidity`, though used in other functions like `deposit`. 
+- **Caller Param**: Functionally unused in `addFees` and `updateLiquidity`.
 
 # SSRouter Contract Documentation
 
