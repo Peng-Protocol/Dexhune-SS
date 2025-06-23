@@ -383,15 +383,14 @@ The System comprises of SSAgent  SSListingLogic - SSLiquidityLogic - SSLiquidity
   - **Returns:**
     - `uint256`: Total number of listed tokens.
 
-
 # SSListing and SSLiquidity Contract Documentation
 
 ## Overview
-The `SSListingTemplate` and `SSLiquidityTemplate` contracts, implemented in Solidity (^0.8.2), form the core of a decentralized trading platform. `SSListingTemplate` manages buy/sell orders, payouts, and volume balances, while `SSLiquidityTemplate` handles liquidity deposits, withdrawals, and fee claims. Both inherit `ReentrancyGuard` for security and use `SafeERC20` for token operations, integrating with `ISSAgent` and `ITokenRegistry` for global updates and synchronization. State variables are private, accessed via view functions, and amounts are normalized to 1e18 for consistency across token decimals.
+The `SSListingTemplate` and `SSLiquidityTemplate` contracts, implemented in Solidity (^0.8.2), form a decentralized trading platform. `SSListingTemplate` manages buy/sell orders, payouts, and volume balances, while `SSLiquidityTemplate` handles liquidity deposits, withdrawals, and fee claims. Both inherit `ReentrancyGuard` for security and use `SafeERC20` for token operations, integrating with `ISSAgent` and `ITokenRegistry` for global updates and synchronization. State variables are private, accessed via view functions with unique names, and amounts are normalized to 1e18 for precision across token decimals. The contracts avoid reserved keywords, use explicit casting, and ensure graceful degradation.
 
 **SPDX License**: BSD-3-Clause
 
-**Version**: 0.0.8 (Updated 2025-06-19)
+**Version**: 0.0.10 (Updated 2025-06-23)
 
 ## SSListingTemplate Documentation
 
@@ -419,10 +418,10 @@ The `SSListingTemplate` and `SSLiquidityTemplate` contracts, implemented in Soli
 - **`routers`**: `mapping(address => bool)` - Maps addresses to authorized routers.
 - **`buyOrderCores`**: `mapping(uint256 => BuyOrderCore)` - Maps order ID to buy order core data (`makerAddress`, `recipientAddress`, `status`).
 - **`buyOrderPricings`**: `mapping(uint256 => BuyOrderPricing)` - Maps order ID to buy order pricing (`maxPrice`, `minPrice`).
-- **`buyOrderAmounts`**: `mapping(uint256 => BuyOrderAmounts)` - Maps order ID to buy order amounts (`pending`, `filled`).
+- **`buyOrderAmounts`**: `mapping(uint256 => BuyOrderAmounts)` - Maps order ID to buy order amounts (`pending`, `filled`, `amountSent`).
 - **`sellOrderCores`**: `mapping(uint256 => SellOrderCore)` - Maps order ID to sell order core data (`makerAddress`, `recipientAddress`, `status`).
 - **`sellOrderPricings`**: `mapping(uint256 => SellOrderPricing)` - Maps order ID to sell order pricing (`maxPrice`, `minPrice`).
-- **`sellOrderAmounts`**: `mapping(uint256 => SellOrderAmounts)` - Maps order ID to sell order amounts (`pending`, `filled`).
+- **`sellOrderAmounts`**: `mapping(uint256 => SellOrderAmounts)` - Maps order ID to sell order amounts (`pending`, `filled`, `amountSent`).
 - **`longPayouts`**: `mapping(uint256 => LongPayoutStruct)` - Maps order ID to long payout data (`makerAddress`, `recipientAddress`, `required`, `filled`, `orderId`, `status`).
 - **`shortPayouts`**: `mapping(uint256 => ShortPayoutStruct)` - Maps order ID to short payout data (`makerAddress`, `recipientAddress`, `amount`, `filled`, `orderId`, `status`).
 - **`makerPendingOrders`**: `mapping(address => uint256[])` - Maps maker address to their pending order IDs.
@@ -450,8 +449,9 @@ The `SSListingTemplate` and `SSLiquidityTemplate` contracts, implemented in Soli
    - `minPrice`: `uint256` - Minimum acceptable price (normalized).
 
 5. **BuyOrderAmounts**:
-   - `pending`: `uint256` - Normalized pending amount.
-   - `filled`: `uint256` - Normalized filled amount.
+   - `pending`: `uint256` - Normalized pending amount (tokenY).
+   - `filled`: `uint256` - Normalized filled amount (tokenY).
+   - `amountSent`: `uint256` - Normalized amount of tokenX sent during settlement.
 
 6. **SellOrderCore**:
    - Same as `BuyOrderCore` for sell orders.
@@ -460,7 +460,9 @@ The `SSListingTemplate` and `SSLiquidityTemplate` contracts, implemented in Soli
    - Same as `BuyOrderPricing` for sell orders.
 
 8. **SellOrderAmounts**:
-   - Same as `BuyOrderAmounts` for sell orders.
+   - `pending`: `uint256` - Normalized pending amount (tokenX).
+   - `filled`: `uint256` - Normalized filled amount (tokenX).
+   - `amountSent`: `uint256` - Normalized amount of tokenY sent during settlement.
 
 9. **PayoutUpdate**:
    - `payoutType`: `uint8` - Type of payout (0=long, 1=short).
@@ -470,16 +472,16 @@ The `SSListingTemplate` and `SSLiquidityTemplate` contracts, implemented in Soli
 10. **LongPayoutStruct**:
     - `makerAddress`: `address` - Address of the payout creator.
     - `recipientAddress`: `address` - Address to receive payout.
-    - `required`: `uint256` - Normalized amount required.
-    - `filled`: `uint256` - Normalized amount filled.
+    - `required`: `uint256` - Normalized amount required (tokenY).
+    - `filled`: `uint256` - Normalized amount filled (tokenY).
     - `orderId`: `uint256` - Unique payout order ID.
     - `status`: `uint8` - Payout status (0=pending, others undefined).
 
 11. **ShortPayoutStruct**:
     - `makerAddress`: `address` - Address of the payout creator.
     - `recipientAddress`: `address` - Address to receive payout.
-    - `amount`: `uint256` - Normalized payout amount.
-    - `filled`: `uint256` - Normalized amount filled.
+    - `amount`: `uint256` - Normalized payout amount (tokenX).
+    - `filled`: `uint256` - Normalized amount filled (tokenX).
     - `orderId`: `uint256` - Unique payout order ID.
     - `status`: `uint8` - Payout status (0=pending, others undefined).
 
@@ -500,6 +502,7 @@ The `SSListingTemplate` and `SSLiquidityTemplate` contracts, implemented in Soli
     - `recipient`: `address` - Recipient address.
     - `maxPrice`: `uint256` - Max price or packed xBalance/yBalance (historical).
     - `minPrice`: `uint256` - Min price or packed xVolume/yVolume (historical).
+    - `amountSent`: `uint256` - Normalized amount of opposite token sent during settlement.
 
 ### Formulas
 1. **Price Calculation**:
@@ -564,13 +567,16 @@ The `SSListingTemplate` and `SSLiquidityTemplate` contracts, implemented in Soli
   - Checks `volumeUpdated` to update `lastDayFee` if new day.
   - Processes `updates`:
     - `updateType=0`: Updates `xBalance`, `yBalance`, `xVolume`, `yVolume`.
-    - `updateType=1`: Updates buy order `core`, `pricing`, or `amounts`, adjusts `pendingBuyOrders`, `makerPendingOrders`.
-    - `updateType=2`: Same for sell orders.
-    - `updateType=3`: Adds `HistoricalData`.
+    - `updateType=1`: Updates buy order `core`, `pricing`, or `amounts` (including `amountSent` for tokenX), adjusts `pendingBuyOrders`, `makerPendingOrders`, `yBalance`, `yVolume`, `xBalance`.
+    - `updateType=2`: Updates sell order `core`, `pricing`, or `amounts` (including `amountSent` for tokenY), adjusts `pendingSellOrders`, `makerPendingOrders`, `xBalance`, `xVolume`, `yBalance`.
+    - `updateType=3`: Adds `HistoricalData` with packed balances/volumes.
   - Updates `price`, calls `globalizeUpdate`, emits `BalancesUpdated` or `OrderUpdated`.
-- **Balance Checks**: Updates `xBalance`, `yBalance` for orders.
-- **Restrictions**: `nonReentrant`, `routers[caller]`.
-- **Gas Usage Controls**: Dynamic array resizing, loop over `updates`.
+- **Balance Checks**: Ensures sufficient `xBalance`/`yBalance` for order updates, adjusts for `amountSent`.
+- **Mappings/Structs Used**:
+  - **Mappings**: `buyOrderCores`, `buyOrderPricings`, `buyOrderAmounts`, `sellOrderCores`, `sellOrderPricings`, `sellOrderAmounts`, `pendingBuyOrders`, `pendingSellOrders`, `makerPendingOrders`, `historicalData`.
+  - **Structs**: `UpdateType`, `BuyOrderCore`, `BuyOrderPricing`, `BuyOrderAmounts`, `SellOrderCore`, `SellOrderPricing`, `SellOrderAmounts`, `HistoricalData`.
+- **Restrictions**: `nonReentrant`, requires `routers[caller]`.
+- **Gas Usage Controls**: Dynamic array resizing, loop over `updates`, emits events for updates.
 
 #### ssUpdate(address caller, PayoutUpdate[] memory payoutUpdates)
 - **Parameters**:
@@ -578,10 +584,14 @@ The `SSListingTemplate` and `SSLiquidityTemplate` contracts, implemented in Soli
   - `payoutUpdates` - Array of payout updates.
 - **Behavior**: Creates long/short payout orders, increments `nextOrderId`.
 - **Internal Call Flow**:
-  - Creates `LongPayoutStruct` or `ShortPayoutStruct`, updates `longPayoutsByIndex`, `shortPayoutsByIndex`, `userPayoutIDs`.
-  - Emits `PayoutOrderCreated`.
-- **Restrictions**: `nonReentrant`, `routers[caller]`.
-- **Gas Usage Controls**: Loop over `payoutUpdates`, dynamic arrays.
+  - Creates `LongPayoutStruct` (tokenY) or `ShortPayoutStruct` (tokenX), updates `longPayoutsByIndex`, `shortPayoutsByIndex`, `userPayoutIDs`.
+  - Increments `nextOrderId`, emits `PayoutOrderCreated`.
+- **Balance Checks**: None, defers to `transact`.
+- **Mappings/Structs Used**:
+  - **Mappings**: `longPayouts`, `shortPayouts`, `longPayoutsByIndex`, `shortPayoutsByIndex`, `userPayoutIDs`.
+  - **Structs**: `PayoutUpdate`, `LongPayoutStruct`, `ShortPayoutStruct`.
+- **Restrictions**: `nonReentrant`, requires `routers[caller]`.
+- **Gas Usage Controls**: Loop over `payoutUpdates`, dynamic arrays, minimal state writes.
 
 #### transact(address caller, address token, uint256 amount, address recipient)
 - **Parameters**:
@@ -591,13 +601,17 @@ The `SSListingTemplate` and `SSLiquidityTemplate` contracts, implemented in Soli
   - `recipient` - Recipient address.
 - **Behavior**: Transfers tokens/ETH, updates balances, and registry.
 - **Internal Call Flow**:
-  - Normalizes `amount`, checks `xBalance`/`yBalance`.
-  - Transfers via `SafeERC20` or ETH call.
+  - Normalizes `amount` using `decimalX` or `decimalY`.
+  - Checks `xBalance` (tokenX) or `yBalance` (tokenY).
+  - Transfers via `SafeERC20.safeTransfer` or ETH call with try-catch.
   - Updates `xVolume`/`yVolume`, `lastDayFee`, `price`.
   - Calls `_updateRegistry`, emits `BalancesUpdated`.
-- **Balance Checks**: Pre-transfer balance check.
-- **Restrictions**: `nonReentrant`, `routers[caller]`.
-- **Gas Usage Controls**: Single transfer, minimal state updates.
+- **Balance Checks**: Pre-transfer balance check for `xBalance` or `yBalance`.
+- **Mappings/Structs Used**:
+  - **Mappings**: `volumeBalance`.
+  - **Structs**: `VolumeBalance`.
+- **Restrictions**: `nonReentrant`, requires `routers[caller]`, valid token.
+- **Gas Usage Controls**: Single transfer, minimal state updates, try-catch error handling.
 
 #### queryYield(bool isA, uint256 maxIterations)
 - **Parameters**:
@@ -605,120 +619,182 @@ The `SSListingTemplate` and `SSLiquidityTemplate` contracts, implemented in Soli
   - `maxIterations` - Max historical data iterations.
 - **Behavior**: Returns annualized yield based on daily fees.
 - **Internal Call Flow**:
-  - Checks `lastDayFee` timestamp, fetches liquidity from `liquidityAddress`.
-  - Computes `feeDifference`, calculates yield.
-- **Restrictions**: Reverts if `maxIterations` is zero.
-- **Gas Usage Controls**: Minimal, external call to `liquidityAmounts`.
+  - Checks `lastDayFee.timestamp`, ensures same-day calculation.
+  - Computes `feeDifference` (`xVolume - lastDayFee.xFees` or `yVolume - lastDayFee.yFees`).
+  - Fetches liquidity (`xLiquid` or `yLiquid`) via `ISSLiquidityTemplate.liquidityAmounts`.
+  - Calculates `dailyYield = (feeDifference * 0.0005 * 1e18) / liquidity * 365`.
+- **Balance Checks**: None, relies on external `liquidityAmounts` call.
+- **Mappings/Structs Used**:
+  - **Mappings**: `volumeBalance`, `lastDayFee`.
+  - **Structs**: `LastDayFee`, `VolumeBalance`.
+- **Restrictions**: Reverts if `maxIterations` is zero or no historical data/same-day timestamp.
+- **Gas Usage Controls**: Minimal, single external call, try-catch for `liquidityAmounts`.
 
 #### prices(uint256) view returns (uint256)
 - **Parameters**: Ignored listing ID.
 - **Behavior**: Returns current `price`.
+- **Gas Usage Controls**: Minimal, single state read.
 
 #### volumeBalances(uint256) view returns (uint256 xBalance, uint256 yBalance)
 - **Parameters**: Ignored listing ID.
 - **Behavior**: Returns `xBalance`, `yBalance` from `volumeBalance`.
+- **Mappings/Structs Used**: `volumeBalance` (`VolumeBalance`).
+- **Gas Usage Controls**: Minimal, single state read.
 
 #### liquidityAddressView(uint256) view returns (address)
 - **Parameters**: Ignored listing ID.
 - **Behavior**: Returns `liquidityAddress`.
+- **Gas Usage Controls**: Minimal, single state read.
 
 #### tokenA() view returns (address)
 - **Behavior**: Returns `tokenX`.
+- **Gas Usage Controls**: Minimal, single state read.
 
 #### tokenB() view returns (address)
 - **Behavior**: Returns `tokenY`.
+- **Gas Usage Controls**: Minimal, single state read.
 
 #### decimalsA() view returns (uint8)
 - **Behavior**: Returns `decimalX`.
+- **Gas Usage Controls**: Minimal, single state read.
 
 #### decimalsB() view returns (uint8)
 - **Behavior**: Returns `decimalY`.
+- **Gas Usage Controls**: Minimal, single state read.
 
 #### getListingId() view returns (uint256)
 - **Behavior**: Returns `listingId`.
+- **Gas Usage Controls**: Minimal, single state read.
 
 #### getNextOrderId() view returns (uint256)
 - **Behavior**: Returns `nextOrderId`.
+- **Gas Usage Controls**: Minimal, single state read.
 
 #### listingVolumeBalancesView() view returns (uint256 xBalance, uint256 yBalance, uint256 xVolume, uint256 yVolume)
 - **Behavior**: Returns all fields from `volumeBalance`.
+- **Mappings/Structs Used**: `volumeBalance` (`VolumeBalance`).
+- **Gas Usage Controls**: Minimal, single state read.
 
 #### listingPriceView() view returns (uint256)
 - **Behavior**: Returns `price`.
+- **Gas Usage Controls**: Minimal, single state read.
 
 #### pendingBuyOrdersView() view returns (uint256[] memory)
 - **Behavior**: Returns `pendingBuyOrders`.
+- **Mappings/Structs Used**: `pendingBuyOrders`.
+- **Gas Usage Controls**: Minimal, array read.
 
 #### pendingSellOrdersView() view returns (uint256[] memory)
 - **Behavior**: Returns `pendingSellOrders`.
+- **Mappings/Structs Used**: `pendingSellOrders`.
+- **Gas Usage Controls**: Minimal, array read.
 
 #### makerPendingOrdersView(address maker) view returns (uint256[] memory)
 - **Parameters**: `maker` - Maker address.
 - **Behavior**: Returns maker's pending order IDs.
+- **Mappings/Structs Used**: `makerPendingOrders`.
+- **Gas Usage Controls**: Minimal, array read.
 
 #### longPayoutByIndexView() view returns (uint256[] memory)
 - **Behavior**: Returns `longPayoutsByIndex`.
+- **Mappings/Structs Used**: `longPayoutsByIndex`.
+- **Gas Usage Controls**: Minimal, array read.
 
 #### shortPayoutByIndexView() view returns (uint256[] memory)
 - **Behavior**: Returns `shortPayoutsByIndex`.
+- **Mappings/Structs Used**: `shortPayoutsByIndex`.
+- **Gas Usage Controls**: Minimal, array read.
 
 #### userPayoutIDsView(address user) view returns (uint256[] memory)
 - **Parameters**: `user` - User address.
 - **Behavior**: Returns user's payout order IDs.
+- **Mappings/Structs Used**: `userPayoutIDs`.
+- **Gas Usage Controls**: Minimal, array read.
 
 #### getLongPayout(uint256 orderId) view returns (LongPayoutStruct memory)
 - **Parameters**: `orderId` - Payout order ID.
 - **Behavior**: Returns `LongPayoutStruct` for given `orderId`.
+- **Mappings/Structs Used**: `longPayouts` (`LongPayoutStruct`).
+- **Gas Usage Controls**: Minimal, single mapping read.
 
 #### getShortPayout(uint256 orderId) view returns (ShortPayoutStruct memory)
 - **Parameters**: `orderId` - Payout order ID.
 - **Behavior**: Returns `ShortPayoutStruct` for given `orderId`.
+- **Mappings/Structs Used**: `shortPayouts` (`ShortPayoutStruct`).
+- **Gas Usage Controls**: Minimal, single mapping read.
 
 #### getBuyOrderCore(uint256 orderId) view returns (address makerAddress, address recipientAddress, uint8 status)
 - **Parameters**: `orderId` - Buy order ID.
-- **Behavior**: Returns fields from `buyOrderCores[orderId]`.
+- **Behavior**: Returns fields from `buyOrderCores[orderId]` with explicit destructuring.
+- **Mappings/Structs Used**: `buyOrderCores` (`BuyOrderCore`).
+- **Gas Usage Controls**: Minimal, single mapping read.
 
 #### getBuyOrderPricing(uint256 orderId) view returns (uint256 maxPrice, uint256 minPrice)
 - **Parameters**: `orderId` - Buy order ID.
-- **Behavior**: Returns fields from `buyOrderPricings[orderId]`.
+- **Behavior**: Returns fields from `buyOrderPricings[orderId]` with explicit destructuring.
+- **Mappings/Structs Used**: `buyOrderPricings` (`BuyOrderPricing`).
+- **Gas Usage Controls**: Minimal, single mapping read.
 
-#### getBuyOrderAmounts(uint256 orderId) view returns (uint256 pending, uint256 filled)
+#### getBuyOrderAmounts(uint256 orderId) view returns (uint256 pending, uint256 filled, uint256 amountSent)
 - **Parameters**: `orderId` - Buy order ID.
-- **Behavior**: Returns fields from `buyOrderAmounts[orderId]`.
+- **Behavior**: Returns fields from `buyOrderAmounts[orderId]` with explicit destructuring, including `amountSent` (tokenX).
+- **Mappings/Structs Used**: `buyOrderAmounts` (`BuyOrderAmounts`).
+- **Gas Usage Controls**: Minimal, single mapping read.
 
 #### getSellOrderCore(uint256 orderId) view returns (address makerAddress, address recipientAddress, uint8 status)
 - **Parameters**: `orderId` - Sell order ID.
-- **Behavior**: Returns fields from `sellOrderCores[orderId]`.
+- **Behavior**: Returns fields from `sellOrderCores[orderId]` with explicit destructuring.
+- **Mappings/Structs Used**: `sellOrderCores` (`SellOrderCore`).
+- **Gas Usage Controls**: Minimal, single mapping read.
 
 #### getSellOrderPricing(uint256 orderId) view returns (uint256 maxPrice, uint256 minPrice)
 - **Parameters**: `orderId` - Sell order ID.
-- **Behavior**: Returns fields from `sellOrderPricings[orderId]`.
+- **Behavior**: Returns fields from `sellOrderPricings[orderId]` with explicit destructuring.
+- **Mappings/Structs Used**: `sellOrderPricings` (`SellOrderPricing`).
+- **Gas Usage Controls**: Minimal, single mapping read.
 
-#### getSellOrderAmounts(uint256 orderId) view returns (uint256 pending, uint256 filled)
+#### getSellOrderAmounts(uint256 orderId) view returns (uint256 pending, uint256 filled, uint256 amountSent)
 - **Parameters**: `orderId` - Sell order ID.
-- **Behavior**: Returns fields from `sellOrderAmounts[orderId]`.
+- **Behavior**: Returns fields from `sellOrderAmounts[orderId]` with explicit destructuring, including `amountSent` (tokenY).
+- **Mappings/Structs Used**: `sellOrderAmounts` (`SellOrderAmounts`).
+- **Gas Usage Controls**: Minimal, single mapping read.
 
 #### getHistoricalDataView(uint256 index) view returns (HistoricalData memory)
 - **Parameters**: `index` - Historical data index.
 - **Behavior**: Returns `HistoricalData` at given index.
+- **Mappings/Structs Used**: `historicalData` (`HistoricalData`).
 - **Restrictions**: Reverts if `index` is invalid.
+- **Gas Usage Controls**: Minimal, single array read.
 
 #### historicalDataLengthView() view returns (uint256)
 - **Behavior**: Returns length of `historicalData`.
+- **Mappings/Structs Used**: `historicalData`.
+- **Gas Usage Controls**: Minimal, single state read.
 
 #### getHistoricalDataByNearestTimestamp(uint256 targetTimestamp) view returns (HistoricalData memory)
 - **Parameters**: `targetTimestamp` - Target timestamp.
-- **Behavior**: Returns `HistoricalData` with closest timestamp.
+- **Behavior**: Returns `HistoricalData` with timestamp closest to `targetTimestamp`.
+- **Mappings/Structs Used**: `historicalData` (`HistoricalData`).
 - **Restrictions**: Reverts if no historical data exists.
+- **Gas Usage Controls**: Loop over `historicalData`, minimal state reads.
 
 ### Additional Details
 - **Decimal Handling**: Uses `normalize` and `denormalize` (1e18) for amounts, fetched via `IERC20.decimals` or `decimalX`/`decimalY`.
-- **Reentrancy Protection**: All state-changing functions use `nonReentrant`.
-- **Gas Optimization**: Dynamic arrays, minimal external calls.
-- **Token Usage**: Buy orders use tokenY input, tokenX output; sell orders use tokenX input, tokenY output; long payouts use tokenY, short payouts use tokenX.
+- **Reentrancy Protection**: All state-changing functions use `nonReentrant` modifier.
+- **Gas Optimization**: Dynamic array resizing, minimal external calls, try-catch for external calls (`globalizeOrders`, `initializeBalances`, `liquidityAmounts`).
+- **Token Usage**:
+  - Buy orders: Input tokenY, output tokenX, `amountSent` tracks tokenX.
+  - Sell orders: Input tokenX, output tokenY, `amountSent` tracks tokenY.
+  - Long payouts: Output tokenY, no `amountSent`.
+  - Short payouts: Output tokenX, no `amountSent`.
 - **Events**: `OrderUpdated`, `PayoutOrderCreated`, `BalancesUpdated`.
-- **Safety**: Balance checks, explicit casting, no inline assembly, try-catch error handling.
-- **Compatibility**: Aligned with `SSRouter` (v0.0.44), `SSAgent` (v0.0.2), `SSLiquidityTemplate` (v0.0.7).
+- **Safety**:
+  - Explicit casting for interfaces (e.g., `ISSListingTemplate`, `IERC20`).
+  - No inline assembly, uses high-level Solidity.
+  - Try-catch for external calls to handle failures gracefully.
+  - Hidden state variables (`tokenX`, `tokenY`, `decimalX`, `decimalY`) accessed via view functions.
+  - Avoids reserved keywords and unnecessary virtual/override modifiers.
+- **Compatibility**: Aligned with `SSRouter` (v0.0.48), `SSAgent` (v0.0.2), `SSLiquidityTemplate` (v0.0.6), `SSOrderPartial` (v0.0.18).
 
 ## SSLiquidityTemplate Documentation
 
@@ -788,7 +864,7 @@ The `SSListingTemplate` and `SSLiquidityTemplate` contracts, implemented in Soli
 - **Parameters**: `_routers` - Array of router addresses.
 - **Behavior**: Sets authorized routers, callable once.
 - **Internal Call Flow**: Updates `routers` mapping, sets `routersSet`.
-- **Restrictions**: Reverts if `routersSet` or `_routers` is empty/invalid.
+- **Restrictions**: Reverts if `routersSet` is true or `_routers` is empty/invalid.
 - **Gas Usage Controls**: Single loop, minimal state writes.
 
 #### setListingId(uint256 _listingId)
@@ -828,11 +904,15 @@ The `SSListingTemplate` and `SSLiquidityTemplate` contracts, implemented in Soli
   - Processes `updates`:
     - `updateType=0`: Updates `xLiquid` or `yLiquid`.
     - `updateType=1`: Updates `xFees` or `yFees`, emits `FeesUpdated`.
-    - `updateType=2`: Updates `xLiquiditySlots`, `activeXLiquiditySlots`, `userIndex`, fetches `xVolume`.
-    - `updateType=3`: Same for `yLiquiditySlots`, `activeYLiquiditySlots`, fetches `yVolume`.
+    - `updateType=2`: Updates `xLiquiditySlots`, `activeXLiquiditySlots`, `userIndex`, fetches `xVolume` from `listingVolumeBalancesView`.
+    - `updateType=3`: Updates `yLiquiditySlots`, `activeYLiquiditySlots`, `userIndex`, fetches `yVolume`.
   - Emits `LiquidityUpdated`.
-- **Restrictions**: `nonReentrant`, `routers[msg.sender]`.
-- **Gas Usage Controls**: Dynamic array resizing, loop over `updates`.
+- **Balance Checks**: Checks `xLiquid` or `yLiquid` for balance updates.
+- **Mappings/Structs Used**:
+  - **Mappings**: `xLiquiditySlots`, `yLiquiditySlots`, `activeXLiquiditySlots`, `activeYLiquiditySlots`, `userIndex`, `liquidityDetail`.
+  - **Structs**: `UpdateType`, `LiquidityDetails`, `Slot`.
+- **Restrictions**: `nonReentrant`, requires `routers[msg.sender]`.
+- **Gas Usage Controls**: Dynamic array resizing, loop over `updates`, minimal external calls.
 
 #### changeSlotDepositor(address caller, bool isX, uint256 slotIndex, address newDepositor)
 - **Parameters**:
@@ -840,12 +920,15 @@ The `SSListingTemplate` and `SSLiquidityTemplate` contracts, implemented in Soli
   - `isX` - True for token A, false for token B.
   - `slotIndex` - Slot index.
   - `newDepositor` - New depositor address.
-- **Behavior**: Transfers slot ownership.
+- **Behavior**: Transfers slot ownership to `newDepositor`.
 - **Internal Call Flow**:
-  - Updates `xLiquiditySlots` or `yLiquiditySlots`, `userIndex`.
+  - Updates `xLiquiditySlots` or `yLiquiditySlots`, adjusts `userIndex`.
   - Emits `SlotDepositorChanged`.
-- **Balance Checks**: Checks slot `allocation`.
-- **Restrictions**: `nonReentrant`, `routers[msg.sender]`, caller must be depositor.
+- **Balance Checks**: Verifies slot `allocation` is non-zero.
+- **Mappings/Structs Used**:
+  - **Mappings**: `xLiquiditySlots`, `yLiquiditySlots`, `userIndex`.
+  - **Structs**: `Slot`.
+- **Restrictions**: `nonReentrant`, requires `routers[msg.sender]`, caller must be current depositor.
 - **Gas Usage Controls**: Single slot update, array adjustments.
 
 #### deposit(address caller, address token, uint256 amount)
@@ -853,73 +936,93 @@ The `SSListingTemplate` and `SSLiquidityTemplate` contracts, implemented in Soli
   - `caller` - User address.
   - `token` - Token A or B.
   - `amount` - Denormalized amount.
-- **Behavior**: Deposits tokens/ETH to liquidity pool.
+- **Behavior**: Deposits tokens/ETH to liquidity pool, creates new slot.
 - **Internal Call Flow**:
-  - Performs pre/post balance checks, transfers via `transferFrom` or ETH.
-  - Normalizes amount, creates `UpdateType` for slot allocation.
+  - Performs pre/post balance checks for tokens, validates `msg.value` for ETH.
+  - Transfers via `SafeERC20.transferFrom` or ETH deposit.
+  - Normalizes `amount`, creates `UpdateType` for slot allocation.
   - Calls `update`, `globalizeUpdate`, `updateRegistry`.
 - **Balance Checks**: Pre/post balance for tokens, `msg.value` for ETH.
-- **Restrictions**: `nonReentrant`, `routers[msg.sender]`, valid token.
-- **Gas Usage Controls**: Single transfer, minimal updates.
+- **Mappings/Structs Used**:
+  - **Mappings**: `xLiquiditySlots`, `yLiquiditySlots`, `activeXLiquiditySlots`, `activeYLiquiditySlots`, `userIndex`, `liquidityDetail`.
+  - **Structs**: `UpdateType`, `LiquidityDetails`, `Slot`.
+- **Restrictions**: `nonReentrant`, requires `routers[msg.sender]`, valid token.
+- **Gas Usage Controls**: Single transfer, minimal updates, try-catch for external calls.
 
 #### xPrepOut(address caller, uint256 amount, uint256 index) returns (PreparedWithdrawal memory)
 - **Parameters**:
   - `caller` - User address.
   - `amount` - Normalized amount.
   - `index` - Slot index.
-- **Behavior**: Prepares token A withdrawal, calculates compensation.
+- **Behavior**: Prepares token A withdrawal, calculates compensation in token B.
 - **Internal Call Flow**:
-  - Checks `xLiquid` and slot `allocation`.
-  - Fetches `getPrice`, computes `withdrawAmountB` if deficit.
-  - Returns `PreparedWithdrawal`.
-- **Balance Checks**: Checks `xLiquid`, `yLiquid`.
-- **Restrictions**: `nonReentrant`, `routers[msg.sender]`.
-- **Gas Usage Controls**: Minimal, external call to `getPrice`.
+  - Checks `xLiquid` and slot `allocation` in `xLiquiditySlots`.
+  - Fetches `listingPriceView` to compute `withdrawAmountB` if liquidity deficit.
+  - Returns `PreparedWithdrawal` with `amountA` and `amountB`.
+- **Balance Checks**: Verifies `xLiquid`, `yLiquid` sufficiency.
+- **Mappings/Structs Used**:
+  - **Mappings**: `xLiquiditySlots`, `liquidityDetail`.
+  - **Structs**: `PreparedWithdrawal`, `LiquidityDetails`, `Slot`.
+- **Restrictions**: `nonReentrant`, requires `routers[msg.sender]`, valid slot.
+- **Gas Usage Controls**: Minimal, single external call to `listingPriceView`.
 
 #### xExecuteOut(address caller, uint256 index, PreparedWithdrawal memory withdrawal)
 - **Parameters**:
   - `caller` - User address.
   - `index` - Slot index.
-  - `withdrawal` - Withdrawal amounts.
+  - `withdrawal` - Withdrawal amounts (`amountA`, `amountB`).
 - **Behavior**: Executes token A withdrawal, transfers tokens/ETH.
 - **Internal Call Flow**:
-  - Updates `xLiquiditySlots` via `update`.
-  - Transfers `amountA` (token A), `amountB` (token B) via `SafeERC20` or ETH.
+  - Updates `xLiquiditySlots` and `liquidityDetail` via `update`.
+  - Transfers `amountA` (token A) and `amountB` (token B) via `SafeERC20` or ETH.
   - Calls `globalizeUpdate`, `updateRegistry` for both tokens.
-- **Restrictions**: `nonReentrant`, `routers[msg.sender]`.
-- **Gas Usage Controls**: Two transfers, minimal updates.
+- **Balance Checks**: Verifies `xLiquid`, `yLiquid` before transfers.
+- **Mappings/Structs Used**:
+  - **Mappings**: `xLiquiditySlots`, `activeXLiquiditySlots`, `userIndex`, `liquidityDetail`.
+  - **Structs**: `PreparedWithdrawal`, `UpdateType`, `LiquidityDetails`, `Slot`.
+- **Restrictions**: `nonReentrant`, requires `routers[msg.sender]`, valid slot.
+- **Gas Usage Controls**: Two transfers, minimal updates, try-catch for transfers.
 
 #### yPrepOut(address caller, uint256 amount, uint256 index) returns (PreparedWithdrawal memory)
 - **Parameters**: Same as `xPrepOut`.
-- **Behavior**: Prepares token B withdrawal, calculates compensation.
-- **Internal Call Flow**: Similar to `xPrepOut`, uses `yLiquid`, computes `withdrawAmountA`.
-- **Balance Checks**: Checks `yLiquid`, `xLiquid`.
+- **Behavior**: Prepares token B withdrawal, calculates compensation in token A.
+- **Internal Call Flow**: Similar to `xPrepOut`, checks `yLiquid`, `xLiquid`, uses `listingPriceView` for `withdrawAmountA`.
+- **Balance Checks**: Verifies `yLiquid`, `xLiquid` sufficiency.
+- **Mappings/Structs Used**: `yLiquiditySlots`, `liquidityDetail`, `PreparedWithdrawal`, `Slot`.
 - **Restrictions**: Same as `xPrepOut`.
 - **Gas Usage Controls**: Same as `xPrepOut`.
 
 #### yExecuteOut(address caller, uint256 index, PreparedWithdrawal memory withdrawal)
 - **Parameters**: Same as `xExecuteOut`.
 - **Behavior**: Executes token B withdrawal, transfers tokens/ETH.
-- **Internal Call Flow**: Similar to `xExecuteOut`, uses `yLiquiditySlots`.
+- **Internal Call Flow**: Similar to `xExecuteOut`, updates `yLiquiditySlots`, transfers `amountB` (token B) and `amountA` (token A).
+- **Balance Checks**: Verifies `yLiquid`, `xLiquid` before transfers.
+- **Mappings/Structs Used**: `yLiquiditySlots`, `activeYLiquiditySlots`, `userIndex`, `liquidityDetail`, `PreparedWithdrawal`, `UpdateType`, `Slot`.
 - **Restrictions**: Same as `xExecuteOut`.
 - **Gas Usage Controls**: Same as `xExecuteOut`.
 
 #### claimFees(address caller, address _listingAddress, uint256 liquidityIndex, bool isX, uint256 volume)
 - **Parameters**:
   - `caller` - User address.
-  - `_listingAddress` - Listing contract address.
+  - `listingAddress` - Listing contract address.
   - `liquidityIndex` - Slot index.
   - `isX` - True for token A, false for token B.
   - `volume` - Volume for fee calculation.
-- **Behavior**: Claims fees (token B for xSlots, token A for ySlots).
+- **Behavior**: Claims fees (token B for xSlots, token A for ySlots) for a liquidity slot.
 - **Internal Call Flow**:
-  - Creates `FeeClaimContext` to optimize stack.
-  - Calls `_processFeeClaim` with `FeeClaimContext`.
-  - `_processFeeClaim` calls `_claimFeeShare` to compute `feeShare`, updates fees and slot via `update`, transfers via `transact`.
+  - Creates `FeeClaimContext` to optimize stack usage (~8 variables).
+  - Calls `_processFeeClaim`, which:
+    - Fetches slot data (`xLiquiditySlots` or `yLiquiditySlots`).
+    - Calls `_claimFeeShare` to compute `feeShare` using volume and liquidity proportion.
+    - Creates `UpdateType` to update `xFees`/`yFees` and slot allocation.
+    - Transfers fees via `transact`.
   - Emits `FeesClaimed`.
-- **Balance Checks**: Checks `xBalance` (from `volumeBalances`), `xLiquid`/`yLiquid`, `xFees`/`yFees`.
-- **Restrictions**: `nonReentrant`, `routers[msg.sender]`, caller must be depositor.
-- **Gas Usage Controls**: Single transfer, struct-based stack optimization.
+- **Balance Checks**: Verifies `xBalance` (from `volumeBalances`), `xLiquid`/`yLiquid`, `xFees`/`yFees`.
+- **Mappings/Structs Used**:
+  - **Mappings**: `xLiquiditySlots`, `yLiquiditySlots`, `liquidityDetail`.
+  - **Structs**: `FeeClaimContext`, `UpdateType`, `LiquidityDetails`, `Slot`.
+- **Restrictions**: `nonReentrant`, requires `routers[msg.sender]`, caller must be depositor.
+- **Gas Usage Controls**: Single transfer, struct-based stack optimization, try-catch for `transact`.
 
 #### transact(address caller, address token, uint256 amount, address recipient)
 - **Parameters**:
@@ -927,23 +1030,33 @@ The `SSListingTemplate` and `SSLiquidityTemplate` contracts, implemented in Soli
   - `token` - Token A or B.
   - `amount` - Denormalized amount.
   - `recipient` - Recipient address.
-- **Behavior**: Transfers tokens/ETH, updates liquidity.
+- **Behavior**: Transfers tokens/ETH, updates liquidity (`xLiquid` or `yLiquid`).
 - **Internal Call Flow**:
-  - Normalizes `amount`, checks `xLiquid`/`yLiquid`.
-  - Transfers via `SafeERC20` or ETH, updates `liquidityDetail`.
-  - Emits `LiquidityUpdated`.
-- **Balance Checks**: Pre-transfer liquidity check.
-- **Restrictions**: `nonReentrant`, `routers[msg.sender]`.
-- **Gas Usage Controls**: Single transfer, minimal updates.
+  - Normalizes `amount` using `IERC20.decimals`.
+  - Checks `xLiquid` (token A) or `yLiquid` (token B).
+  - Transfers via `SafeERC20.safeTransfer` or ETH call with try-catch.
+  - Updates `liquidityDetail`, emits `LiquidityUpdated`.
+- **Balance Checks**: Pre-transfer liquidity check for `xLiquid` or `yLiquid`.
+- **Mappings/Structs Used**:
+  - **Mappings**: `liquidityDetail`.
+  - **Structs**: `LiquidityDetails`.
+- **Restrictions**: `nonReentrant`, requires `routers[msg.sender]`, valid token.
+- **Gas Usage Controls**: Single transfer, minimal state updates, try-catch for transfers.
 
 #### addFees(address caller, bool isX, uint256 fee)
 - **Parameters**:
   - `caller` - User address.
   - `isX` - True for token A, false for token B.
   - `fee` - Normalized fee amount.
-- **Behavior**: Adds fees to `xFees` or `yFees`.
-- **Internal Call Flow**: Creates `UpdateType`, calls `update`, emits `FeesUpdated`.
-- **Restrictions**: `nonReentrant`, `routers[msg.sender]`.
+- **Behavior**: Adds fees to `xFees` or `yFees` in `liquidityDetail`.
+- **Internal Call Flow**:
+  - Creates `UpdateType` to update `xFees` or `yFees`.
+  - Calls `update`, emits `FeesUpdated`.
+- **Balance Checks**: None, assumes normalized input.
+- **Mappings/Structs Used**:
+  - **Mappings**: `liquidityDetail`.
+  - **Structs**: `UpdateType`, `LiquidityDetails`.
+- **Restrictions**: `nonReentrant`, requires `routers[msg.sender]`.
 - **Gas Usage Controls**: Minimal, single update.
 
 #### updateLiquidity(address caller, bool isX, uint256 amount)
@@ -951,90 +1064,127 @@ The `SSListingTemplate` and `SSLiquidityTemplate` contracts, implemented in Soli
   - `caller` - User address.
   - `isX` - True for token A, false for token B.
   - `amount` - Normalized amount.
-- **Behavior**: Reduces `xLiquid` or `yLiquid`.
-- **Internal Call Flow**: Updates `liquidityDetail`, emits `LiquidityUpdated`.
-- **Balance Checks**: Checks `xLiquid` or `yLiquid`.
-- **Restrictions**: `nonReentrant`, `routers[msg.sender]`.
+- **Behavior**: Reduces `xLiquid` or `yLiquid` in `liquidityDetail`.
+- **Internal Call Flow**:
+  - Creates `UpdateType` to update `xLiquid` or `yLiquid`.
+  - Calls `update`, emits `LiquidityUpdated`.
+- **Balance Checks**: Verifies `xLiquid` or `yLiquid` sufficiency.
+- **Mappings/Structs Used**:
+  - **Mappings**: `liquidityDetail`.
+  - **Structs**: `UpdateType`, `LiquidityDetails`.
+- **Restrictions**: `nonReentrant`, requires `routers[msg.sender]`.
 - **Gas Usage Controls**: Minimal, single update.
 
 #### getListingAddress(uint256) view returns (address)
 - **Parameters**: Ignored parameter.
 - **Behavior**: Returns `listingAddress`.
+- **Gas Usage Controls**: Minimal, single state read.
 
 #### liquidityAmounts() view returns (uint256 xAmount, uint256 yAmount)
 - **Behavior**: Returns `xLiquid`, `yLiquid` from `liquidityDetail`.
+- **Mappings/Structs Used**: `liquidityDetail` (`LiquidityDetails`).
+- **Gas Usage Controls**: Minimal, single state read.
 
 #### liquidityDetailsView() view returns (uint256 xLiquid, uint256 yLiquid, uint256 xFees, uint256 yFees)
 - **Behavior**: Returns all fields from `liquidityDetail`.
+- **Mappings/Structs Used**: `liquidityDetail` (`LiquidityDetails`).
+- **Gas Usage Controls**: Minimal, single state read.
 
 #### activeXLiquiditySlotsView() view returns (uint256[] memory)
 - **Behavior**: Returns `activeXLiquiditySlots`.
+- **Mappings/Structs Used**: `activeXLiquiditySlots`.
+- **Gas Usage Controls**: Minimal, array read.
 
 #### activeYLiquiditySlotsView() view returns (uint256[] memory)
 - **Behavior**: Returns `activeYLiquiditySlots`.
+- **Mappings/Structs Used**: `activeYLiquiditySlots`.
+- **Gas Usage Controls**: Minimal, array read.
 
 #### userIndexView(address user) view returns (uint256[] memory)
 - **Parameters**: `user` - User address.
 - **Behavior**: Returns user's slot indices.
+- **Mappings/Structs Used**: `userIndex`.
+- **Gas Usage Controls**: Minimal, array read.
 
 #### getXSlotView(uint256 index) view returns (Slot memory)
 - **Parameters**: `index` - Slot index.
 - **Behavior**: Returns `xLiquiditySlots[index]`.
+- **Mappings/Structs Used**: `xLiquiditySlots` (`Slot`).
+- **Gas Usage Controls**: Minimal, single mapping read.
 
 #### getYSlotView(uint256 index) view returns (Slot memory)
 - **Parameters**: `index` - Slot index.
 - **Behavior**: Returns `yLiquiditySlots[index]`.
+- **Mappings/Structs Used**: `yLiquiditySlots` (`Slot`).
+- **Gas Usage Controls**: Minimal, single mapping read.
 
 ### Additional Details
 - **Decimal Handling**: Uses `normalize` and `denormalize` (1e18) for amounts, fetched via `IERC20.decimals`.
-- **Reentrancy Protection**: All state-changing functions use `nonReentrant`.
-- **Gas Optimization**: Dynamic arrays, minimal external calls, struct-based stack management in `claimFees`.
-- **Token Usage**: xSlots claim token B fees, ySlots claim token A fees.
+- **Reentrancy Protection**: All state-changing functions use `nonReentrant` modifier.
+- **Gas Optimization**: Dynamic array resizing, minimal external calls, struct-based stack management in `claimFees` (~8 variables).
+- **Token Usage**:
+  - xSlots: Provide token A liquidity, claim token B fees.
+  - ySlots: Provide token B liquidity, claim token A fees.
 - **Events**: `LiquidityUpdated`, `FeesUpdated`, `FeesClaimed`, `SlotDepositorChanged`, `GlobalizeUpdateFailed`, `UpdateRegistryFailed`.
-- **Safety**: Balance checks, explicit casting, no inline assembly, try-catch error handling.
-- **Compatibility**: Aligned with `SSRouter` (v0.0.44), `SSAgent` (v0.0.2), `SSListingTemplate` (v0.0.8).
-- **Caller Param**: Functionally unused in `addFees` and `updateLiquidity`.
+- **Safety**:
+  - Explicit casting for interfaces (e.g., `ISSLiquidityTemplate`, `IERC20`).
+  - No inline assembly, uses high-level Solidity.
+  - Try-catch for external calls (`transact`, `globalizeUpdate`, `updateRegistry`) to handle failures.
+  - Hidden state variables accessed via view functions (e.g., `getXSlotView`, `liquidityDetailsView`).
+  - Avoids reserved keywords and unnecessary virtual/override modifiers.
+- **Compatibility**: Aligned with `SSRouter` (v0.0.48), `SSAgent` (v0.0.2), `SSListingTemplate` (v0.0.10), `SSOrderPartial` (v0.0.18).
+- **Caller Param**: Functionally unused in `addFees` and `updateLiquidity`, included for router validation.
 
 # SSRouter Contract Documentation
 
 ## Overview
-The `SSRouter` contract, implemented in Solidity (^0.8.2), facilitates order creation, settlement, and liquidity management for a decentralized trading platform. It inherits functionality from `SSSettlementPartial`, which extends `SSOrderPartial` and `SSMainPartial`, integrating with external interfaces (`ISSListingTemplate`, `ISSLiquidityTemplate`, `IERC20`) for token operations, `ReentrancyGuard` for reentrancy protection, and `Ownable` for administrative control. The contract handles buy/sell order creation, settlement, liquidity deposits, withdrawals, fee claims, and depositor changes, with rigorous gas optimization and safety mechanisms. State variables are hidden, accessed via view functions, and decimal precision is maintained across tokens.
+The `SSRouter` contract, implemented in Solidity (`^0.8.2`), facilitates order creation, settlement, and liquidity management for a decentralized trading platform. It inherits functionality from `SSSettlementPartial`, which extends `SSOrderPartial` and `SSMainPartial`, integrating with external interfaces (`ISSListingTemplate`, `ISSLiquidityTemplate`, `IERC20`) for token operations, `ReentrancyGuard` for reentrancy protection, and `Ownable` for administrative control. The contract handles buy/sell order creation, settlement, liquidity deposits, withdrawals, fee claims, and depositor changes, with rigorous gas optimization and safety mechanisms. State variables are hidden, accessed via view functions with unique names, and decimal precision is maintained across tokens. The contract avoids reserved keywords, uses explicit casting, and ensures graceful degradation.
 
 **SPDX License:** BSD-3-Clause
 
-**Version:** 0.0.44 (last updated 2025-06-19)
+**Version:** 0.0.60 (updated 2025-06-23)
 
 **Inheritance Tree:** `SSRouter` → `SSSettlementPartial` → `SSOrderPartial` → `SSMainPartial`
 
 ## Mappings
 - **orderPendingAmounts**: Tracks pending order amounts per listing and order ID (normalized to 1e18).
-- **payoutPendingAmounts**: Tracks pending payout amounts per listing and order ID (normalized to 1e18).
+- **payoutPendingAmounts**: Tracks pending payout amounts per listing and payout order ID (normalized to 1e18).
 
 ## Structs
 - **OrderPrep**: Contains `maker` (address), `recipient` (address), `amount` (uint256, normalized), `maxPrice` (uint256), `minPrice` (uint256), `amountReceived` (uint256, denormalized), `normalizedReceived` (uint256).
 - **BuyOrderDetails**: Includes `orderId` (uint256), `maker` (address), `recipient` (address), `pending` (uint256, normalized), `filled` (uint256, normalized), `maxPrice` (uint256), `minPrice` (uint256), `status` (uint8).
 - **SellOrderDetails**: Same as `BuyOrderDetails` for sell orders.
 - **OrderClearData**: Contains `orderId` (uint256), `isBuy` (bool), `amount` (uint256, normalized).
-- **OrderContext**: Includes `listingContract` (ISSListingTemplate), `tokenIn` (address), `tokenOut` (address), `liquidityAddr` (address).
-- **SellOrderUpdateContext**: Contains `makerAddress` (address), `recipient` (address), `status` (uint8), `amountReceived` (uint256, denormalized), `normalizedReceived` (uint256).
-- **BuyOrderUpdateContext**: Same as `SellOrderUpdateContext` for buy orders.
-- **PayoutContext**: Includes `listingAddress` (address), `liquidityAddr` (address), `tokenOut` (address), `tokenDecimals` (uint8), `amountOut` (uint256, denormalized), `recipientAddress` (address).
+- **OrderContext**: Contains `listingContract` (ISSListingTemplate), `tokenIn` (address), `tokenOut` (address), `liquidityAddr` (address).
+- **BuyOrderUpdateContext**: Contains `makerAddress` (address), `recipient` (address), `status` (uint8), `amountReceived` (uint256, denormalized), `normalizedReceived` (uint256), `amountSent` (uint256, denormalized, tokenA for buy).
+- **SellOrderUpdateContext**: Same as `BuyOrderUpdateContext`, with `amountSent` (tokenB for sell).
+- **PayoutContext**: Contains `listingAddress` (address), `liquidityAddr` (address), `tokenOut` (address), `tokenDecimals` (uint8), `amountOut` (uint256, denormalized), `recipientAddress` (address).
 
 ## Formulas
 1. **Price Impact**:
    - **Formula**: `impactPrice = (newXBalance * 1e18) / newYBalance`
-   - **Used in**: `_computeImpact`, `_checkPricing`.
-   - **Description**: Represents the post-settlement price after processing a buy or sell order, calculated using updated pool balances (`newXBalance` for tokenA, `newYBalance` for tokenB). In `_computeImpact`, it uses `listingVolumeBalancesView` (includes input amount), computes `amountOut` using constant product formula (`inputAmount * xBalance / yBalance` for buy, `inputAmount * yBalance / xBalance` for sell), and adjusts balances (`newXBalance -= amountOut` for buy, `newYBalance -= amountOut` for sell).
+   - **Used in**: `_computeImpact`, `_checkPricing`, `_prepareLiquidityTransaction`.
+   - **Description**: Represents the post-settlement price after processing a buy or sell order, calculated using updated pool balances (`newXBalance` for tokenA, `newYBalance` for tokenB). In `_computeImpact`:
+     - Fetches current pool balances via `listingVolumeBalancesView` (includes input amount).
+     - Computes `amountOut` using constant product formula:
+       - For buy: `amountOut = (inputAmount * xBalance) / yBalance`.
+       - For sell: `amountOut = (inputAmount * yBalance) / xBalance`.
+     - Adjusts balances: `newXBalance -= amountOut` (buy), `newYBalance -= amountOut` (sell).
+     - Normalizes to 1e18 for precision: `impactPrice = (newXBalance * 1e18) / newYBalance`.
+   - **Usage**:
+     - **Pricing Validation**: In `_checkPricing`, `impactPrice` is compared against order’s `maxPrice` and `minPrice` (fetched via `getBuy/SellOrderPricing`). Ensures trade does not exceed price constraints, preventing unfavorable executions (e.g., excessive slippage).
+     - **Output Calculation**: In `_prepareLiquidityTransaction`, used to compute `amountOut` for buy (`amountOut = (inputAmount * impactPrice) / 1e18`) or sell (`amountOut = (inputAmount * 1e18) / impactPrice`), ensuring accurate token swaps.
+     - **Settlement**: Critical in `settleBuy/SellOrders` and `settleBuy/SellLiquid` to validate order execution against liquidity pool or listing contract, maintaining market stability.
 
 2. **Buy Order Output**:
    - **Formula**: `amountOut = (inputAmount * xBalance) / yBalance`
    - **Used in**: `executeBuyOrder`, `_prepareLiquidityTransaction`.
-   - **Description**: Computes the output amount (tokenA) for a buy order given the input amount (tokenB), using constant product formula.
+   - **Description**: Computes the output amount (tokenA) for a buy order given the input amount (tokenB), using constant product formula. Relies on `impactPrice` for validation.
 
 3. **Sell Order Output**:
    - **Formula**: `amountOut = (inputAmount * yBalance) / xBalance`
    - **Used in**: `executeSellOrder`, `_prepareLiquidityTransaction`.
-   - **Description**: Computes the output amount (tokenB) for a sell order given the input amount (tokenA), using constant product formula.
+   - **Description**: Computes the output amount (tokenB) for a sell order given the input amount (tokenA), using constant product formula. Relies on `impactPrice` for validation.
 
 ## External Functions
 
@@ -1057,11 +1207,11 @@ The `SSRouter` contract, implemented in Solidity (^0.8.2), facilitates order cre
   - `inputAmount` (uint256): Input amount (denormalized, tokenB).
   - `maxPrice` (uint256): Maximum price (normalized).
   - `minPrice` (uint256): Minimum price (normalized).
-- **Behavior**: Creates a buy order, transferring tokenB to the listing contract, and updating order state.
+- **Behavior**: Creates a buy order, transferring tokenB to the listing contract, and updating order state with `amountSent=0`.
 - **Internal Call Flow**:
   - Calls `_handleOrderPrep` to validate inputs and create `OrderPrep` struct, normalizing `inputAmount` using `listingContract.decimalsB`.
   - `_checkTransferAmount` transfers `inputAmount` in tokenB from `msg.sender` to `listingAddress` via `IERC20.transferFrom` or ETH transfer, with pre/post balance checks.
-  - `_executeSingleOrder` calls `listingContract.getNextOrderId` and creates `UpdateType[]` for pending order status and pricing, invoking `listingContract.update`.
+  - `_executeSingleOrder` calls `listingContract.getNextOrderId`, creates `UpdateType[]` for pending order status, pricing, and amounts (with `amountSent=0`), invoking `listingContract.update`.
   - Transfer destination: `listingAddress`.
 - **Balance Checks**:
   - **Pre-Balance Check**: Captures `listingAddress` balance before transfer.
@@ -1071,11 +1221,11 @@ The `SSRouter` contract, implemented in Solidity (^0.8.2), facilitates order cre
 - **Restrictions**:
   - Protected by `nonReentrant` and `onlyValidListing`.
   - Reverts if `maker`, `recipient`, or `amount` is invalid, or transfer fails.
-- **Gas Usage Controls**: Single transfer, minimal array updates.
+- **Gas Usage Controls**: Single transfer, minimal array updates (3 `UpdateType` elements).
 
 ### createSellOrder(address listingAddress, address recipientAddress, uint256 inputAmount, uint256 maxPrice, uint256 minPrice)
 - **Parameters**: Same as `createBuyOrder`, but for sell orders with tokenA input.
-- **Behavior**: Creates a sell order, transferring tokenA to the listing contract.
+- **Behavior**: Creates a sell order, transferring tokenA to the listing contract, with `amountSent=0`.
 - **Internal Call Flow**:
   - Similar to `createBuyOrder`, using tokenA and `listingContract.decimalsA`.
   - `_checkTransferAmount` handles tokenA transfer.
@@ -1088,49 +1238,50 @@ The `SSRouter` contract, implemented in Solidity (^0.8.2), facilitates order cre
 - **Parameters**:
   - `listingAddress` (address): Listing contract address.
   - `maxIterations` (uint256): Maximum orders to process.
-- **Behavior**: Settles pending buy orders, transferring tokenA to recipients.
+- **Behavior**: Settles pending buy orders, transferring tokenA to recipients, tracking `amountSent` (tokenA).
 - **Internal Call Flow**:
   - Iterates `pendingBuyOrdersView[]` up to `maxIterations`.
-  - For each order, calls `executeBuyOrder`:
-    - Validates pricing via `_checkPricing` using `_computeImpact`, ensuring `impactPrice` is within `maxPrice` and `minPrice`.
+  - Calls `_processBuyOrder` for each order:
+    - Fetches `(pendingAmount, filled, amountSent)` via `getBuyOrderAmounts` with explicit destructuring.
+    - Validates pricing via `_checkPricing`, using `_computeImpact` to calculate `impactPrice`, ensuring it is within `maxPrice` and `minPrice` (from `getBuyOrderPricing`).
     - Computes output via `_computeImpact` and `amountOut = (inputAmount * xBalance) / yBalance`.
     - Calls `_prepBuyOrderUpdate` for tokenA transfer via `listingContract.transact`, with denormalized amounts.
-    - Updates `orderPendingAmounts` and creates `UpdateType[]` via `_executeBuyOrderUpdate`.
+    - Updates `orderPendingAmounts` and creates `UpdateType[]` via `_createBuyOrderUpdates`, including `amountSent`.
   - Applies `finalUpdates[]` via `listingContract.update`.
   - Transfer destination: `recipientAddress`.
 - **Balance Checks**:
-  - Assumes transfers succeed, user foots fee-on-transfer costs.
+  - `_prepBuyOrderUpdate` (inherited) ensures transfer success via try-catch.
 - **Mappings/Structs Used**:
   - **Mappings**: `orderPendingAmounts`.
   - **Structs**: `UpdateType`, `BuyOrderUpdateContext`.
 - **Restrictions**:
   - Protected by `nonReentrant` and `onlyValidListing`.
-  - Skips orders with zero pending amount or invalid pricing.
-- **Gas Usage Controls**: `maxIterations` limits iteration, dynamic array resizing.
+  - Skips orders with zero pending amount or invalid pricing (based on `impactPrice`).
+- **Gas Usage Controls**: `maxIterations` limits iteration, dynamic array resizing, `_processBuyOrder` reduces stack depth (~12 variables).
 
 ### settleSellOrders(address listingAddress, uint256 maxIterations)
 - **Parameters**: Same as `settleBuyOrders`.
-- **Behavior**: Settles pending sell orders, transferring tokenB to recipients.
+- **Behavior**: Settles pending sell orders, transferring tokenB to recipients, tracking `amountSent` (tokenB).
 - **Internal Call Flow**:
-  - Similar to `settleBuyOrders`, using `pendingSellOrdersView[]` and `executeSellOrder`.
-  - Computes `amountOut = (inputAmount * yBalance) / xBalance`.
-  - Uses `_prepSellOrderUpdate` for tokenB transfers.
+  - Similar to `settleBuyOrders`, using `pendingSellOrdersView[]` and `_processSellOrder`.
+  - Computes `amountOut = (inputAmount * yBalance) / xBalance`, validated by `impactPrice`.
+  - Uses `_prepSellOrderUpdate` for tokenB transfers, includes `amountSent`.
 - **Balance Checks**: Same as `settleBuyOrders`.
 - **Mappings/Structs Used**: Same as `settleBuyOrders`, with `SellOrderUpdateContext`.
 - **Restrictions**: Same as `settleBuyOrders`.
-- **Gas Usage Controls**: Same as `settleBuyOrders`.
+- **Gas Usage Controls**: Same as `settleBuyOrders`, uses `_processSellOrder`.
 
 ### settleBuyLiquid(address listingAddress, uint256 maxIterations)
 - **Parameters**: Same as `settleBuyOrders`.
-- **Behavior**: Settles buy orders with liquidity pool, transferring tokenA to recipients and updating liquidity.
+- **Behavior**: Settles buy orders with liquidity pool, transferring tokenA to recipients, updating liquidity (tokenB), and tracking `amountSent` (tokenA).
 - **Internal Call Flow**:
   - Iterates `pendingBuyOrdersView[]` up to `maxIterations`.
   - Calls `executeSingleBuyLiquid`:
-    - Validates pricing via `_checkPricing`, ensuring `impactPrice` is valid.
-    - `_prepBuyLiquidUpdates` uses `_prepareLiquidityTransaction` to compute `amountOut` and tokens.
+    - Validates pricing via `_checkPricing`, using `_computeImpact` to ensure `impactPrice` is within `maxPrice` and `minPrice`.
+    - `_prepBuyLiquidUpdates` uses `_prepareLiquidityTransaction` to compute `amountOut` based on `impactPrice` and tokens.
     - Transfers tokenA via `liquidityContract.transact`.
     - Updates liquidity via `_updateLiquidity` (tokenB, isX=false).
-    - Creates `UpdateType[]` via `_createBuyOrderUpdates`.
+    - Creates `UpdateType[]` via `_createBuyOrderUpdates`, including `amountSent`.
   - Applies `finalUpdates[]` via `listingContract.update`.
   - Transfer destinations: `recipientAddress` (tokenA), `liquidityAddr` (tokenB).
 - **Balance Checks**:
@@ -1140,14 +1291,15 @@ The `SSRouter` contract, implemented in Solidity (^0.8.2), facilitates order cre
 - **Restrictions**:
   - Protected by `nonReentrant` and `onlyValidListing`.
   - Requires router registration in `liquidityContract`.
-- **Gas Usage Controls**: `maxIterations`, dynamic arrays.
+  - Reverts if pricing invalid (based on `impactPrice`) or transfer fails.
+- **Gas Usage Controls**: `maxIterations`, dynamic arrays, try-catch error handling.
 
 ### settleSellLiquid(address listingAddress, uint256 maxIterations)
 - **Parameters**: Same as `settleBuyOrders`.
-- **Behavior**: Settles sell orders with liquidity pool, transferring tokenB and updating amounts.
+- **Behavior**: Settles sell orders with liquidity pool, transferring tokenB, updating liquidity (tokenA), and tracking `amountSent` (tokenB).
 - **Internal Call Flow**:
   - Similar to `settleBuyLiquid`, using `executeSingleSellLiquid` and `_prepSellLiquidUpdates`.
-  - Transfers tokenB, updates amounts (tokenA, isX=true).
+  - Computes `amountOut` using `impactPrice`, transfers tokenB, updates liquidity (tokenA, isX=true).
 - **Balance Checks**: Same as `settleBuyLiquid`.
 - **Mappings/Structs Used**: Same as `settleBuyLiquid`, with `SellOrderUpdateContext`.
 - **Restrictions**: Same as `settleBuyLiquid`.
@@ -1160,13 +1312,14 @@ The `SSRouter` contract, implemented in Solidity (^0.8.2), facilitates order cre
 - **Behavior**: Settles long position payouts, transferring tokenB to holders.
 - **Internal Call Flow**:
   - Iterates `longPayoutByIndexView[]` up to `maxIterations`.
-  - Calls `executeLongPayout`:
+  - Calls `executeLongPayout` (inherited):
     - Uses `_prepPayoutContext` (tokenB, decimalsB).
     - Transfers `amountOut` via `listingContract.transact`.
     - Updates `payoutPendingAmounts` and creates `PayoutUpdate[]` via `_createPayoutUpdate`.
   - Applies `finalPayoutUpdates[]` via `listingContract.ssUpdate`.
   - Transfer destination: `recipientAddress` (tokenB).
-- **Balance Checks**: Pre/post balances in `_transferListingPayoutAmount`.
+- **Balance Checks**:
+  - `_transferListingPayoutAmount` (inherited) checks pre/post balances.
 - **Mappings/Structs Used**:
   - **Mappings**: `payoutPendingAmounts`.
   - **Structs**: `PayoutContext`, `PayoutUpdate`, `LongPayoutStruct`.
@@ -1176,7 +1329,7 @@ The `SSRouter` contract, implemented in Solidity (^0.8.2), facilitates order cre
 - **Gas Usage Controls**: `maxIterations`, dynamic arrays.
 
 ### settleShortPayouts(address listingAddress, uint256 maxIterations)
-- **Parameters**: Same as `settleBuyOrders`.
+- **Parameters**: Same as `settleLongPayouts`.
 - **Behavior**: Settles short position payouts, transferring tokenA to holders.
 - **Internal Call Flow**:
   - Similar to `settleLongPayouts`, using `shortPayoutByIndexView[]` and `executeShortPayout`.
@@ -1187,18 +1340,19 @@ The `SSRouter` contract, implemented in Solidity (^0.8.2), facilitates order cre
 - **Gas Usage Controls**: Same as `settleLongPayouts`.
 
 ### settleLongLiquid(address listingAddress, uint256 maxIterations)
-- **Parameters**: Same as `settleBuyOrders`.
+- **Parameters**: Same as `settleLongPayouts`.
 - **Behavior**: Settles long position payouts from liquidity pool, transferring tokenB to holders.
 - **Internal Call Flow**:
   - Iterates `longPayoutByIndexView[]` up to `maxIterations`.
-  - Calls `settleSingleLongLiquid`:
+  - Calls `settleSingleLongLiquid` (inherited):
     - Uses `_prepPayoutContext` (tokenB, decimalsB).
     - Checks liquidity via `_checkLiquidityBalance`.
     - Transfers `amountOut` via `liquidityContract.transact`.
     - Updates `payoutPendingAmounts` and creates `PayoutUpdate[]` via `_createPayoutUpdate`.
   - Applies `finalPayoutUpdates[]` via `listingContract.ssUpdate`.
   - Transfer destination: `recipientAddress` (tokenB).
-- **Balance Checks**: Pre/post balances in `_transferPayoutAmount`.
+- **Balance Checks**:
+  - `_transferPayoutAmount` (inherited) checks liquidity pre/post balances.
 - **Mappings/Structs Used**:
   - **Mappings**: `payoutPendingAmounts`.
   - **Structs**: `PayoutContext`, `PayoutUpdate`, `LongPayoutStruct`.
@@ -1208,7 +1362,7 @@ The `SSRouter` contract, implemented in Solidity (^0.8.2), facilitates order cre
 - **Gas Usage Controls**: `maxIterations`, dynamic arrays.
 
 ### settleShortLiquid(address listingAddress, uint256 maxIterations)
-- **Parameters**: Same as `settleBuyOrders`.
+- **Parameters**: Same as `settleLongPayouts`.
 - **Behavior**: Settles short position payouts from liquidity pool, transferring tokenA to holders.
 - **Internal Call Flow**:
   - Similar to `settleLongLiquid`, using `settleSingleShortLiquid` and `_prepPayoutContext` with tokenA and `decimalsA`.
@@ -1284,29 +1438,30 @@ The `SSRouter` contract, implemented in Solidity (^0.8.2), facilitates order cre
   - `listingAddress` (address): Listing contract address.
   - `orderIdentifier` (uint256): Order ID.
   - `isBuyOrder` (bool): True for buy, false for sell.
-- **Behavior**: Cancels a single order, refunding pending amounts.
+- **Behavior**: Cancels a single order, refunding pending amounts and accounting for `amountSent`.
 - **Internal Call Flow**:
   - Calls `_clearOrderData`:
-    - Retrieves order data via `getBuyOrderCore` or `getSellOrderCore`.
-    - Refunds pending amount via `listingContract.transact` (tokenB for buy, tokenA for sell).
+    - Retrieves order data via `getBuyOrderCore` or `getSellOrderCore`, and `getBuyOrderAmounts` or `getSellOrderAmounts` (including `amountSent`).
+    - Refunds pending amount via `listingContract.transact` (tokenB for buy, tokenA for sell), using denormalized amount.
     - Sets status to 0 via `listingContract.update`.
   - Transfer destination: `recipientAddress`.
-- **Balance Checks**: Assumes transfer succeeds, user foots fee-on-transfer costs.
+- **Balance Checks**:
+  - `_clearOrderData` uses try-catch for refund transfer.
 - **Mappings/Structs Used**:
   - **Structs**: `UpdateType`.
 - **Restrictions**:
   - Protected by `nonReentrant` and `onlyValidListing`.
   - Reverts if refund fails.
-- **Gas Usage Controls**: Single transfer and update.
+- **Gas Usage Controls**: Single transfer and update, minimal array (1 `UpdateType`).
 
 ### clearOrders(address listingAddress, uint256 maxIterations)
 - **Parameters**:
   - `listingAddress` (address): Listing contract address.
   - `maxIterations` (uint256): Maximum orders to process.
-- **Behavior**: Cancels pending buy and sell orders.
+- **Behavior**: Cancels pending buy and sell orders up to `maxIterations`.
 - **Internal Call Flow**:
   - Iterates `pendingBuyOrdersView[]` and `pendingSellOrdersView[]` up to `maxIterations`.
-  - Calls `_clearOrderData` for each order.
+  - Calls `_clearOrderData` for each order, handling `amountSent`.
 - **Balance Checks**: Same as `clearSingleOrder`.
 - **Mappings/Structs Used**: Same as `clearSingleOrder`.
 - **Restrictions**: Same as `clearSingleOrder`.
@@ -1332,14 +1487,23 @@ The `SSRouter` contract, implemented in Solidity (^0.8.2), facilitates order cre
 - **Gas Usage Controls**: Minimal, single external call.
 
 ## Additional Details
-- **Decimal Handling**: Uses `normalize` and `denormalize` from `SSMainPartial.sol` (1e18) for token amounts, fetched via `IERC20.decimals` or `listingContract.decimalsA/B`.
-- **Reentrancy Protection**: All state-changing functions use `nonReentrant`.
-- **Gas Optimization**: Uses `maxIterations`, dynamic arrays, and `_checkAndTransferPrincipal` to reduce stack depth.
-- **Listing Validation**: Uses `onlyValidListing` modifier with `ISSAgent.getListing` checks.
-- **Token Usage**: Buy orders use tokenB input, tokenA output; sell orders use tokenA input, tokenB output; long payouts use tokenB, short payouts use tokenA.
-- **Events**: No events explicitly defined; relies on `listingContract` and `liquidityContract` events.
-- **Safety**: Balance checks, explicit casting, no inline assembly, and try-catch error handling ensure robustness.
-- **Compatibility**: Aligned with `SSListingTemplate` (v0.0.8), `SSLiquidityTemplate` (v0.0.7), `SSAgent` (v0.0.2).
+- **Decimal Handling**: Uses `normalize` and `denormalize` from `SSMainPartial.sol` (1e18) for token amounts, fetched via `IERC20.decimals` or `listingContract.decimalsA/B`. Ensures consistent precision across tokens.
+- **Reentrancy Protection**: All state-changing functions use `nonReentrant` modifier.
+- **Gas Optimization**: Uses `maxIterations` to limit loops, dynamic arrays for updates, `_checkAndTransferPrincipal` for efficient transfers, and `_processBuy/SellOrder` to reduce stack depth in `settleBuy/SellOrders` (~12 variables).
+- **Listing Validation**: Uses `onlyValidListing` modifier with `ISSAgent.getListing` checks to ensure listing integrity.
+- **Token Usage**:
+  - Buy orders: Input tokenB, output tokenA, `amountSent` tracks tokenA.
+  - Sell orders: Input tokenA, output tokenB, `amountSent` tracks tokenB.
+  - Long payouts: Output tokenB, no `amountSent`.
+  - Short payouts: Output tokenA, no `amountSent`.
+- **Events**: No events explicitly defined; relies on `listingContract` and `liquidityContract` events for logging.
+- **Safety**:
+  - Explicit casting used for all interface and address conversions (e.g., `ISSListingTemplate(listingAddress)`).
+  - No inline assembly, adhering to high-level Solidity for safety.
+  - Try-catch blocks handle external call failures (e.g., transfers, liquidity updates).
+  - Hidden state variables accessed via unique view functions (e.g., `agentView`, `liquidityAddressView`).
+  - Avoids reserved keywords and unnecessary virtual/override modifiers.
+  - Ensures graceful degradation with zero-length array returns on failure (e.g., `_prepBuyLiquidUpdates`).
 
 # SSCrossDriver Contract Documentation
 
