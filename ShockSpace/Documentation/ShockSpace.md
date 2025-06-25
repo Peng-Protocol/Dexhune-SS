@@ -1516,23 +1516,28 @@ The `SSCrossDriver` contract, implemented in Solidity (^0.8.2), manages trading 
 
 **Version:** 0.0.36 (last updated 2025-06-17)
 
+## State Variables
+- **DECIMAL_PRECISION** (uint256, constant, public): Set to 1e18 for normalizing amounts and prices across token decimals.
+- **agentAddress** (address, public): Stores the address of the ISSAgent contract for listing validation.
+- **positionCount** (uint256, public): Tracks the total number of positions created, used to generate unique position IDs.
+
 ## Mappings
-- **makerTokenMargin**: Tracks margin balances per maker and token (normalized to 1e18).
-- **makerMarginTokens**: Lists tokens with non-zero margins per maker.
-- **positionCore1**: Stores core position data (ID, listing, maker, type).
-- **positionCore2**: Tracks position status (active, closed).
-- **priceParams1**: Holds price data (entry prices, leverage, liquidation price).
-- **priceParams2**: Stores liquidation price.
-- **marginParams1**: Manages margin details (initial, taxed, excess, fee).
-- **marginParams2**: Tracks initial loan amount.
-- **exitParams**: Stores exit conditions (stop-loss, take-profit, exit price).
-- **openInterest**: Records leverage amount and timestamp.
-- **positionsByType**: Lists position IDs by type (long: 0, short: 1).
-- **pendingPositions**: Tracks pending position IDs by listing and type.
-- **positionToken**: Maps position ID to margin token (tokenA for long, tokenB for short).
-- **longIOByHeight**: Tracks long open interest by block height.
-- **shortIOByHeight**: Tracks short open interest by block height.
-- **historicalInterestTimestamps**: Stores timestamps for interest updates.
+- **makerTokenMargin** (mapping(address => mapping(address => uint256))): Tracks margin balances per maker and token, normalized to 1e18.
+- **makerMarginTokens** (mapping(address => address[])): Lists tokens with non-zero margin balances for each maker.
+- **positionCore1** (mapping(uint256 => PositionCore1)): Stores core position data (positionId, listingAddress, makerAddress, positionType).
+- **positionCore2** (mapping(uint256 => PositionCore2)): Tracks position status (status1 for active, status2 for closed).
+- **priceParams1** (mapping(uint256 => PriceParams1)): Holds price-related data (minEntryPrice, maxEntryPrice, minPrice, priceAtEntry, leverage).
+- **priceParams2** (mapping(uint256 => PriceParams2)): Stores liquidation price for each position.
+- **marginParams1** (mapping(uint256 => MarginParams1)): Manages margin details (initialMargin, taxedMargin, excessMargin, fee).
+- **marginParams2** (mapping(uint256 => MarginParams2)): Tracks initial loan amount for each position.
+- **exitParams** (mapping(uint256 => ExitParams)): Stores exit conditions (stopLossPrice, takeProfitPrice, exitPrice).
+- **openInterest** (mapping(uint256 => OpenInterest)): Records leverage amount and timestamp for each position.
+- **positionsByType** (mapping(uint8 => uint256[])): Lists position IDs by type (0 for long, 1 for short).
+- **pendingPositions** (mapping(address => mapping(uint8 => uint256[]))): Tracks pending position IDs by listing address and position type.
+- **positionToken** (mapping(uint256 => address)): Maps position ID to margin token (tokenA for long, tokenB for short).
+- **longIOByHeight** (mapping(uint256 => uint256)): Tracks long open interest by block height.
+- **shortIOByHeight** (mapping(uint256 => uint256)): Tracks short open interest by block height.
+- **historicalInterestTimestamps** (mapping(uint256 => uint256)): Stores timestamps for open interest updates.
 
 ## Structs
 - **PositionCore1**: Contains `positionId` (uint256), `listingAddress` (address), `makerAddress` (address), `positionType` (uint8: 0 for long, 1 for short).
@@ -1754,7 +1759,7 @@ Each function details its parameters, behavior, internal call flow (including ex
   - **Pre-Balance Check**: `normalizedAmount <= makerTokenMargin[msg.sender][token]` ensures sufficient margin.
   - **Post-Balance Check**: None, as transfer is handled by `ISSListing`.
 - **Mappings/Structs Used**:
-  - **Mappings**: `makerTokenMargin`, `makerMarginTokens`, `positionCore1`, `positionCore2`, `priceParams1`, `priceParams sho2`, `shortIOByHeight`, `historicalInterestTimestamps`.
+  - **Mappings**: `makerTokenMargin`, `makerMarginTokens`, `positionCore1`, `positionCore2`, `priceParams1`, `priceParams2`, `shortIOByHeight`, `historicalInterestTimestamps`.
   - **Structs**: `PositionCore1`, `PositionCore2`, `PriceParams1`, `PriceParams2`.
 - **Restrictions**:
   - Protected by `nonReentrant`.
@@ -2115,48 +2120,55 @@ The `SSIsolatedDriver` contract, implemented in Solidity (^0.8.2), manages tradi
 
 **Version:** 0.0.13 (last updated 2025-06-17)
 
+## State Variables
+- **DECIMAL_PRECISION** (uint256, constant, public): Set to 1e18 for normalizing amounts and prices across token decimals.
+- **agent** (address, public): Stores the address of the ISSAgent contract for listing validation.
+- **historicalInterestHeight** (uint256, public): Tracks the current block height for open interest updates, initialized to 1.
+- **nonce** (uint256, public): Nonce for unique transaction tracking, initialized to 0.
+- **positionIdCounter** (uint256, public): Counter for generating unique position IDs, initialized to 1.
+
 ## Mappings
-- **positionCoreBase**: Stores core position data (maker, listing, ID, type).
-- **positionCoreStatus**: Tracks position status (pending/executable, open/closed/cancelled).
-- **priceParams**: Holds price data (min/max entry, entry, close).
-- **marginParams**: Manages margin details (initial, taxed, excess).
-- **leverageParams**: Stores leverage details (value, amount, initial loan).
-- **riskParams**: Contains risk parameters (liquidation, stop-loss, take-profit prices).
-- **pendingPositions**: Tracks pending position IDs by listing and type.
-- **positionsByType**: Stores position IDs by type (long/short).
-- **positionToken**: Maps position ID to token (tokenA for long, tokenB for short).
-- **longIOByHeight**: Tracks long open interest by block height.
-- **shortIOByHeight**: Tracks short open interest by block height.
-- **historicalInterestTimestamps**: Stores timestamps for interest updates.
-- **pendingEntries**: Temporary storage for position entry parameters.
-- **pendingCloses**: Temporary storage for position closure parameters.
-- **pendingActions**: Temporary storage for position actions.
+- **positionCoreBase** (mapping(uint256 => PositionCoreBase)): Stores core position data (maker address, listing address, position ID, position type).
+- **positionCoreStatus** (mapping(uint256 => PositionCoreStatus)): Tracks position status (pending/executable, open/closed/cancelled).
+- **priceParams** (mapping(uint256 => PriceParams)): Holds price data (minimum/maximum entry prices, entry price, close price).
+- **marginParams** (mapping(uint256 => MarginParams)): Manages margin details (initial margin, taxed margin, excess margin).
+- **leverageParams** (mapping(uint256 => LeverageParams)): Stores leverage details (leverage value, leverage amount, initial loan).
+- **riskParams** (mapping(uint256 => RiskParams)): Contains risk parameters (liquidation price, stop-loss price, take-profit price).
+- **pendingPositions** (mapping(address => mapping(uint8 => uint256[]))): Tracks pending position IDs by maker address and position type (0 for long, 1 for short).
+- **positionsByType** (mapping(uint8 => uint256[])): Stores position IDs by type (0 for long, 1 for short).
+- **positionToken** (mapping(uint256 => address)): Maps position ID to margin token (tokenA for long, tokenB for short).
+- **longIOByHeight** (mapping(uint256 => uint256)): Tracks long open interest by block height.
+- **shortIOByHeight** (mapping(uint256 => uint256)): Tracks short open interest by block height.
+- **historicalInterestTimestamps** (mapping(uint256 => uint256)): Stores timestamps for open interest updates.
+- **pendingEntries** (mapping(uint256 => PendingEntry)): Temporary storage for position entry parameters.
+- **pendingCloses** (mapping(uint256 => PendingClose)): Temporary storage for position closure parameters.
+- **pendingActions** (mapping(uint256 => PendingAction)): Temporary storage for position actions.
 
 ## Structs
-- **PositionCoreBase**: Contains maker address, listing address, position ID, position type (long/short).
-- **PositionCoreStatus**: Tracks pending/executable flag, status (open/closed/cancelled).
-- **PriceParams**: Stores minimum/maximum entry prices, entry price, close price.
-- **MarginParams**: Holds initial, taxed, excess margins.
-- **LeverageParams**: Contains leverage value, amount, initial loan.
-- **RiskParams**: Stores liquidation, stop-loss, take-profit prices.
-- **PosParamsCore**: Combines price and margin parameters.
-- **PosParamsExt**: Combines leverage and risk parameters.
-- **EntryParamsBase**: Stores listing address, entry price string, initial/excess margins.
-- **EntryParamsRisk**: Stores leverage value, stop-loss, take-profit prices.
-- **EntryParamsToken**: Stores token address, normalized margins, driver address.
-- **ClosePositionBase**: Stores position ID, listing/maker addresses, driver.
-- **ClosePositionMargin**: Stores taxed and excess margins.
-- **LongCloseParams**: Stores leverage amount, initial loan for long positions.
-- **ShortCloseParams**: Stores minimum price, initial margin, leverage for short positions.
-- **PositionAction**: Stores position ID, action type (update status/close).
-- **ExecutionContextBase**: Stores listing address, driver, current price.
-- **ExecutionContextCounts**: Stores action count, maximum actions.
-- **EntryContext**: Stores listing/token addresses, normalized margins.
+- **PositionCoreBase**: Contains `makerAddress` (address), `listingAddress` (address), `positionId` (uint256), `positionType` (uint8: 0 for long, 1 for short).
+- **PositionCoreStatus**: Tracks `status1` (bool: false for pending, true for executable), `status2` (uint8: 0 for open, 1 for closed, 2 for cancelled).
+- **PriceParams**: Stores `priceMin` (uint256), `priceMax` (uint256), `priceAtEntry` (uint256), `priceClose` (uint256), all normalized to 1e18.
+- **MarginParams**: Holds `marginInitial` (uint256), `marginTaxed` (uint256), `marginExcess` (uint256), all normalized to 1e18.
+- **LeverageParams**: Contains `leverageVal` (uint8), `leverageAmount` (uint256), `loanInitial` (uint256), with amounts normalized to 1e18.
+- **RiskParams**: Stores `priceLiquidation` (uint256), `priceStopLoss` (uint256), `priceTakeProfit` (uint256), all normalized to 1e18.
+- **PosParamsCore**: Combines `priceParams` (PriceParams), `marginParams` (MarginParams).
+- **PosParamsExt**: Combines `leverageParams` (LeverageParams), `riskParams` (RiskParams).
+- **EntryParamsBase**: Stores `listingAddr` (address), `entryPriceStr` (string), `initMargin` (uint256, denormalized), `extraMargin` (uint256, denormalized).
+- **EntryParamsRisk**: Stores `leverageVal` (uint8), `stopLoss` (uint256, normalized), `takeProfit` (uint256, normalized).
+- **EntryParamsToken**: Stores `tokenAddr` (address), `normInitMargin` (uint256, normalized), `normExtraMargin` (uint256, normalized), `driverAddr` (address).
+- **ClosePositionBase**: Stores `positionId` (uint256), `listingAddress` (address), `makerAddress` (address), `driver` (address).
+- **ClosePositionMargin**: Stores `taxedMargin` (uint256, normalized), `excessMargin` (uint256, normalized).
+- **LongCloseParams**: Stores `leverageAmount` (uint256, normalized), `loanInitial` (uint256, normalized) for long positions.
+- **ShortCloseParams**: Stores `minPrice` (uint256, normalized), `initialMargin` (uint256, normalized), `leverage` (uint8) for short positions.
+- **PositionAction**: Stores `positionId` (uint256), `actionType` (uint8: 0 for update status, 1 for close).
+- **ExecutionContextBase**: Stores `listingAddress` (address), `driver` (address), `currentPrice` (uint256, normalized).
+- **ExecutionContextCounts**: Stores `actionCount` (uint256), `maxActions` (uint256).
+- **EntryContext**: Stores `listingAddr` (address), `tokenAddr` (address), `normInitMargin` (uint256), `normExtraMargin` (uint256).
 - **PendingEntry**: Stores entry parameters for position creation.
-- **PendingClose**: Stores closure parameters (price, payout, decimals, listing, maker, type).
-- **PendingAction**: Stores action parameters (type, listing, orphaned status, action type).
-- **PayoutUpdate**: Stores recipient, required amount, payout type.
-- **UpdateType**: Stores update type, index, value, address, recipient.
+- **PendingClose**: Stores closure parameters (`price`, `payout`, `decimals`, `listing`, `maker`, `type`).
+- **PendingAction**: Stores action parameters (`type`, `listing`, `orphaned`, `actionType`).
+- **PayoutUpdate**: Stores `recipient` (address), `required` (uint256, denormalized), `payoutType` (uint8: 0 for long, 1 for short).
+- **UpdateType**: Stores `updateType` (uint8), `index` (uint256), `value` (uint256), `addr` (address), `recipient` (address).
 
 ## Formulas
 Formulas drive position calculations, detailed in their functional context.
@@ -2459,7 +2471,7 @@ Each function details its parameters, behavior, internal call flow (including ex
   - **Mappings**: `positionCoreBase`, `positionCoreStatus`, `priceParams`, `marginParams`, `leverageParams`, `riskParams`, `positionToken`.
   - **Structs**: `PositionCoreBase`, `PositionCoreStatus`, `PriceParams`, `MarginParams`, `LeverageParams`, `RiskParams`.
 - **Restrictions**: Reverts if ID is invalid.
-- **Gas Usage Controls**: View function, minimal gas.
+- **Gas Usage Controls**: Minimal gas, view function.
 
 ### queryInterest(uint256 step, uint256 maxIterations)
 - **Parameters**:
@@ -2471,16 +2483,14 @@ Each function details its parameters, behavior, internal call flow (including ex
 - **Mappings/Structs Used**:
   - **Mappings**: `longIOByHeight`, `shortIOByHeight`, `historicalInterestTimestamps`.
 - **Restrictions**: None.
-- **Gas Usage Controls**: View function, `maxIterations` limits gas.
+- **Gas Usage Controls**: `maxIterations`, view function, minimal gas.
 
 ## Additional Details
-- **Decimal Handling**: Uses `DECIMAL_PRECISION` (1e18) for normalization across token decimals, with `IERC20.decimals` for token-specific precision.
+- **Decimal Handling**: Uses `DECIMAL_PRECISION` (1e18) for normalization across token decimals, with `IERC20.decimals()` for token-specific precision.
 - **Reentrancy Protection**: All state-changing functions use `nonReentrant`.
 - **Gas Optimization**: Employs `maxIterations`, `gasleft() >= 100000`, and pop-and-swap for array operations.
 - **Listing Validation**: Uses `ISSAgent.getListing` for robust checks.
 - **Token Usage**: Long positions use tokenA margins, tokenB payouts; short positions use tokenB margins, tokenA payouts.
-- **Position Lifecycle**: Pending (`status1 = false`, `status2 = 0`) to executable (`status1 = true`, `status2 = 0`) to closed (`status2 = 1`) or cancelled (`status2 = 2`).
+- **Position Lifecycle**: Pending (`status1 == false`, `status2 == 0`) to executable (`status1 == true`, `status2 == 0`) to closed (`status2 == 1`) or cancelled (`status2 == 20`).
 - **Events**: Emitted for entry (`PositionEntered`), closure (`PositionClosed`), cancellation (`PositionCancelled`), margin addition (`ExcessMarginAdded`), SL/TP updates (`StopLossUpdated`, `TakeProfitUpdated`), and batch operations (`AllLongsClosed`, `AllLongsCancelled`, `AllShortsClosed`, `AllShortsCancelled`, `PositionsExecuted`).
 - **Safety**: Balance checks, explicit casting, no inline assembly, and modular helpers (`validateExcessMargin`, `transferExcessMargin`, `updateMarginAndInterest`, `updateLiquidationPrice`, `updateSLInternal`, `updateTPInternal`) ensure robustness.
-
-
