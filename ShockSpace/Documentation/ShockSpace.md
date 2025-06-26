@@ -382,17 +382,15 @@ The System comprises of SSAgent  SSListingLogic - SSLiquidityLogic - SSLiquidity
     - Retrieves length of allListedTokens array.
   - **Returns:**
     - `uint256`: Total number of listed tokens.
-
-# SSListing and SSLiquidity Contract Documentation
+    
+# SSListingTemplate Documentation
 
 ## Overview
-The `SSListingTemplate` and `SSLiquidityTemplate` contracts, implemented in Solidity (^0.8.2), form a decentralized trading platform. `SSListingTemplate` manages buy/sell orders, payouts, and volume balances, while `SSLiquidityTemplate` handles liquidity deposits, withdrawals, and fee claims. Both inherit `ReentrancyGuard` for security and use `SafeERC20` for token operations, integrating with `ISSAgent` and `ITokenRegistry` for global updates and synchronization. State variables are private, accessed via view functions with unique names, and amounts are normalized to 1e18 for precision across token decimals. The contracts avoid reserved keywords, use explicit casting, and ensure graceful degradation.
+The `SSListingTemplate` contract, implemented in Solidity (^0.8.2), forms part of a decentralized trading platform. `SSListingTemplate` manages buy/sell orders, payouts, and volume balances, it inherits `ReentrancyGuard` for security and use `SafeERC20` for token operations, integrating with `ISSAgent` and `ITokenRegistry` for global updates and synchronization. State variables are private, accessed via view functions with unique names, and amounts are normalized to 1e18 for precision across token decimals. The contracts avoid reserved keywords, use explicit casting, and ensure graceful degradation.
 
 **SPDX License**: BSD-3-Clause
 
 **Version**: 0.0.10 (Updated 2025-06-23)
-
-## SSListingTemplate Documentation
 
 ### State Variables
 - **`routersSet`**: `bool public` - Tracks if routers are set, prevents re-setting.
@@ -796,7 +794,14 @@ The `SSListingTemplate` and `SSLiquidityTemplate` contracts, implemented in Soli
   - Avoids reserved keywords and unnecessary virtual/override modifiers.
 - **Compatibility**: Aligned with `SSRouter` (v0.0.48), `SSAgent` (v0.0.2), `SSLiquidityTemplate` (v0.0.6), `SSOrderPartial` (v0.0.18).
 
-## SSLiquidityTemplate Documentation
+# SSLiquidityTemplate Documentation
+
+## Overview
+The `SSLiquidityTemplate`, implemented in Solidity (^0.8.2), forms part of a decentralized trading platform, handling liquidity deposits, withdrawals, and fee claims. It inherits `ReentrancyGuard` for security and uses `SafeERC20` for token operations, integrating with `ISSAgent` and `ITokenRegistry` for global updates and synchronization. State variables are private, accessed via view functions with unique names, and amounts are normalized to 1e18 for precision across token decimals. The contracts avoid reserved keywords, use explicit casting, and ensure graceful degradation.
+
+**SPDX License**: BSD-3-Clause
+
+**Version**: 0.0.9 (Updated 2025-06-26)
 
 ### State Variables
 - **`routersSet`**: `bool public` - Tracks if routers are set, prevents re-setting.
@@ -849,6 +854,7 @@ The `SSListingTemplate` and `SSLiquidityTemplate` contracts, implemented in Soli
    - `allocation`: `uint256` - Slot allocation.
    - `fees`: `uint256` - Available fees (yFees for xSlots, xFees for ySlots).
    - `liquidityIndex`: `uint256` - Slot index.
+   - `price`: `uint256` - Current price from `ISSListing.getPrice()` for fee conversion.
 
 ### Formulas
 1. **Fee Share**:
@@ -858,6 +864,12 @@ The `SSListingTemplate` and `SSLiquidityTemplate` contracts, implemented in Soli
      - `liquidityContribution = (allocation * 1e18) / liquid`
    - **Used in**: `_claimFeeShare`
    - **Description**: Computes fee share for a liquidity slot based on volume contribution and liquidity proportion.
+2. **Fee Conversion**:
+   - **Formula**:
+     - For xSlots: `convertedFeeShare = (feeShare * price) / 1e18` (yFees to token A value)
+     - For ySlots: `convertedFeeShare = (feeShare * 1e18) / price` (xFees to token B value)
+   - **Used in**: `_processFeeClaim`
+   - **Description**: Converts fee share to the value of the opposite token using the current price from `ISSListing.getPrice()`.
 
 ### External Functions
 #### setRouters(address[] memory _routers)
@@ -904,7 +916,7 @@ The `SSListingTemplate` and `SSLiquidityTemplate` contracts, implemented in Soli
   - Processes `updates`:
     - `updateType=0`: Updates `xLiquid` or `yLiquid`.
     - `updateType=1`: Updates `xFees` or `yFees`, emits `FeesUpdated`.
-    - `updateType=2`: Updates `xLiquiditySlots`, `activeXLiquiditySlots`, `userIndex`, fetches `xVolume` from `listingVolumeBalancesView`.
+    - `updateType=2`: Updates `xLiquiditySlots`, `activeXLiquiditySlots`, `userIndex`, fetches `xVolume` from `ISSListing.volumeBalances`.
     - `updateType=3`: Updates `yLiquiditySlots`, `activeYLiquiditySlots`, `userIndex`, fetches `yVolume`.
   - Emits `LiquidityUpdated`.
 - **Balance Checks**: Checks `xLiquid` or `yLiquid` for balance updates.
@@ -957,14 +969,14 @@ The `SSListingTemplate` and `SSLiquidityTemplate` contracts, implemented in Soli
 - **Behavior**: Prepares token A withdrawal, calculates compensation in token B.
 - **Internal Call Flow**:
   - Checks `xLiquid` and slot `allocation` in `xLiquiditySlots`.
-  - Fetches `listingPriceView` to compute `withdrawAmountB` if liquidity deficit.
+  - Fetches `ISSListing.getPrice` to compute `withdrawAmountB` if liquidity deficit.
   - Returns `PreparedWithdrawal` with `amountA` and `amountB`.
 - **Balance Checks**: Verifies `xLiquid`, `yLiquid` sufficiency.
 - **Mappings/Structs Used**:
   - **Mappings**: `xLiquiditySlots`, `liquidityDetail`.
   - **Structs**: `PreparedWithdrawal`, `LiquidityDetails`, `Slot`.
 - **Restrictions**: `nonReentrant`, requires `routers[msg.sender]`, valid slot.
-- **Gas Usage Controls**: Minimal, single external call to `listingPriceView`.
+- **Gas Usage Controls**: Minimal, single external call to `getPrice`.
 
 #### xExecuteOut(address caller, uint256 index, PreparedWithdrawal memory withdrawal)
 - **Parameters**:
@@ -986,7 +998,7 @@ The `SSListingTemplate` and `SSLiquidityTemplate` contracts, implemented in Soli
 #### yPrepOut(address caller, uint256 amount, uint256 index) returns (PreparedWithdrawal memory)
 - **Parameters**: Same as `xPrepOut`.
 - **Behavior**: Prepares token B withdrawal, calculates compensation in token A.
-- **Internal Call Flow**: Similar to `xPrepOut`, checks `yLiquid`, `xLiquid`, uses `listingPriceView` for `withdrawAmountA`.
+- **Internal Call Flow**: Similar to `xPrepOut`, checks `yLiquid`, `xLiquid`, uses `ISSListing.getPrice` for `withdrawAmountA`.
 - **Balance Checks**: Verifies `yLiquid`, `xLiquid` sufficiency.
 - **Mappings/Structs Used**: `yLiquiditySlots`, `liquidityDetail`, `PreparedWithdrawal`, `Slot`.
 - **Restrictions**: Same as `xPrepOut`.
@@ -1004,25 +1016,27 @@ The `SSListingTemplate` and `SSLiquidityTemplate` contracts, implemented in Soli
 #### claimFees(address caller, address _listingAddress, uint256 liquidityIndex, bool isX, uint256 volume)
 - **Parameters**:
   - `caller` - User address.
-  - `listingAddress` - Listing contract address.
+  - `_listingAddress` - Listing contract address.
   - `liquidityIndex` - Slot index.
   - `isX` - True for token A, false for token B.
   - `volume` - Volume for fee calculation.
-- **Behavior**: Claims fees (token B for xSlots, token A for ySlots) for a liquidity slot.
+- **Behavior**: Claims fees in the value of the liquidity provider's token (token A for xSlots, token B for ySlots).
 - **Internal Call Flow**:
-  - Creates `FeeClaimContext` to optimize stack usage (~8 variables).
+  - Validates listing via `ISSListing.volumeBalances` and fetches price via `ISSListing.getPrice`.
+  - Creates `FeeClaimContext` to optimize stack usage (~9 variables).
   - Calls `_processFeeClaim`, which:
     - Fetches slot data (`xLiquiditySlots` or `yLiquiditySlots`).
     - Calls `_claimFeeShare` to compute `feeShare` using volume and liquidity proportion.
+    - Converts `feeShare` to the opposite token's value (yFees to token A for xSlots, xFees to token B for ySlots).
     - Creates `UpdateType` to update `xFees`/`yFees` and slot allocation.
-    - Transfers fees via `transact`.
-  - Emits `FeesClaimed`.
+    - Transfers converted fees via `transact`.
+    - Emits `FeesClaimed` with converted amounts.
 - **Balance Checks**: Verifies `xBalance` (from `volumeBalances`), `xLiquid`/`yLiquid`, `xFees`/`yFees`.
 - **Mappings/Structs Used**:
   - **Mappings**: `xLiquiditySlots`, `yLiquiditySlots`, `liquidityDetail`.
   - **Structs**: `FeeClaimContext`, `UpdateType`, `LiquidityDetails`, `Slot`.
-- **Restrictions**: `nonReentrant`, requires `routers[msg.sender]`, caller must be depositor.
-- **Gas Usage Controls**: Single transfer, struct-based stack optimization, try-catch for `transact`.
+- **Restrictions**: `nonReentrant`, requires `routers[msg.sender]`, caller must be depositor, valid listing address.
+- **Gas Usage Controls**: Single transfer, struct-based stack optimization, try-catch for `transact`, minimal external calls.
 
 #### transact(address caller, address token, uint256 amount, address recipient)
 - **Parameters**:
@@ -1066,12 +1080,12 @@ The `SSListingTemplate` and `SSLiquidityTemplate` contracts, implemented in Soli
   - `amount` - Normalized amount.
 - **Behavior**: Reduces `xLiquid` or `yLiquid` in `liquidityDetail`.
 - **Internal Call Flow**:
-  - Creates `UpdateType` to update `xLiquid` or `yLiquid`.
-  - Calls `update`, emits `LiquidityUpdated`.
+  - Checks `xLiquid` or `yLiquid` sufficiency.
+  - Updates `liquidityDetail`, emits `LiquidityUpdated`.
 - **Balance Checks**: Verifies `xLiquid` or `yLiquid` sufficiency.
 - **Mappings/Structs Used**:
   - **Mappings**: `liquidityDetail`.
-  - **Structs**: `UpdateType`, `LiquidityDetails`.
+  - **Structs**: `LiquidityDetails`.
 - **Restrictions**: `nonReentrant`, requires `routers[msg.sender]`.
 - **Gas Usage Controls**: Minimal, single update.
 
@@ -1121,15 +1135,15 @@ The `SSListingTemplate` and `SSLiquidityTemplate` contracts, implemented in Soli
 ### Additional Details
 - **Decimal Handling**: Uses `normalize` and `denormalize` (1e18) for amounts, fetched via `IERC20.decimals`.
 - **Reentrancy Protection**: All state-changing functions use `nonReentrant` modifier.
-- **Gas Optimization**: Dynamic array resizing, minimal external calls, struct-based stack management in `claimFees` (~8 variables).
+- **Gas Optimization**: Dynamic array resizing, minimal external calls, struct-based stack management in `claimFees` (~9 variables).
 - **Token Usage**:
-  - xSlots: Provide token A liquidity, claim token B fees.
-  - ySlots: Provide token B liquidity, claim token A fees.
+  - xSlots: Provide token A liquidity, claim token B fees in token A value.
+  - ySlots: Provide token B liquidity, claim token A fees in token B value.
 - **Events**: `LiquidityUpdated`, `FeesUpdated`, `FeesClaimed`, `SlotDepositorChanged`, `GlobalizeUpdateFailed`, `UpdateRegistryFailed`.
 - **Safety**:
-  - Explicit casting for interfaces (e.g., `ISSLiquidityTemplate`, `IERC20`).
+  - Explicit casting for interfaces (e.g., `ISSListing`, `IERC20`).
   - No inline assembly, uses high-level Solidity.
-  - Try-catch for external calls (`transact`, `globalizeUpdate`, `updateRegistry`) to handle failures.
+  - Try-catch for external calls (`transact`, `globalizeUpdate`, `updateRegistry`, `ISSListing.volumeBalances`, `ISSListing.getPrice`) to handle failures.
   - Hidden state variables accessed via view functions (e.g., `getXSlotView`, `liquidityDetailsView`).
   - Avoids reserved keywords and unnecessary virtual/override modifiers.
 - **Compatibility**: Aligned with `SSRouter` (v0.0.48), `SSAgent` (v0.0.2), `SSListingTemplate` (v0.0.10), `SSOrderPartial` (v0.0.18).
