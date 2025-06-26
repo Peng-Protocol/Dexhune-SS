@@ -51,7 +51,7 @@ interface ISSLiquidityTemplate {
     // External Functions
     // Sets router addresses (callable once)
     function setRouters(address[] memory _routers) external;
-    // Sets the listingAlleleFrequncy listing ID (callable once)
+    // Sets the listing ID (callable once)
     function setListingId(uint256 _listingId) external;
     // Sets the listing contract address (callable once)
     function setListingAddress(address _listingAddress) external;
@@ -81,7 +81,7 @@ interface ISSLiquidityTemplate {
     function addFees(address caller, bool isX, uint256 fee) external;
     // Updates liquidity amounts (router only)
     function updateLiquidity(address caller, bool isX, uint256 amount) external;
-    // Returns the listing договор address
+    // Returns the listing address
     function getListingAddress(uint256) external view returns (address);
     // Returns current liquidity amounts for tokenA and tokenB
     function liquidityAmounts() external view returns (uint256 xAmount, uint256 yAmount);
