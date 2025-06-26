@@ -794,14 +794,15 @@ The `SSListingTemplate` contract, implemented in Solidity (^0.8.2), forms part o
   - Avoids reserved keywords and unnecessary virtual/override modifiers.
 - **Compatibility**: Aligned with `SSRouter` (v0.0.48), `SSAgent` (v0.0.2), `SSLiquidityTemplate` (v0.0.6), `SSOrderPartial` (v0.0.18).
 
-# SSLiquidityTemplate Documentation
+
+# SSLiquidityTemplate Specifications
 
 ## Overview
-The `SSLiquidityTemplate`, implemented in Solidity (^0.8.2), forms part of a decentralized trading platform, handling liquidity deposits, withdrawals, and fee claims. It inherits `ReentrancyGuard` for security and uses `SafeERC20` for token operations, integrating with `ISSAgent` and `ITokenRegistry` for global updates and synchronization. State variables are private, accessed via view functions with unique names, and amounts are normalized to 1e18 for precision across token decimals. The contracts avoid reserved keywords, use explicit casting, and ensure graceful degradation.
+The `SSLiquidityTemplate`, implemented in Solidity (^0.8.2), forms part of a decentralized trading platform, handling liquidity deposits, withdrawals, and fee claims. It inherits `ReentrancyGuard` for security and uses `SafeERC20` for token operations, integrating with `ISSAgent` and `ITokenRegistry` for global updates and synchronization. State variables are private, accessed via view functions with unique names, and amounts are normalized to 1e18 for precision across token decimals. The contract avoids reserved keywords, uses explicit casting, and ensures graceful degradation.
 
 **SPDX License**: BSD-3-Clause
 
-**Version**: 0.0.9 (Updated 2025-06-26)
+**Version**: 0.0.12 (Updated 2025-06-26)
 
 ### State Variables
 - **`routersSet`**: `bool public` - Tracks if routers are set, prevents re-setting.
@@ -810,7 +811,7 @@ The `SSLiquidityTemplate`, implemented in Solidity (^0.8.2), forms part of a dec
 - **`tokenB`**: `address public` - Address of token B (or ETH if zero).
 - **`listingId`**: `uint256 public` - Unique identifier for the listing.
 - **`agent`**: `address public` - Address of the agent contract for global updates.
-- **`liquidityDetail`**: `LiquidityDetails public` - Stores `xLiquid`, `yLiquid`, `xFees`, `yFees`.
+- **`liquidityDetail`**: `LiquidityDetails public` - Stores `xLiquid`, `yLiquid`, `xFees`, `yFees`, `xFeesAcc`, `yFeesAcc`.
 - **`activeXLiquiditySlots`**: `uint256[] public` - Array of active xSlot indices.
 - **`activeYLiquiditySlots`**: `uint256[] public` - Array of active ySlot indices.
 
@@ -826,12 +827,14 @@ The `SSLiquidityTemplate`, implemented in Solidity (^0.8.2), forms part of a dec
    - `yLiquid`: `uint256` - Normalized liquidity for token B.
    - `xFees`: `uint256` - Normalized fees for token A.
    - `yFees`: `uint256` - Normalized fees for token B.
+   - `xFeesAcc`: `uint256` - Cumulative fee volume for token A.
+   - `yFeesAcc`: `uint256` - Cumulative fee volume for token B.
 
 2. **Slot**:
    - `depositor`: `address` - Address of the slot owner.
    - `recipient`: `address` - Unused recipient address.
    - `allocation`: `uint256` - Normalized liquidity allocation.
-   - `dVolume`: `uint256` - Volume at deposit time.
+   - `dFeesAcc`: `uint256` - Cumulative fees at deposit (yFeesAcc for xSlots, xFeesAcc for ySlots).
    - `timestamp`: `uint256` - Slot creation timestamp.
 
 3. **UpdateType**:
@@ -848,28 +851,23 @@ The `SSLiquidityTemplate`, implemented in Solidity (^0.8.2), forms part of a dec
 5. **FeeClaimContext**:
    - `caller`: `address` - User address.
    - `isX`: `bool` - True for token A, false for token B.
-   - `volume`: `uint256` - Trading volume for fee calculation.
-   - `dVolume`: `uint256` - Volume at deposit.
    - `liquid`: `uint256` - Total liquidity (xLiquid or yLiquid).
    - `allocation`: `uint256` - Slot allocation.
    - `fees`: `uint256` - Available fees (yFees for xSlots, xFees for ySlots).
+   - `dFeesAcc`: `uint256` - Cumulative fees at deposit.
    - `liquidityIndex`: `uint256` - Slot index.
-   - `price`: `uint256` - Current price from `ISSListing.getPrice()` for fee conversion.
 
 ### Formulas
 1. **Fee Share**:
-   - **Formula**: `feeShare = (feesAccrued * liquidityContribution) / 1e18`
-     - `feesAccrued = (contributedVolume * 0.0005)`
-     - `contributedVolume = volume - dVolume`
-     - `liquidityContribution = (allocation * 1e18) / liquid`
+   - **Formula**: 
+     ```
+     contributedFees = feesAcc - dFeesAcc
+     liquidityContribution = (allocation * 1e18) / liquid
+     feeShare = (contributedFees * liquidityContribution) / 1e18
+     feeShare = feeShare > fees ? fees : feeShare
+     ```
    - **Used in**: `_claimFeeShare`
-   - **Description**: Computes fee share for a liquidity slot based on volume contribution and liquidity proportion.
-2. **Fee Conversion**:
-   - **Formula**:
-     - For xSlots: `convertedFeeShare = (feeShare * price) / 1e18` (yFees to token A value)
-     - For ySlots: `convertedFeeShare = (feeShare * 1e18) / price` (xFees to token B value)
-   - **Used in**: `_processFeeClaim`
-   - **Description**: Converts fee share to the value of the opposite token using the current price from `ISSListing.getPrice()`.
+   - **Description**: Computes fee share for a liquidity slot based on accumulated fees since deposit (`feesAcc` is `yFeesAcc` for xSlots, `xFeesAcc` for ySlots) and liquidity proportion, capped at available fees (`yFees` for xSlots, `xFees` for ySlots).
 
 ### External Functions
 #### setRouters(address[] memory _routers)
@@ -916,15 +914,15 @@ The `SSLiquidityTemplate`, implemented in Solidity (^0.8.2), forms part of a dec
   - Processes `updates`:
     - `updateType=0`: Updates `xLiquid` or `yLiquid`.
     - `updateType=1`: Updates `xFees` or `yFees`, emits `FeesUpdated`.
-    - `updateType=2`: Updates `xLiquiditySlots`, `activeXLiquiditySlots`, `userIndex`, fetches `xVolume` from `ISSListing.volumeBalances`.
-    - `updateType=3`: Updates `yLiquiditySlots`, `activeYLiquiditySlots`, `userIndex`, fetches `yVolume`.
+    - `updateType=2`: Updates `xLiquiditySlots`, `activeXLiquiditySlots`, `userIndex`, sets `dFeesAcc` to `yFeesAcc`.
+    - `updateType=3`: Updates `yLiquiditySlots`, `activeYLiquiditySlots`, `userIndex`, sets `dFeesAcc` to `xFeesAcc`.
   - Emits `LiquidityUpdated`.
 - **Balance Checks**: Checks `xLiquid` or `yLiquid` for balance updates.
 - **Mappings/Structs Used**:
   - **Mappings**: `xLiquiditySlots`, `yLiquiditySlots`, `activeXLiquiditySlots`, `activeYLiquiditySlots`, `userIndex`, `liquidityDetail`.
   - **Structs**: `UpdateType`, `LiquidityDetails`, `Slot`.
 - **Restrictions**: `nonReentrant`, requires `routers[msg.sender]`.
-- **Gas Usage Controls**: Dynamic array resizing, loop over `updates`, minimal external calls.
+- **Gas Usage Controls**: Dynamic array resizing, loop over `updates`, no external calls.
 
 #### changeSlotDepositor(address caller, bool isX, uint256 slotIndex, address newDepositor)
 - **Parameters**:
@@ -952,7 +950,7 @@ The `SSLiquidityTemplate`, implemented in Solidity (^0.8.2), forms part of a dec
 - **Internal Call Flow**:
   - Performs pre/post balance checks for tokens, validates `msg.value` for ETH.
   - Transfers via `SafeERC20.transferFrom` or ETH deposit.
-  - Normalizes `amount`, creates `UpdateType` for slot allocation.
+  - Normalizes `amount`, creates `UpdateType` for slot allocation (sets `dFeesAcc`).
   - Calls `update`, `globalizeUpdate`, `updateRegistry`.
 - **Balance Checks**: Pre/post balance for tokens, `msg.value` for ETH.
 - **Mappings/Structs Used**:
@@ -985,7 +983,7 @@ The `SSLiquidityTemplate`, implemented in Solidity (^0.8.2), forms part of a dec
   - `withdrawal` - Withdrawal amounts (`amountA`, `amountB`).
 - **Behavior**: Executes token A withdrawal, transfers tokens/ETH.
 - **Internal Call Flow**:
-  - Updates `xLiquiditySlots` and `liquidityDetail` via `update`.
+  - Updates `xLiquiditySlots`, `liquidityDetail` via `update`.
   - Transfers `amountA` (token A) and `amountB` (token B) via `SafeERC20` or ETH.
   - Calls `globalizeUpdate`, `updateRegistry` for both tokens.
 - **Balance Checks**: Verifies `xLiquid`, `yLiquid` before transfers.
@@ -998,7 +996,7 @@ The `SSLiquidityTemplate`, implemented in Solidity (^0.8.2), forms part of a dec
 #### yPrepOut(address caller, uint256 amount, uint256 index) returns (PreparedWithdrawal memory)
 - **Parameters**: Same as `xPrepOut`.
 - **Behavior**: Prepares token B withdrawal, calculates compensation in token A.
-- **Internal Call Flow**: Similar to `xPrepOut`, checks `yLiquid`, `xLiquid`, uses `ISSListing.getPrice` for `withdrawAmountA`.
+- **Internal Call Flow**: Checks `yLiquid`, `xLiquid`, uses `ISSListing.getPrice` for `withdrawAmountA`.
 - **Balance Checks**: Verifies `yLiquid`, `xLiquid` sufficiency.
 - **Mappings/Structs Used**: `yLiquiditySlots`, `liquidityDetail`, `PreparedWithdrawal`, `Slot`.
 - **Restrictions**: Same as `xPrepOut`.
@@ -1007,7 +1005,7 @@ The `SSLiquidityTemplate`, implemented in Solidity (^0.8.2), forms part of a dec
 #### yExecuteOut(address caller, uint256 index, PreparedWithdrawal memory withdrawal)
 - **Parameters**: Same as `xExecuteOut`.
 - **Behavior**: Executes token B withdrawal, transfers tokens/ETH.
-- **Internal Call Flow**: Similar to `xExecuteOut`, updates `yLiquiditySlots`, transfers `amountB` (token B) and `amountA` (token A).
+- **Internal Call Flow**: Updates `yLiquiditySlots`, transfers `amountB` (token B) and `amountA` (token A).
 - **Balance Checks**: Verifies `yLiquid`, `xLiquid` before transfers.
 - **Mappings/Structs Used**: `yLiquiditySlots`, `activeYLiquiditySlots`, `userIndex`, `liquidityDetail`, `PreparedWithdrawal`, `UpdateType`, `Slot`.
 - **Restrictions**: Same as `xExecuteOut`.
@@ -1019,18 +1017,17 @@ The `SSLiquidityTemplate`, implemented in Solidity (^0.8.2), forms part of a dec
   - `_listingAddress` - Listing contract address.
   - `liquidityIndex` - Slot index.
   - `isX` - True for token A, false for token B.
-  - `volume` - Volume for fee calculation.
-- **Behavior**: Claims fees in the value of the liquidity provider's token (token A for xSlots, token B for ySlots).
+  - `volume` - Unused (ignored for compatibility).
+- **Behavior**: Claims fees (yFees for xSlots, xFees for ySlots).
 - **Internal Call Flow**:
-  - Validates listing via `ISSListing.volumeBalances` and fetches price via `ISSListing.getPrice`.
-  - Creates `FeeClaimContext` to optimize stack usage (~9 variables).
+  - Validates listing via `ISSListing.volumeBalances`.
+  - Creates `FeeClaimContext` to optimize stack usage (~7 variables).
   - Calls `_processFeeClaim`, which:
     - Fetches slot data (`xLiquiditySlots` or `yLiquiditySlots`).
-    - Calls `_claimFeeShare` to compute `feeShare` using volume and liquidity proportion.
-    - Converts `feeShare` to the opposite token's value (yFees to token A for xSlots, xFees to token B for ySlots).
-    - Creates `UpdateType` to update `xFees`/`yFees` and slot allocation.
-    - Transfers converted fees via `transact`.
-    - Emits `FeesClaimed` with converted amounts.
+    - Calls `_claimFeeShare` to compute `feeShare` using `contributedFees = feesAcc - dFeesAcc` and liquidity proportion.
+    - Updates `xFees`/`yFees` and slot allocation via `update`.
+    - Transfers fees via `transact` (yFees for xSlots, xFees for ySlots).
+    - Emits `FeesClaimed` with fee amounts.
 - **Balance Checks**: Verifies `xBalance` (from `volumeBalances`), `xLiquid`/`yLiquid`, `xFees`/`yFees`.
 - **Mappings/Structs Used**:
   - **Mappings**: `xLiquiditySlots`, `yLiquiditySlots`, `liquidityDetail`.
@@ -1062,8 +1059,9 @@ The `SSLiquidityTemplate`, implemented in Solidity (^0.8.2), forms part of a dec
   - `caller` - User address.
   - `isX` - True for token A, false for token B.
   - `fee` - Normalized fee amount.
-- **Behavior**: Adds fees to `xFees` or `yFees` in `liquidityDetail`.
+- **Behavior**: Adds fees to `xFees`/`yFees` and increments `xFeesAcc`/`yFeesAcc` in `liquidityDetail`.
 - **Internal Call Flow**:
+  - Increments `xFeesAcc` (isX=true) or `yFeesAcc` (isX=false).
   - Creates `UpdateType` to update `xFees` or `yFees`.
   - Calls `update`, emits `FeesUpdated`.
 - **Balance Checks**: None, assumes normalized input.
@@ -1071,7 +1069,7 @@ The `SSLiquidityTemplate`, implemented in Solidity (^0.8.2), forms part of a dec
   - **Mappings**: `liquidityDetail`.
   - **Structs**: `UpdateType`, `LiquidityDetails`.
 - **Restrictions**: `nonReentrant`, requires `routers[msg.sender]`.
-- **Gas Usage Controls**: Minimal, single update.
+- **Gas Usage Controls**: Minimal, single update, additional `xFeesAcc`/`yFeesAcc` write.
 
 #### updateLiquidity(address caller, bool isX, uint256 amount)
 - **Parameters**:
@@ -1099,7 +1097,7 @@ The `SSLiquidityTemplate`, implemented in Solidity (^0.8.2), forms part of a dec
 - **Mappings/Structs Used**: `liquidityDetail` (`LiquidityDetails`).
 - **Gas Usage Controls**: Minimal, single state read.
 
-#### liquidityDetailsView() view returns (uint256 xLiquid, uint256 yLiquid, uint256 xFees, uint256 yFees)
+#### liquidityDetailsView() view returns (uint256 xLiquid, uint256 yLiquid, uint256 xFees, uint256 yFees, uint256 xFeesAcc, uint256 yFeesAcc)
 - **Behavior**: Returns all fields from `liquidityDetail`.
 - **Mappings/Structs Used**: `liquidityDetail` (`LiquidityDetails`).
 - **Gas Usage Controls**: Minimal, single state read.
@@ -1135,18 +1133,22 @@ The `SSLiquidityTemplate`, implemented in Solidity (^0.8.2), forms part of a dec
 ### Additional Details
 - **Decimal Handling**: Uses `normalize` and `denormalize` (1e18) for amounts, fetched via `IERC20.decimals`.
 - **Reentrancy Protection**: All state-changing functions use `nonReentrant` modifier.
-- **Gas Optimization**: Dynamic array resizing, minimal external calls, struct-based stack management in `claimFees` (~9 variables).
+- **Gas Optimization**: Dynamic array resizing, minimal external calls, struct-based stack management in `claimFees` (~7 variables).
 - **Token Usage**:
-  - xSlots: Provide token A liquidity, claim token B fees in token A value.
-  - ySlots: Provide token B liquidity, claim token A fees in token B value.
+  - xSlots: Provide token A liquidity, claim yFees.
+  - ySlots: Provide token B liquidity, claim xFees.
 - **Events**: `LiquidityUpdated`, `FeesUpdated`, `FeesClaimed`, `SlotDepositorChanged`, `GlobalizeUpdateFailed`, `UpdateRegistryFailed`.
 - **Safety**:
-  - Explicit casting for interfaces (e.g., `ISSListing`, `IERC20`).
+  - Explicit casting for interfaces (e.g., `ISSListing`, `IERC20`, `ITokenRegistry`).
   - No inline assembly, uses high-level Solidity.
   - Try-catch for external calls (`transact`, `globalizeUpdate`, `updateRegistry`, `ISSListing.volumeBalances`, `ISSListing.getPrice`) to handle failures.
   - Hidden state variables accessed via view functions (e.g., `getXSlotView`, `liquidityDetailsView`).
   - Avoids reserved keywords and unnecessary virtual/override modifiers.
-- **Compatibility**: Aligned with `SSRouter` (v0.0.48), `SSAgent` (v0.0.2), `SSListingTemplate` (v0.0.10), `SSOrderPartial` (v0.0.18).
+- **Fee System**:
+  - Cumulative fees (`xFeesAcc`, `yFeesAcc`) track total fees added, never decrease.
+  - `dFeesAcc` stores `yFeesAcc` (xSlots) or `xFeesAcc` (ySlots) at deposit.
+  - Fee share based on `contributedFees = feesAcc - dFeesAcc`, proportional to liquidity contribution, capped at available fees.
+- **Compatibility**: Aligned with `SSRouter` (v0.0.44), `SSAgent` (v0.0.2), `SSListingTemplate` (v0.0.10), `SSOrderPartial` (v0.0.18).
 - **Caller Param**: Functionally unused in `addFees` and `updateLiquidity`, included for router validation.
 
 # SSRouter Contract Documentation
