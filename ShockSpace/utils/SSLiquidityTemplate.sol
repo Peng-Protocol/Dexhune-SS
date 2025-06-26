@@ -1,8 +1,10 @@
 // SPDX-License-Identifier: BSD-3-Clause
 pragma solidity ^0.8.1;
 
-// Version: 0.0.7 (Updated)
+// Version: 0.0.9 (Updated)
 // Changes:
+// - v0.0.9: Fixed undeclared identifier errors in _processFeeClaim by moving update, transact, and FeesClaimed event emission inside the if (feeShare > 0) block to ensure context, transferToken, and convertedFeeShare are in scope. Corrected typo in deposit function from IER20 to IERC20. Aligned with SSListingTemplate.sol v0.0.10.
+// - v0.0.8: Updated claimFees to fetch price from ISSListing.getPrice() and convert feeShare to the opposite token's value (xSlots claim yFees in tokenA value, ySlots claim xFees in tokenB value). Added price to FeeClaimContext to manage stack depth. Updated FeesClaimed event to reflect converted amounts. Ensured decimal handling with normalize/denormalize. Aligned with SSListingTemplate.sol v0.0.10.
 // - v0.0.7: Refactored claimFees to resolve stack too deep error by using FeeClaimContext struct to store intermediate values, reducing stack usage. Modified _processFeeClaim to accept FeeClaimContext, minimizing parameters. Aligned with SSRouter.sol v0.0.44.
 // - v0.0.6: Removed transferLiquidity function entirely due to redundancy with changeSlotDepositor and potential exploit risks. Updated caller handling in changeSlotDepositor, deposit, xPrepOut, xExecuteOut, yPrepOut, yExecuteOut, claimFees to represent the user (e.g., slot owner). Ensured msg.sender is a registered router. Aligned with SSRouter.sol v0.0.44.
 // - v0.0.5: Replaced safeTransferFrom with transferFrom in deposit.
@@ -13,7 +15,7 @@ pragma solidity ^0.8.1;
 // - v0.0.4: Removed taxCollector and 10% fee logic.
 // - v0.0.4: Updated ISSListing interface to include getPrice, getRegistryAddress.
 // - v0.0.3: Modified claimFees for fee-swapping (xSlots claim yFees, ySlots claim xFees).
-// - Compatible with SSListingTemplate.sol (v0.0.8), SSAgent.sol (v0.0.2).
+// - Compatible with SSListingTemplate.sol (v0.0.10), SSAgent.sol (v0.0.2).
 
 import "../imports/SafeERC20.sol";
 import "../imports/ReentrancyGuard.sol";
@@ -88,6 +90,7 @@ contract SSLiquidityTemplate is ReentrancyGuard {
         uint256 allocation;
         uint256 fees;
         uint256 liquidityIndex;
+        uint256 price; // Added for price conversion
     }
 
     LiquidityDetails public liquidityDetail;
@@ -143,13 +146,32 @@ contract SSLiquidityTemplate is ReentrancyGuard {
             context.fees
         );
         if (feeShare > 0) {
+            // Converts fee share to the opposite token's value
+            uint256 convertedFeeShare;
+            address transferToken;
+            if (context.isX) {
+                // xSlot claims yFees in tokenA value: yFees * price / 1e18
+                convertedFeeShare = (feeShare * context.price) / 1e18;
+                transferToken = tokenA;
+            } else {
+                // ySlot claims xFees in tokenB value: xFees * 1e18 / price
+                require(context.price > 0, "Price cannot be zero");
+                convertedFeeShare = (feeShare * 1e18) / context.price;
+                transferToken = tokenB;
+            }
             // Updates fees and slot allocation
             updates[0] = UpdateType(1, context.isX ? 1 : 0, context.fees - feeShare, address(0), address(0));
             updates[1] = UpdateType(context.isX ? 2 : 3, context.liquidityIndex, context.allocation, context.caller, address(0));
             this.update(context.caller, updates);
-            // Transfers fee share to caller
-            this.transact(context.caller, context.isX ? tokenB : tokenA, feeShare, context.caller);
-            emit FeesClaimed(listingId, context.liquidityIndex, context.isX ? 0 : feeShare, context.isX ? feeShare : 0);
+            // Transfers converted fee share to caller
+            this.transact(context.caller, transferToken, convertedFeeShare, context.caller);
+            // Emits event with converted amounts
+            emit FeesClaimed(
+                listingId,
+                context.liquidityIndex,
+                context.isX ? convertedFeeShare : 0,
+                context.isX ? 0 : convertedFeeShare
+            );
         }
     }
 
@@ -459,12 +481,16 @@ contract SSLiquidityTemplate is ReentrancyGuard {
         // Fetches volume balances and validates listing
         (uint256 xBalance, , , ) = ISSListing(_listingAddress).volumeBalances(listingId);
         require(xBalance > 0, "Invalid listing");
+        // Fetches current price
+        uint256 currentPrice = ISSListing(_listingAddress).getPrice();
+        require(currentPrice > 0, "Price cannot be zero");
         // Creates context to reduce stack usage
         FeeClaimContext memory context;
         context.caller = caller;
         context.isX = isX;
         context.volume = volume;
         context.liquidityIndex = liquidityIndex;
+        context.price = currentPrice; // Stores price for conversion
         // Accesses liquidity details and slot
         LiquidityDetails storage details = liquidityDetail;
         Slot storage slot = isX ? xLiquiditySlots[liquidityIndex] : yLiquiditySlots[liquidityIndex];
