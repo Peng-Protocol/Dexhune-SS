@@ -1,8 +1,11 @@
 // SPDX-License-Identifier: BSD-3-Clause
 pragma solidity ^0.8.1;
 
-// Version: 0.0.9 (Updated)
+// Version: 0.0.12 (Updated)
 // Changes:
+// - v0.0.12: Added xFeesAcc and yFeesAcc to LiquidityDetails to track cumulative fee volume, incremented by addFees and never decreased. Replaced Slot.dFees with dFeesAcc to store yFeesAcc (xSlot) or xFeesAcc (ySlot) at deposit. Modified claimFees and _claimFeeShare to use contributedFees = feesAcc - dFeesAcc, removing fixed 0.05% fee rate and feeRate variable. Fee share now based directly on contributedFees adjusted by liquidity contribution. Updated update to set dFeesAcc. Preserved all function signatures, ignoring volume in claimFees. Aligned with SSListingTemplate.sol v0.0.10.
+// - v0.0.11: Modified deposit to fetch yFees for x-token deposits and xFees for y-token deposits from liquidityDetail, storing in Slot.dFees instead of dVolume. Updated claimFees and _claimFeeShare to use contributedFees (fees - dFees) instead of contributedVolume, removing price conversion in _processFeeClaim. Updated FeeClaimContext to remove volume and dVolume. Updated update function to set dFees instead of dVolume. Ignored volume param in claimFees to preserve signature. Aligned with SSListingTemplate.sol v0.0.10.
+// - v0.0.10: Updated ISSListing.volumeBalances interface to return only xBalance and yBalance, matching SSListingTemplate.sol v0.0.10 implementation.
 // - v0.0.9: Fixed undeclared identifier errors in _processFeeClaim by moving update, transact, and FeesClaimed event emission inside the if (feeShare > 0) block to ensure context, transferToken, and convertedFeeShare are in scope. Corrected typo in deposit function from IER20 to IERC20. Aligned with SSListingTemplate.sol v0.0.10.
 // - v0.0.8: Updated claimFees to fetch price from ISSListing.getPrice() and convert feeShare to the opposite token's value (xSlots claim yFees in tokenA value, ySlots claim xFees in tokenB value). Added price to FeeClaimContext to manage stack depth. Updated FeesClaimed event to reflect converted amounts. Ensured decimal handling with normalize/denormalize. Aligned with SSListingTemplate.sol v0.0.10.
 // - v0.0.7: Refactored claimFees to resolve stack too deep error by using FeeClaimContext struct to store intermediate values, reducing stack usage. Modified _processFeeClaim to accept FeeClaimContext, minimizing parameters. Aligned with SSRouter.sol v0.0.44.
@@ -21,7 +24,7 @@ import "../imports/SafeERC20.sol";
 import "../imports/ReentrancyGuard.sol";
 
 interface ISSListing {
-    function volumeBalances(uint256 listingId) external view returns (uint256 xBalance, uint256 yBalance, uint256 xVolume, uint256 yVolume);
+    function volumeBalances(uint256) external view returns (uint256 xBalance, uint256 yBalance);
     function getPrice() external view returns (uint256);
     function getRegistryAddress() external view returns (address);
 }
@@ -29,8 +32,8 @@ interface ISSListing {
 interface ISSAgent {
     function globalizeLiquidity(
         uint256 listingId,
-        address tokenA,
-        address tokenB,
+        address tokenActivated,
+        address tokenDeactivated,
         address user,
         uint256 amount,
         bool isDeposit
@@ -57,13 +60,15 @@ contract SSLiquidityTemplate is ReentrancyGuard {
         uint256 yLiquid;
         uint256 xFees;
         uint256 yFees;
+        uint256 xFeesAcc; // Cumulative fee volume for x-token
+        uint256 yFeesAcc; // Cumulative fee volume for y-token
     }
 
     struct Slot {
         address depositor;
         address recipient;
         uint256 allocation;
-        uint256 dVolume;
+        uint256 dFeesAcc; // Cumulative fees at deposit (yFeesAcc for xSlot, xFeesAcc for ySlot)
         uint256 timestamp;
     }
 
@@ -80,17 +85,14 @@ contract SSLiquidityTemplate is ReentrancyGuard {
         uint256 amountB;
     }
 
-    // Struct to reduce stack usage in claimFees
     struct FeeClaimContext {
         address caller;
         bool isX;
-        uint256 volume;
-        uint256 dVolume;
         uint256 liquid;
         uint256 allocation;
         uint256 fees;
+        uint256 dFeesAcc; // Cumulative fees at deposit time
         uint256 liquidityIndex;
-        uint256 price; // Added for price conversion
     }
 
     LiquidityDetails public liquidityDetail;
@@ -120,57 +122,37 @@ contract SSLiquidityTemplate is ReentrancyGuard {
     }
 
     function _claimFeeShare(
-        uint256 volume,
-        uint256 dVolume,
+        uint256 fees,
+        uint256 dFeesAcc,
         uint256 liquid,
-        uint256 allocation,
-        uint256 fees
+        uint256 allocation
     ) private pure returns (uint256 feeShare, UpdateType[] memory updates) {
         updates = new UpdateType[](2);
-        uint256 contributedVolume = volume > dVolume ? volume - dVolume : 0;
-        uint256 feesAccrued = (contributedVolume * 5) / 10000;
+        uint256 contributedFees = fees > dFeesAcc ? fees - dFeesAcc : 0;
         uint256 liquidityContribution = liquid > 0 ? (allocation * 1e18) / liquid : 0;
-        feeShare = (feesAccrued * liquidityContribution) / 1e18;
-        feeShare = feeShare > fees ? fees : feeShare;
+        feeShare = (contributedFees * liquidityContribution) / 1e18;
+        feeShare = feeShare > fees ? fees : feeShare; // Caps at available fees
         return (feeShare, updates);
     }
 
-    // Helper to process fee claims, using struct to reduce stack depth
     function _processFeeClaim(FeeClaimContext memory context) internal {
-        // Calculates fee share and prepares updates
         (uint256 feeShare, UpdateType[] memory updates) = _claimFeeShare(
-            context.volume,
-            context.dVolume,
+            context.fees,
+            context.dFeesAcc,
             context.liquid,
-            context.allocation,
-            context.fees
+            context.allocation
         );
         if (feeShare > 0) {
-            // Converts fee share to the opposite token's value
-            uint256 convertedFeeShare;
-            address transferToken;
-            if (context.isX) {
-                // xSlot claims yFees in tokenA value: yFees * price / 1e18
-                convertedFeeShare = (feeShare * context.price) / 1e18;
-                transferToken = tokenA;
-            } else {
-                // ySlot claims xFees in tokenB value: xFees * 1e18 / price
-                require(context.price > 0, "Price cannot be zero");
-                convertedFeeShare = (feeShare * 1e18) / context.price;
-                transferToken = tokenB;
-            }
-            // Updates fees and slot allocation
+            address transferToken = context.isX ? tokenA : tokenB;
             updates[0] = UpdateType(1, context.isX ? 1 : 0, context.fees - feeShare, address(0), address(0));
             updates[1] = UpdateType(context.isX ? 2 : 3, context.liquidityIndex, context.allocation, context.caller, address(0));
             this.update(context.caller, updates);
-            // Transfers converted fee share to caller
-            this.transact(context.caller, transferToken, convertedFeeShare, context.caller);
-            // Emits event with converted amounts
+            this.transact(context.caller, transferToken, feeShare, context.caller);
             emit FeesClaimed(
                 listingId,
                 context.liquidityIndex,
-                context.isX ? convertedFeeShare : 0,
-                context.isX ? 0 : convertedFeeShare
+                context.isX ? feeShare : 0,
+                context.isX ? 0 : feeShare
             );
         }
     }
@@ -232,12 +214,13 @@ contract SSLiquidityTemplate is ReentrancyGuard {
                 if (slot.depositor == address(0) && u.addr != address(0)) {
                     slot.depositor = u.addr;
                     slot.timestamp = block.timestamp;
+                    slot.dFeesAcc = details.yFeesAcc; // Store yFeesAcc for xSlot
                     activeXLiquiditySlots.push(u.index);
                     userIndex[u.addr].push(u.index);
                 } else if (u.addr == address(0)) {
                     slot.depositor = address(0);
                     slot.allocation = 0;
-                    slot.dVolume = 0;
+                    slot.dFeesAcc = 0;
                     for (uint256 j = 0; j < userIndex[slot.depositor].length; j++) {
                         if (userIndex[slot.depositor][j] == u.index) {
                             userIndex[slot.depositor][j] = userIndex[slot.depositor][userIndex[slot.depositor].length - 1];
@@ -247,20 +230,19 @@ contract SSLiquidityTemplate is ReentrancyGuard {
                     }
                 }
                 slot.allocation = u.value;
-                (, , uint256 xVolume, ) = ISSListing(listingAddress).volumeBalances(listingId);
-                slot.dVolume = xVolume;
                 details.xLiquid += u.value;
             } else if (u.updateType == 3) {
                 Slot storage slot = yLiquiditySlots[u.index];
                 if (slot.depositor == address(0) && u.addr != address(0)) {
                     slot.depositor = u.addr;
                     slot.timestamp = block.timestamp;
+                    slot.dFeesAcc = details.xFeesAcc; // Store xFeesAcc for ySlot
                     activeYLiquiditySlots.push(u.index);
                     userIndex[u.addr].push(u.index);
                 } else if (u.addr == address(0)) {
                     slot.depositor = address(0);
                     slot.allocation = 0;
-                    slot.dVolume = 0;
+                    slot.dFeesAcc = 0;
                     for (uint256 j = 0; j < userIndex[slot.depositor].length; j++) {
                         if (userIndex[slot.depositor][j] == u.index) {
                             userIndex[slot.depositor][j] = userIndex[slot.depositor][userIndex[slot.depositor].length - 1];
@@ -270,8 +252,6 @@ contract SSLiquidityTemplate is ReentrancyGuard {
                     }
                 }
                 slot.allocation = u.value;
-                (, , , uint256 yVolume) = ISSListing(listingAddress).volumeBalances(listingId);
-                slot.dVolume = yVolume;
                 details.yLiquid += u.value;
             }
         }
@@ -474,34 +454,37 @@ contract SSLiquidityTemplate is ReentrancyGuard {
         }
     }
 
-    function claimFees(address caller, address _listingAddress, uint256 liquidityIndex, bool isX, uint256 volume) external nonReentrant {
-        require(routers[msg.sender], "Router only"); // Ensures msg.sender is a registered router
-        require(_listingAddress == listingAddress, "Invalid listing address"); // Validates listing address
-        require(caller != address(0), "Invalid caller"); // Ensures caller (user) is non-zero
-        // Fetches volume balances and validates listing
-        (uint256 xBalance, , , ) = ISSListing(_listingAddress).volumeBalances(listingId);
+    function claimFees(address caller, address _listingAddress, uint256 liquidityIndex, bool isX, uint256 /* volume */) external nonReentrant {
+        require(routers[msg.sender], "Router only");
+        require(_listingAddress == listingAddress, "Invalid listing address");
+        require(caller != address(0), "Invalid caller");
+        (uint256 xBalance, ) = ISSListing(_listingAddress).volumeBalances(listingId);
         require(xBalance > 0, "Invalid listing");
-        // Fetches current price
-        uint256 currentPrice = ISSListing(_listingAddress).getPrice();
-        require(currentPrice > 0, "Price cannot be zero");
-        // Creates context to reduce stack usage
         FeeClaimContext memory context;
         context.caller = caller;
         context.isX = isX;
-        context.volume = volume;
         context.liquidityIndex = liquidityIndex;
-        context.price = currentPrice; // Stores price for conversion
-        // Accesses liquidity details and slot
         LiquidityDetails storage details = liquidityDetail;
         Slot storage slot = isX ? xLiquiditySlots[liquidityIndex] : yLiquiditySlots[liquidityIndex];
-        require(slot.depositor == caller, "Caller not depositor"); // Ensures caller owns the slot
-        // Populates context with relevant values
+        require(slot.depositor == caller, "Caller not depositor");
         context.liquid = isX ? details.xLiquid : details.yLiquid;
         context.fees = isX ? details.yFees : details.xFees;
         context.allocation = slot.allocation;
-        context.dVolume = slot.dVolume;
-        // Processes fee claim via helper
+        context.dFeesAcc = slot.dFeesAcc;
         _processFeeClaim(context);
+    }
+
+    function addFees(address caller, bool isX, uint256 fee) external nonReentrant {
+        require(routers[msg.sender], "Router only");
+        LiquidityDetails storage details = liquidityDetail;
+        UpdateType[] memory feeUpdates = new UpdateType[](1);
+        feeUpdates[0] = UpdateType(1, isX ? 0 : 1, fee, address(0), address(0));
+        if (isX) {
+            details.xFeesAcc += fee; // Increment cumulative xFeesAcc
+        } else {
+            details.yFeesAcc += fee; // Increment cumulative yFeesAcc
+        }
+        this.update(caller, feeUpdates);
     }
 
     function transact(address caller, address token, uint256 amount, address recipient) external nonReentrant {
@@ -534,13 +517,6 @@ contract SSLiquidityTemplate is ReentrancyGuard {
         emit LiquidityUpdated(listingId, details.xLiquid, details.yLiquid);
     }
 
-    function addFees(address caller, bool isX, uint256 fee) external nonReentrant {
-        require(routers[msg.sender], "Router only");
-        UpdateType[] memory feeUpdates = new UpdateType[](1);
-        feeUpdates[0] = UpdateType(1, isX ? 0 : 1, fee, address(0), address(0));
-        this.update(caller, feeUpdates);
-    }
-
     function updateLiquidity(address caller, bool isX, uint256 amount) external nonReentrant {
         require(routers[msg.sender], "Router only");
         LiquidityDetails storage details = liquidityDetail;
@@ -563,9 +539,9 @@ contract SSLiquidityTemplate is ReentrancyGuard {
         return (details.xLiquid, details.yLiquid);
     }
 
-    function liquidityDetailsView() external view returns (uint256 xLiquid, uint256 yLiquid, uint256 xFees, uint256 yFees) {
+    function liquidityDetailsView() external view returns (uint256 xLiquid, uint256 yLiquid, uint256 xFees, uint256 yFees, uint256 xFeesAcc, uint256 yFeesAcc) {
         LiquidityDetails memory details = liquidityDetail;
-        return (details.xLiquid, details.yLiquid, details.xFees, details.yFees);
+        return (details.xLiquid, details.yLiquid, details.xFees, details.yFees, details.xFeesAcc, details.yFeesAcc);
     }
 
     function activeXLiquiditySlotsView() external view returns (uint256[] memory) {
