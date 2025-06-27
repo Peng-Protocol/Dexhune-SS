@@ -45,11 +45,12 @@ The System comprises of SSAgent  SSListingLogic - SSLiquidityLogic - SSLiquidity
 - `getListing` (mapping - address, address, address): Maps tokenA to tokenB to the listing address for a trading pair.
 - `allListings` (address[]): Array of all listing addresses created.
 - `allListedTokens` (address[]): Array of all unique tokens listed.
-- `queryByAddress` (mapping - address, uint256[])): Maps a token to an array of listing IDs involving that token.
+- `queryByAddress` (mapping - address, uint256[]): Maps a token to an array of listing IDs involving that token.
 - `globalLiquidity` (mapping - address, address, address, uint256): Tracks liquidity per user for each tokenA-tokenB pair.
 - `totalLiquidityPerPair` (mapping - address, address, uint256): Total liquidity for each tokenA-tokenB pair.
 - `userTotalLiquidity` (mapping - address, uint256): Total liquidity contributed by each user across all pairs.
 - `listingLiquidity` (mapping - uint256, address, uint256): Liquidity per user for each listing ID.
+- `liquidityProviders` (mapping - uint256, address[]): Maps listing ID to an array of users who provided liquidity.
 - `historicalLiquidityPerPair` (mapping - address, address, uint256, uint256): Historical liquidity for each tokenA-tokenB pair at specific timestamps.
 - `historicalLiquidityPerUser` (mapping - address, address, address, uint256, uint256): Historical liquidity per user for each tokenA-tokenB pair at specific timestamps.
 - `globalOrders` (mapping - address, address, uint256, GlobalOrder): Stores order details for each tokenA-tokenB pair by order ID.
@@ -174,7 +175,7 @@ The System comprises of SSAgent  SSListingLogic - SSLiquidityLogic - SSLiquidity
     - `amount` (uint256): Liquidity amount to add or remove.
     - `isDeposit` (bool): True for deposit, false for withdrawal.
   - **Actions:**
-    - If isDeposit, adds amount to globalLiquidity, totalLiquidityPerPair, userTotalLiquidity, and listingLiquidity.
+    - If isDeposit, adds amount to globalLiquidity, totalLiquidityPerPair, userTotalLiquidity, and listingLiquidity, and appends user to liquidityProviders if their liquidity was previously zero.
     - If not isDeposit, checks sufficient liquidity, then subtracts amount from mappings.
     - Updates historicalLiquidityPerPair and historicalLiquidityPerUser with current timestamp.
     - Emits GlobalLiquidityChanged event.
@@ -260,8 +261,8 @@ The System comprises of SSAgent  SSListingLogic - SSLiquidityLogic - SSLiquidity
     - `listingId` (uint256): Listing ID to analyze.
     - `maxIterations` (uint256): Maximum users to return.
   - **Actions:**
-    - Validates non-zero maxIterations.
-    - Limits to maxIterations or allListings length.
+    - Validates non-zero maxIterations and valid listingId.
+    - Limits to maxIterations or liquidityProviders length for the listing.
     - Collects non-zero listingLiquidity amounts into TrendData array.
     - Sorts in descending order via _sortDescending.
     - Returns users and amounts arrays.
@@ -382,7 +383,7 @@ The System comprises of SSAgent  SSListingLogic - SSLiquidityLogic - SSLiquidity
     - Retrieves length of allListedTokens array.
   - **Returns:**
     - `uint256`: Total number of listed tokens.
-    
+
 # SSListingTemplate Documentation
 
 ## Overview
@@ -795,7 +796,7 @@ The `SSListingTemplate` contract, implemented in Solidity (^0.8.2), forms part o
 - **Compatibility**: Aligned with `SSRouter` (v0.0.48), `SSAgent` (v0.0.2), `SSLiquidityTemplate` (v0.0.6), `SSOrderPartial` (v0.0.18).
 
 
-# SSLiquidityTemplate Documentation
+# SSLiquidityTemplate Specifications
 
 ## Overview
 The `SSLiquidityTemplate`, implemented in Solidity (^0.8.2), forms part of a decentralized trading platform, handling liquidity deposits, withdrawals, and fee claims. It inherits `ReentrancyGuard` for security and uses `SafeERC20` for token operations, integrating with `ISSAgent` and `ITokenRegistry` for global updates and synchronization. State variables are private, accessed via view functions with unique names, and amounts are normalized to 1e18 for precision across token decimals. The contract avoids reserved keywords, uses explicit casting, and ensures graceful degradation.
