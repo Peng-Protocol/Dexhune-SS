@@ -1,8 +1,9 @@
 // SPDX-License-Identifier: BSD-3-Clause
 pragma solidity ^0.8.1;
 
-// Version: 0.0.7
+// Version: 0.0.8
 // Changes:
+// - v0.0.8: Added liquidityProviders mapping to track users per listingId, updated _updateGlobalLiquidity to append users, fixed getTopLiquidityProviders to use liquidityProviders, added listingId validation, and added inline comments.
 // - v0.0.7: Changed isValidListing visibility from internal to public to support both internal use in globalizeLiquidity and external calls.
 // - v0.0.6: Changed isValidListing visibility from external to internal to resolve undeclared identifier error in globalizeLiquidity.
 // - v0.0.5: Moved isValidListing function before globalizeLiquidity to resolve undeclared identifier error.
@@ -58,18 +59,19 @@ interface ISSListing {
 contract SSAgent is Ownable {
     using SafeERC20 for IERC20;
 
-    address public proxyRouter;
-    address public isolatedDriver;
-    address public crossDriver;
-    address public listingLogicAddress;
-    address public liquidityLogicAddress;
-    address public registryAddress;
-    uint256 public listingCount;
+    address public proxyRouter; // Proxy router contract address
+    address public isolatedDriver; // Isolated driver contract address
+    address public crossDriver; // Cross driver contract address
+    address public listingLogicAddress; // SSListingLogic contract address
+    address public liquidityLogicAddress; // SSLiquidityLogic contract address
+    address public registryAddress; // Registry contract address
+    uint256 public listingCount; // Counter for total listings created
 
-    mapping(address => mapping(address => address)) public getListing;
-    address[] public allListings;
-    address[] public allListedTokens;
-    mapping(address => uint256[]) public queryByAddress;
+    mapping(address => mapping(address => address)) public getListing; // tokenA => tokenB => listing address
+    address[] public allListings; // Array of all listing addresses
+    address[] public allListedTokens; // Array of all unique listed tokens
+    mapping(address => uint256[]) public queryByAddress; // token => listing IDs
+    mapping(uint256 => address[]) public liquidityProviders; // listingId => array of users providing liquidity
 
     mapping(address => mapping(address => mapping(address => uint256))) public globalLiquidity; // tokenA => tokenB => user => amount
     mapping(address => mapping(address => uint256)) public totalLiquidityPerPair; // tokenA => tokenB => amount
@@ -79,13 +81,13 @@ contract SSAgent is Ownable {
     mapping(address => mapping(address => mapping(address => mapping(uint256 => uint256)))) public historicalLiquidityPerUser; // tokenA => tokenB => user => timestamp => amount
 
     struct GlobalOrder {
-        uint256 orderId;
-        bool isBuy;
-        address maker;
-        address recipient;
-        uint256 amount;
+        uint256 orderId; // Unique order identifier
+        bool isBuy; // True for buy order, false for sell
+        address maker; // Address creating the order
+        address recipient; // Address receiving the order outcome
+        uint256 amount; // Order amount
         uint8 status; // 0 = cancelled, 1 = pending, 2 = partially filled, 3 = filled
-        uint256 timestamp;
+        uint256 timestamp; // Timestamp of order creation or update
     }
 
     mapping(address => mapping(address => mapping(uint256 => GlobalOrder))) public globalOrders; // tokenA => tokenB => orderId => GlobalOrder
@@ -95,33 +97,34 @@ contract SSAgent is Ownable {
     mapping(address => mapping(address => mapping(address => uint256))) public userTradingSummaries; // user => tokenA => tokenB => volume
 
     struct TrendData {
-        address token;
-        uint256 timestamp;
-        uint256 amount;
+        address token; // Token or user address for sorting
+        uint256 timestamp; // Timestamp of data point
+        uint256 amount; // Amount for liquidity or volume
     }
 
     struct OrderData {
-        uint256 orderId;
-        bool isBuy;
-        address maker;
-        address recipient;
-        uint256 amount;
-        uint8 status;
-        uint256 timestamp;
+        uint256 orderId; // Order identifier
+        bool isBuy; // True for buy order, false for sell
+        address maker; // Order creator
+        address recipient; // Order recipient
+        uint256 amount; // Order amount
+        uint8 status; // Order status
+        uint256 timestamp; // Order timestamp
     }
 
     struct ListingDetails {
-        address listingAddress;
-        address liquidityAddress;
-        address tokenA;
-        address tokenB;
-        uint256 listingId;
+        address listingAddress; // Listing contract address
+        address liquidityAddress; // Associated liquidity contract address
+        address tokenA; // First token in pair
+        address tokenB; // Second token in pair
+        uint256 listingId; // Listing ID
     }
 
     event ListingCreated(address indexed tokenA, address indexed tokenB, address listingAddress, address liquidityAddress, uint256 listingId);
     event GlobalLiquidityChanged(uint256 listingId, address tokenA, address tokenB, address user, uint256 amount, bool isDeposit);
     event GlobalOrderChanged(uint256 listingId, address tokenA, address tokenB, uint256 orderId, bool isBuy, address maker, uint256 amount, uint8 status);
 
+    // Checks if a token exists in allListedTokens
     function tokenExists(address token) internal view returns (bool) {
         for (uint256 i = 0; i < allListedTokens.length; i++) {
             if (allListedTokens[i] == token) {
@@ -131,6 +134,7 @@ contract SSAgent is Ownable {
         return false;
     }
 
+    // Deploys listing and liquidity contracts using create2 with provided salt
     function _deployPair(address tokenA, address tokenB, uint256 listingId) internal returns (address listingAddress, address liquidityAddress) {
         bytes32 listingSalt = keccak256(abi.encodePacked(tokenA, tokenB, listingId));
         bytes32 liquiditySalt = keccak256(abi.encodePacked(tokenB, tokenA, listingId));
@@ -139,6 +143,7 @@ contract SSAgent is Ownable {
         return (listingAddress, liquidityAddress);
     }
 
+    // Initializes listing contract with routers, listing ID, liquidity address, tokens, agent, and registry
     function _initializeListing(address listingAddress, address liquidityAddress, address tokenA, address tokenB, uint256 listingId) internal {
         address[] memory routers = new address[](3);
         routers[0] = proxyRouter;
@@ -152,6 +157,7 @@ contract SSAgent is Ownable {
         ISSListingTemplate(listingAddress).setRegistry(registryAddress);
     }
 
+    // Initializes liquidity contract with routers, listing ID, listing address, tokens, and agent
     function _initializeLiquidity(address listingAddress, address liquidityAddress, address tokenA, address tokenB, uint256 listingId) internal {
         address[] memory routers = new address[](3);
         routers[0] = proxyRouter;
@@ -164,6 +170,7 @@ contract SSAgent is Ownable {
         ISSLiquidityTemplate(liquidityAddress).setAgent(address(this));
     }
 
+    // Updates state mappings and arrays for new listing
     function _updateState(address tokenA, address tokenB, address listingAddress, uint256 listingId) internal {
         getListing[tokenA][tokenB] = listingAddress;
         allListings.push(listingAddress);
@@ -173,36 +180,43 @@ contract SSAgent is Ownable {
         queryByAddress[tokenB].push(listingId);
     }
 
+    // Sets proxy router address, restricted to owner
     function setProxyRouter(address _proxyRouter) external onlyOwner {
         require(_proxyRouter != address(0), "Invalid proxy router address");
         proxyRouter = _proxyRouter;
     }
 
+    // Sets isolated driver address, restricted to owner
     function setIsolatedDriver(address _isolatedDriver) external onlyOwner {
         require(_isolatedDriver != address(0), "Invalid SSD address");
         isolatedDriver = _isolatedDriver;
     }
 
+    // Sets cross driver address, restricted to owner
     function setCrossDriver(address _crossDriver) external onlyOwner {
         require(_crossDriver != address(0), "Invalid CSD address");
         crossDriver = _crossDriver;
     }
 
+    // Sets listing logic contract address, restricted to owner
     function setListingLogic(address _listingLogic) external onlyOwner {
         require(_listingLogic != address(0), "Invalid logic address");
         listingLogicAddress = _listingLogic;
     }
 
+    // Sets liquidity logic contract address, restricted to owner
     function setLiquidityLogic(address _liquidityLogic) external onlyOwner {
         require(_liquidityLogic != address(0), "Invalid logic address");
         liquidityLogicAddress = _liquidityLogic;
     }
 
+    // Sets registry contract address, restricted to owner
     function setRegistry(address _registryAddress) external onlyOwner {
         require(_registryAddress != address(0), "Invalid registry address");
         registryAddress = _registryAddress;
     }
 
+    // Lists a new token pair, deploying listing and liquidity contracts
     function listToken(address tokenA, address tokenB) external returns (address listingAddress, address liquidityAddress) {
         require(tokenA != tokenB, "Identical tokens");
         require(getListing[tokenA][tokenB] == address(0), "Pair already listed");
@@ -221,6 +235,7 @@ contract SSAgent is Ownable {
         return (listingAddress, liquidityAddress);
     }
 
+    // Lists a token paired with native currency
     function listNative(address token, bool isA) external returns (address listingAddress, address liquidityAddress) {
         address nativeAddress = address(0);
         address tokenA = isA ? nativeAddress : token;
@@ -243,6 +258,7 @@ contract SSAgent is Ownable {
         return (listingAddress, liquidityAddress);
     }
 
+    // Checks if a listing address is valid and returns its details
     function isValidListing(address listingAddress) public view returns (bool isValid, ListingDetails memory details) {
         isValid = false;
         for (uint256 i = 0; i < allListings.length; i++) {
@@ -262,6 +278,7 @@ contract SSAgent is Ownable {
         }
     }
 
+    // Updates global liquidity state for a user and emits event
     function globalizeLiquidity(
         uint256 listingId,
         address tokenA,
@@ -274,7 +291,7 @@ contract SSAgent is Ownable {
         require(user != address(0), "Invalid user");
         require(listingId < listingCount, "Invalid listing ID");
 
-        // Step 1: Get the listing address from the liquidity contract
+        // Retrieve listing address from caller (liquidity contract)
         address listingAddress;
         try ISSLiquidityTemplate(msg.sender).getListingAddress(listingId) returns (address _listingAddress) {
             listingAddress = _listingAddress;
@@ -283,18 +300,19 @@ contract SSAgent is Ownable {
         }
         require(listingAddress != address(0), "Invalid listing address");
 
-        // Step 2: Verify the listing is valid and retrieve its details
+        // Verify listing validity and details
         (bool isValid, ListingDetails memory details) = isValidListing(listingAddress);
         require(isValid, "Invalid listing");
         require(details.listingId == listingId, "Listing ID mismatch");
         require(details.tokenA == tokenA && details.tokenB == tokenB, "Token mismatch");
 
-        // Step 3: Verify the caller is the liquidity address associated with the listing
+        // Ensure caller is the associated liquidity contract
         require(details.liquidityAddress == msg.sender, "Caller is not liquidity contract");
 
         _updateGlobalLiquidity(listingId, tokenA, tokenB, user, amount, isDeposit);
     }
 
+    // Updates liquidity mappings and tracks providers
     function _updateGlobalLiquidity(
         uint256 listingId,
         address tokenA,
@@ -304,25 +322,34 @@ contract SSAgent is Ownable {
         bool isDeposit
     ) internal {
         if (isDeposit) {
+            // Add liquidity to mappings
             globalLiquidity[tokenA][tokenB][user] += amount;
             totalLiquidityPerPair[tokenA][tokenB] += amount;
             userTotalLiquidity[user] += amount;
             listingLiquidity[listingId][user] += amount;
+            // Track new liquidity provider
+            if (listingLiquidity[listingId][user] == amount) {
+                liquidityProviders[listingId].push(user);
+            }
         } else {
+            // Validate sufficient liquidity before withdrawal
             require(globalLiquidity[tokenA][tokenB][user] >= amount, "Insufficient user liquidity");
             require(totalLiquidityPerPair[tokenA][tokenB] >= amount, "Insufficient pair liquidity");
             require(userTotalLiquidity[user] >= amount, "Insufficient total liquidity");
             require(listingLiquidity[listingId][user] >= amount, "Insufficient listing liquidity");
+            // Subtract liquidity from mappings
             globalLiquidity[tokenA][tokenB][user] -= amount;
             totalLiquidityPerPair[tokenA][tokenB] -= amount;
             userTotalLiquidity[user] -= amount;
             listingLiquidity[listingId][user] -= amount;
         }
+        // Update historical liquidity records
         historicalLiquidityPerPair[tokenA][tokenB][block.timestamp] = totalLiquidityPerPair[tokenA][tokenB];
         historicalLiquidityPerUser[tokenA][tokenB][user][block.timestamp] = globalLiquidity[tokenA][tokenB][user];
         emit GlobalLiquidityChanged(listingId, tokenA, tokenB, user, amount, isDeposit);
     }
 
+    // Updates global order state and emits event
     function globalizeOrders(
         uint256 listingId,
         address tokenA,
@@ -361,6 +388,7 @@ contract SSAgent is Ownable {
         emit GlobalOrderChanged(listingId, tokenA, tokenB, orderId, isBuy, maker, amount, status);
     }
 
+    // Returns liquidity trend for a token pair
     function getPairLiquidityTrend(
         address tokenA,
         bool focusOnTokenA,
@@ -400,6 +428,7 @@ contract SSAgent is Ownable {
         }
     }
 
+    // Returns liquidity trend for a user across tokens
     function getUserLiquidityTrend(
         address user,
         bool focusOnTokenA,
@@ -432,6 +461,7 @@ contract SSAgent is Ownable {
         }
     }
 
+    // Returns user's liquidity across token pairs
     function getUserLiquidityAcrossPairs(address user, uint256 maxIterations)
         external view returns (address[] memory tokenAs, address[] memory tokenBs, uint256[] memory amounts)
     {
@@ -457,22 +487,33 @@ contract SSAgent is Ownable {
         }
     }
 
+    // Returns top liquidity providers for a listing
     function getTopLiquidityProviders(uint256 listingId, uint256 maxIterations)
         external view returns (address[] memory users, uint256[] memory amounts)
     {
+        // Validate input parameters
         require(maxIterations > 0, "Invalid maxIterations");
-        uint256 maxLimit = maxIterations < allListings.length ? maxIterations : allListings.length;
+        require(listingId < listingCount, "Invalid listing ID");
+
+        // Limit iteration to maxIterations or available providers
+        uint256 maxLimit = maxIterations < liquidityProviders[listingId].length ? maxIterations : liquidityProviders[listingId].length;
         TrendData[] memory temp = new TrendData[](maxLimit);
         uint256 count = 0;
-        for (uint256 i = 0; i < allListings.length && count < maxLimit; i++) {
-            address user = allListings[i];
+
+        // Collect non-zero liquidity providers
+        for (uint256 i = 0; i < liquidityProviders[listingId].length && count < maxLimit; i++) {
+            address user = liquidityProviders[listingId][i];
             uint256 amount = listingLiquidity[listingId][user];
             if (amount > 0) {
                 temp[count] = TrendData(user, 0, amount);
                 count++;
             }
         }
+
+        // Sort providers by liquidity amount in descending order
         _sortDescending(temp, count);
+
+        // Prepare return arrays
         users = new address[](count);
         amounts = new uint256[](count);
         for (uint256 i = 0; i < count; i++) {
@@ -481,6 +522,7 @@ contract SSAgent is Ownable {
         }
     }
 
+    // Returns user's liquidity share for a token pair
     function getUserLiquidityShare(address user, address tokenA, address tokenB)
         external view returns (uint256 share, uint256 total)
     {
@@ -489,6 +531,7 @@ contract SSAgent is Ownable {
         share = total > 0 ? (userAmount * 1e18) / total : 0;
     }
 
+    // Returns pairs with liquidity above a threshold
     function getAllPairsByLiquidity(uint256 minLiquidity, bool focusOnTokenA, uint256 maxIterations)
         external view returns (address[] memory tokenAs, address[] memory tokenBs, uint256[] memory amounts)
     {
@@ -525,6 +568,7 @@ contract SSAgent is Ownable {
         }
     }
 
+    // Returns order activity for a token pair within a time range
     function getOrderActivityByPair(
         address tokenA,
         address tokenB,
@@ -560,6 +604,7 @@ contract SSAgent is Ownable {
         }
     }
 
+    // Returns user's trading profile across token pairs
     function getUserTradingProfile(address user)
         external view returns (address[] memory tokenAs, address[] memory tokenBs, uint256[] memory volumes)
     {
@@ -584,6 +629,7 @@ contract SSAgent is Ownable {
         }
     }
 
+    // Returns top traders by volume for a listing
     function getTopTradersByVolume(uint256 listingId, uint256 maxIterations)
         external view returns (address[] memory traders, uint256[] memory volumes)
     {
@@ -617,6 +663,7 @@ contract SSAgent is Ownable {
         }
     }
 
+    // Returns pairs with order volume above a threshold
     function getAllPairsByOrderVolume(uint256 minVolume, bool focusOnTokenA, uint256 maxIterations)
         external view returns (address[] memory tokenAs, address[] memory tokenBs, uint256[] memory volumes)
     {
@@ -661,6 +708,7 @@ contract SSAgent is Ownable {
         }
     }
 
+    // Sorts TrendData array in descending order by amount
     function _sortDescending(TrendData[] memory data, uint256 length) internal pure {
         for (uint256 i = 0; i < length; i++) {
             for (uint256 j = i + 1; j < length; j++) {
@@ -673,11 +721,13 @@ contract SSAgent is Ownable {
         }
     }
 
+    // Returns listing address by index
     function queryByIndex(uint256 index) external view returns (address) {
         require(index < allListings.length, "Invalid index");
         return allListings[index];
     }
 
+    // Returns paginated listing IDs for a token
     function queryByAddressView(address target, uint256 maxIteration, uint256 step) external view returns (uint256[] memory) {
         uint256[] memory indices = queryByAddress[target];
         uint256 start = step * maxIteration;
@@ -689,14 +739,17 @@ contract SSAgent is Ownable {
         return result;
     }
 
+    // Returns number of listing IDs for a token
     function queryByAddressLength(address target) external view returns (uint256) {
         return queryByAddress[target].length;
     }
 
+    // Returns total number of listings
     function allListingsLength() external view returns (uint256) {
         return allListings.length;
     }
 
+    // Returns total number of listed tokens
     function allListedTokensLength() external view returns (uint256) {
         return allListedTokens.length;
     }
