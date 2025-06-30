@@ -795,7 +795,6 @@ The `SSListingTemplate` contract, implemented in Solidity (^0.8.2), forms part o
   - Avoids reserved keywords and unnecessary virtual/override modifiers.
 - **Compatibility**: Aligned with `SSRouter` (v0.0.48), `SSAgent` (v0.0.2), `SSLiquidityTemplate` (v0.0.6), `SSOrderPartial` (v0.0.18).
 
-
 # SSLiquidityTemplate Documentation
 
 ## Overview
@@ -803,7 +802,7 @@ The `SSLiquidityTemplate`, implemented in Solidity (^0.8.2), forms part of a dec
 
 **SPDX License**: BSD-3-Clause
 
-**Version**: 0.0.12 (Updated 2025-06-26)
+**Version**: 0.0.13 (Updated 2025-06-30)
 
 ### State Variables
 - **`routersSet`**: `bool public` - Tracks if routers are set, prevents re-setting.
@@ -835,7 +834,7 @@ The `SSLiquidityTemplate`, implemented in Solidity (^0.8.2), forms part of a dec
    - `depositor`: `address` - Address of the slot owner.
    - `recipient`: `address` - Unused recipient address.
    - `allocation`: `uint256` - Normalized liquidity allocation.
-   - `dFeesAcc`: `uint256` - Cumulative fees at deposit (yFeesAcc for xSlots, xFeesAcc for ySlots).
+   - `dFeesAcc`: `uint256` - Cumulative fees at deposit or last claim (yFeesAcc for xSlots, xFeesAcc for ySlots).
    - `timestamp`: `uint256` - Slot creation timestamp.
 
 3. **UpdateType**:
@@ -855,7 +854,7 @@ The `SSLiquidityTemplate`, implemented in Solidity (^0.8.2), forms part of a dec
    - `liquid`: `uint256` - Total liquidity (xLiquid or yLiquid).
    - `allocation`: `uint256` - Slot allocation.
    - `fees`: `uint256` - Available fees (yFees for xSlots, xFees for ySlots).
-   - `dFeesAcc`: `uint256` - Cumulative fees at deposit.
+   - `dFeesAcc`: `uint256` - Cumulative fees at deposit or last claim.
    - `liquidityIndex`: `uint256` - Slot index.
 
 ### Formulas
@@ -868,7 +867,7 @@ The `SSLiquidityTemplate`, implemented in Solidity (^0.8.2), forms part of a dec
      feeShare = feeShare > fees ? fees : feeShare
      ```
    - **Used in**: `_claimFeeShare`
-   - **Description**: Computes fee share for a liquidity slot based on accumulated fees since deposit (`feesAcc` is `yFeesAcc` for xSlots, `xFeesAcc` for ySlots) and liquidity proportion, capped at available fees (`yFees` for xSlots, `xFees` for ySlots).
+   - **Description**: Computes fee share for a liquidity slot based on accumulated fees since deposit or last claim (`feesAcc` is `yFeesAcc` for xSlots, `xFeesAcc` for ySlots) and liquidity proportion, capped at available fees (`yFees` for xSlots, `xFees` for ySlots).
 
 ### External Functions
 #### setRouters(address[] memory _routers)
@@ -1019,7 +1018,7 @@ The `SSLiquidityTemplate`, implemented in Solidity (^0.8.2), forms part of a dec
   - `liquidityIndex` - Slot index.
   - `isX` - True for token A, false for token B.
   - `volume` - Unused (ignored for compatibility).
-- **Behavior**: Claims fees (yFees for xSlots, xFees for ySlots).
+- **Behavior**: Claims fees (yFees for xSlots, xFees for ySlots), resets `dFeesAcc` to current `yFeesAcc` (xSlots) or `xFeesAcc` (ySlots).
 - **Internal Call Flow**:
   - Validates listing via `ISSListing.volumeBalances`.
   - Creates `FeeClaimContext` to optimize stack usage (~7 variables).
@@ -1027,6 +1026,7 @@ The `SSLiquidityTemplate`, implemented in Solidity (^0.8.2), forms part of a dec
     - Fetches slot data (`xLiquiditySlots` or `yLiquiditySlots`).
     - Calls `_claimFeeShare` to compute `feeShare` using `contributedFees = feesAcc - dFeesAcc` and liquidity proportion.
     - Updates `xFees`/`yFees` and slot allocation via `update`.
+    - Resets `dFeesAcc` to `yFeesAcc` (xSlots) or `xFeesAcc` (ySlots) to track fees since last claim.
     - Transfers fees via `transact` (yFees for xSlots, xFees for ySlots).
     - Emits `FeesClaimed` with fee amounts.
 - **Balance Checks**: Verifies `xBalance` (from `volumeBalances`), `xLiquid`/`yLiquid`, `xFees`/`yFees`.
@@ -1085,51 +1085,14 @@ The `SSLiquidityTemplate`, implemented in Solidity (^0.8.2), forms part of a dec
 - **Mappings/Structs Used**:
   - **Mappings**: `liquidityDetail`.
   - **Structs**: `LiquidityDetails`.
-- **Restrictions**: `nonReentrant`, requires `routers[msg.sender]`.
-- **Gas Usage Controls**: Minimal, single update.
-
-#### getListingAddress(uint256) view returns (address)
-- **Parameters**: Ignored parameter.
-- **Behavior**: Returns `listingAddress`.
-- **Gas Usage Controls**: Minimal, single state read.
-
-#### liquidityAmounts() view returns (uint256 xAmount, uint256 yAmount)
-- **Behavior**: Returns `xLiquid`, `yLiquid` from `liquidityDetail`.
-- **Mappings/Structs Used**: `liquidityDetail` (`LiquidityDetails`).
-- **Gas Usage Controls**: Minimal, single state read.
-
-#### liquidityDetailsView() view returns (uint256 xLiquid, uint256 yLiquid, uint256 xFees, uint256 yFees, uint256 xFeesAcc, uint256 yFeesAcc)
-- **Behavior**: Returns all fields from `liquidityDetail`.
-- **Mappings/Structs Used**: `liquidityDetail` (`LiquidityDetails`).
-- **Gas Usage Controls**: Minimal, single state read.
-
-#### activeXLiquiditySlotsView() view returns (uint256[] memory)
-- **Behavior**: Returns `activeXLiquiditySlots`.
-- **Mappings/Structs Used**: `activeXLiquiditySlots`.
-- **Gas Usage Controls**: Minimal, array read.
-
-#### activeYLiquiditySlotsView() view returns (uint256[] memory)
-- **Behavior**: Returns `activeYLiquiditySlots`.
-- **Mappings/Structs Used**: `activeYLiquiditySlots`.
-- **Gas Usage Controls**: Minimal, array read.
-
-#### userIndexView(address user) view returns (uint256[] memory)
-- **Parameters**: `user` - User address.
-- **Behavior**: Returns user's slot indices.
-- **Mappings/Structs Used**: `userIndex`.
-- **Gas Usage Controls**: Minimal, array read.
-
-#### getXSlotView(uint256 index) view returns (Slot memory)
-- **Parameters**: `index` - Slot index.
-- **Behavior**: Returns `xLiquiditySlots[index]`.
-- **Mappings/Structs Used**: `xLiquiditySlots` (`Slot`).
-- **Gas Usage Controls**: Minimal, single mapping read.
-
-#### getYSlotView(uint256 index) view returns (Slot memory)
-- **Parameters**: `index` - Slot index.
-- **Behavior**: Returns `yLiquiditySlots[index]`.
-- **Mappings/Structs Used**: `yLiquiditySlots` (`Slot`).
-- **Gas Usage Controls**: Minimal, single mapping read.
+- **Restrictions**: `nonReentrant`, requires `routersเ**Behavior**: Resets `dFeesAcc` to the latest `xFeesAcc` (for ySlots) or `yFeesAcc` (for xSlots) after a successful fee claim in `_processFeeClaim` to prevent double-counting of fees in subsequent claims.
+- **Internal Call Flow**: Updates slot's `dFeesAcc` within the `if (feeShare > 0)` block in `_processFeeClaim`, ensuring it reflects the current cumulative fees post-claim.
+- **Balance Checks**: None specific to this change, as it relies on existing fee and liquidity checks.
+- **Mappings/Structs Used**:
+  - **Mappings**: `xLiquiditySlots`, `yLiquiditySlots`, `liquidityDetail`.
+  - **Structs**: `Slot`, `LiquidityDetails`.
+- **Restrictions**: No additional restrictions beyond existing `claimFees` checks.
+- **Gas Usage Controls**: Minimal additional gas cost for single state write to `dFeesAcc`.
 
 ### Additional Details
 - **Decimal Handling**: Uses `normalize` and `denormalize` (1e18) for amounts, fetched via `IERC20.decimals`.
@@ -1146,8 +1109,8 @@ The `SSLiquidityTemplate`, implemented in Solidity (^0.8.2), forms part of a dec
   - Hidden state variables accessed via view functions (e.g., `getXSlotView`, `liquidityDetailsView`).
   - Avoids reserved keywords and unnecessary virtual/override modifiers.
 - **Fee System**:
-  - Cumulative fees (`xFeesAcc`, `yFeesAcc`) track total fees added, never decrease.
-  - `dFeesAcc` stores `yFeesAcc` (xSlots) or `xFeesAcc` (ySlots) at deposit.
+  - Cumulative fees_signed char tf8;fees (`xFeesAcc`, `yFeesAcc`) track total fees added, never decrease.
+  - `dFeesAcc` stores `yFeesAcc` (xSlots) or `xFeesAcc` (ySlots) at deposit or last claim, reset after claim to track fees since last claim.
   - Fee share based on `contributedFees = feesAcc - dFeesAcc`, proportional to liquidity contribution, capped at available fees.
 - **Compatibility**: Aligned with `SSRouter` (v0.0.44), `SSAgent` (v0.0.2), `SSListingTemplate` (v0.0.10), `SSOrderPartial` (v0.0.18).
 - **Caller Param**: Functionally unused in `addFees` and `updateLiquidity`, included for router validation.
