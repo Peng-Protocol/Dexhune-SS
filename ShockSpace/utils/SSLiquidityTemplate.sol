@@ -1,8 +1,9 @@
 // SPDX-License-Identifier: BSD-3-Clause
 pragma solidity ^0.8.1;
 
-// Version: 0.0.12 (Updated)
+// Version: 0.0.13 (Updated)
 // Changes:
+// - v0.0.13: Modified _processFeeClaim to reset dFeesAcc in the slot to the latest xFeesAcc (for ySlots) or yFeesAcc (for xSlots) after a successful fee claim to prevent double-counting of fees in future claims. Ensured reset occurs within the if (feeShare > 0) block to align with update and transact calls. Preserved all function signatures and existing logic. Aligned with SSListingTemplate.sol v0.0.10.
 // - v0.0.12: Added xFeesAcc and yFeesAcc to LiquidityDetails to track cumulative fee volume, incremented by addFees and never decreased. Replaced Slot.dFees with dFeesAcc to store yFeesAcc (xSlot) or xFeesAcc (ySlot) at deposit. Modified claimFees and _claimFeeShare to use contributedFees = feesAcc - dFeesAcc, removing fixed 0.05% fee rate and feeRate variable. Fee share now based directly on contributedFees adjusted by liquidity contribution. Updated update to set dFeesAcc. Preserved all function signatures, ignoring volume in claimFees. Aligned with SSListingTemplate.sol v0.0.10.
 // - v0.0.11: Modified deposit to fetch yFees for x-token deposits and xFees for y-token deposits from liquidityDetail, storing in Slot.dFees instead of dVolume. Updated claimFees and _claimFeeShare to use contributedFees (fees - dFees) instead of contributedVolume, removing price conversion in _processFeeClaim. Updated FeeClaimContext to remove volume and dVolume. Updated update function to set dFees instead of dVolume. Ignored volume param in claimFees to preserve signature. Aligned with SSListingTemplate.sol v0.0.10.
 // - v0.0.10: Updated ISSListing.volumeBalances interface to return only xBalance and yBalance, matching SSListingTemplate.sol v0.0.10 implementation.
@@ -146,6 +147,9 @@ contract SSLiquidityTemplate is ReentrancyGuard {
             address transferToken = context.isX ? tokenA : tokenB;
             updates[0] = UpdateType(1, context.isX ? 1 : 0, context.fees - feeShare, address(0), address(0));
             updates[1] = UpdateType(context.isX ? 2 : 3, context.liquidityIndex, context.allocation, context.caller, address(0));
+            // Reset dFeesAcc to latest feesAcc after claim
+            Slot storage slot = context.isX ? xLiquiditySlots[context.liquidityIndex] : yLiquiditySlots[context.liquidityIndex];
+            slot.dFeesAcc = context.isX ? liquidityDetail.yFeesAcc : liquidityDetail.xFeesAcc;
             this.update(context.caller, updates);
             this.transact(context.caller, transferToken, feeShare, context.caller);
             emit FeesClaimed(
