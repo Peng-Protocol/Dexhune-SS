@@ -1,30 +1,27 @@
 // SPDX-License-Identifier: BSD-3-Clause
 pragma solidity ^0.8.1;
 
-// Version: 0.0.18 (Updated)
+// Version: 0.0.19 (Updated)
 // Changes:
-// - v0.0.18: Fixed TypeError in _executeSingleOrder and _clearOrderData by replacing `receiver` with `recipient` in ISSListingTemplate.UpdateType struct initializations, aligning with SSMainPartial.sol v0.0.24 and SSListingTemplate.sol v0.0.10.
-// - v0.0.17: Fixed TypeError in _clearOrderData by updating tuple destructuring to include amountSent from getBuyOrderAmounts/getSellOrderAmounts, aligning with ISSListingTemplate v0.0.6. Ensured updates[2].amountSent is set to 0 in _executeSingleOrder for consistency with Amounts struct initialization.
-// - v0.0.16: Updated _executeSingleOrder to initialize amountSent in BuyOrderAmounts/SellOrderAmounts during order creation, setting it to 0 as no settlement occurs at creation. Adjusted updates[1] to include amountSent in Amounts struct (structId: 2) for consistency with SSListingTemplate.sol v0.0.10.
-// - v0.0.15: Replaced ISSListingTemplate.normalize and ISSListingTemplate.denormalize calls in _clearOrderData with inherited normalize and denormalize functions from SSMainPartial.sol for consistency and direct access.
-// - v0.0.14: Updated _clearOrderData to refund pending amounts via ISSListingTemplate.transact, using denormalized amount based on token decimals (tokenB for buy, tokenA for sell) and recipient from order core, before canceling order status (status 0 for canceled or invalid orders).
-// - v0.0.13: Updated _executeSingleOrder to use prep.normalizedReceived instead of prep.amount to reflect pre/post balance checks in SSRouter.sol (v0.0.32).
-// - v0.0.12: Fixed TypeError in _executeSingleOrder by adding getNextOrderId to ISSListingTemplate interface in SSMainPartial.sol, enabling correct order ID retrieval (line 42). Noted potential review needed for updates[1].value in _executeSingleOrder (set to 0 for Pricing struct).
-// - v0.0.11: Removed makerActiveOrders, activeBuyOrders, and activeSellOrders mappings from SSOrderPartial.sol as they are redundant. Replaced with ISSListingTemplate.makerPendingOrdersView, pendingBuyOrdersView, and pendingSellOrdersView calls to fetch order details directly from the listing contract. Updated _executeSingleOrder and _clearOrderData to rely on listing contract state via view functions, ensuring correct context and alignment with SSListingTemplate.sol (v0.0.8).
-// - v0.0.10: Fixed TypeError in _handleOrderPrep by replacing decimalsA/decimalsB mappings with ISSListingTemplate.decimalsA()/decimalsB() calls, aligning with SSMainPartial.sol v0.0.19 (line 42).
-// - v0.0.9: Fixed TypeError in _clearOrderData by explicitly destructuring tuples from getBuyOrderCore and getSellOrderCore.
-// - v0.0.8: Updated to align with SSMainPartial.sol v0.0.8 and SSListingTemplate.sol v0.0.8.
-// - v0.0.7: Removed ISSAgent.globalizeOrders calls, globalization handled by SSListingTemplate.
-// - v0.0.7: Fixed _clearOrderData array index assignment (removed erroneous activeOrders[i] = i).
-// - v0.0.7: Maintained generic helpers (_handleOrderPrep, _executeSingleOrder, _clearOrderData).
-// Compatible with SSListingTemplate.sol (v0.0.10), SSLiquidityTemplate.sol (v0.0.6), SSMainPartial.sol (v0.0.24), SSRouter.sol (v0.0.48), SSSettlementPartial.sol (v0.0.46).
+// - v0.0.19: Added maker check in _clearOrderData to ensure msg.sender is the order’s maker, restricting cancellations.
+// - v0.0.18: Fixed TypeError in _executeSingleOrder and _clearOrderData by replacing receiver with recipient in UpdateType struct.
+// - v0.0.17: Fixed TypeError in _clearOrderData by including amountSent in tuple destructuring from getBuyOrderAmounts/getSellOrderAmounts.
+// - v0.0.16: Updated _executeSingleOrder to initialize amountSent to 0 in BuyOrderAmounts/SellOrderAmounts during creation.
+// - v0.0.15: Replaced ISSListingTemplate.normalize/denormalize calls with inherited functions from SSMainPartial.sol.
+// - v0.0.14: Updated _clearOrderData to refund pending amounts via transact, using denormalized amounts based on token decimals.
+// - v0.0.13: Updated _executeSingleOrder to use prep.normalizedReceived instead of prep.amount.
+// - v0.0.12: Fixed TypeError in _executeSingleOrder by adding getNextOrderId to ISSListingTemplate interface.
+// - v0.0.11: Removed redundant mappings, using makerPendingOrdersView, pendingBuyOrdersView, and pendingSellOrdersView.
+// - v0.0.10: Fixed TypeError in _handleOrderPrep by using decimalsA()/decimalsB() from ISSListingTemplate.
+// - v0.0.9: Fixed TypeError in _clearOrderData by explicitly destructuring tuples from getBuyOrderCore/getSellOrderCore.
+// Compatible with SSListingTemplate.sol (v0.0.10), SSLiquidityTemplate.sol (v0.0.6), SSMainPartial.sol (v0.0.25), SSRouter.sol (v0.0.61), SSSettlementPartial.sol (v0.0.57).
 
 import "./SSMainPartial.sol";
 
 contract SSOrderPartial is SSMainPartial {
     struct OrderPrep {
         address maker;
-        address recipient; // Updated from receiver
+        address recipient;
         uint256 amount;
         uint256 maxPrice;
         uint256 minPrice;
@@ -35,7 +32,7 @@ contract SSOrderPartial is SSMainPartial {
     function _handleOrderPrep(
         address listing,
         address maker,
-        address recipient, // Updated from receiver
+        address recipient,
         uint256 amount,
         uint256 maxPrice,
         uint256 minPrice,
@@ -66,32 +63,32 @@ contract SSOrderPartial is SSMainPartial {
             index: orderId,
             value: 1,                  // Status: pending
             addr: prep.maker,
-            recipient: prep.recipient, // Updated from receiver
+            recipient: prep.recipient,
             maxPrice: 0,
             minPrice: 0,
-            amountSent: 0              // Not used in Core struct
+            amountSent: 0
         });
         updates[1] = ISSListingTemplate.UpdateType({
             updateType: isBuy ? 1 : 2, // 1: Buy, 2: Sell
             structId: 1,               // Pricing struct
             index: orderId,
-            value: 0,                  // Not used in Pricing struct
+            value: 0,
             addr: address(0),
-            recipient: address(0),     // Updated from receiver
+            recipient: address(0),
             maxPrice: prep.maxPrice,
             minPrice: prep.minPrice,
-            amountSent: 0              // Not used in Pricing struct
+            amountSent: 0
         });
         updates[2] = ISSListingTemplate.UpdateType({
             updateType: isBuy ? 1 : 2, // 1: Buy, 2: Sell
             structId: 2,               // Amounts struct
             index: orderId,
-            value: prep.normalizedReceived, // Pending amount (tokenY for buy, tokenX for sell)
+            value: prep.normalizedReceived,
             addr: address(0),
-            recipient: address(0),     // Updated from receiver
+            recipient: address(0),
             maxPrice: 0,
             minPrice: 0,
-            amountSent: 0              // Initialize amountSent (tokenX for buy, tokenY for sell) to 0
+            amountSent: 0
         });
         listingContract.update(address(this), updates);
     }
@@ -106,6 +103,7 @@ contract SSOrderPartial is SSMainPartial {
         (address maker, address recipient, uint8 status) = isBuy
             ? listingContract.getBuyOrderCore(orderId)
             : listingContract.getSellOrderCore(orderId);
+        require(maker == msg.sender, "Only maker can cancel");
         (uint256 pending, uint256 filled, uint256 amountSent) = isBuy
             ? listingContract.getBuyOrderAmounts(orderId)
             : listingContract.getSellOrderAmounts(orderId);
@@ -124,10 +122,10 @@ contract SSOrderPartial is SSMainPartial {
             index: orderId,
             value: 0,                  // Status: cancelled
             addr: address(0),
-            recipient: address(0),     // Updated from receiver
+            recipient: address(0),
             maxPrice: 0,
             minPrice: 0,
-            amountSent: 0              // Not used in Core struct
+            amountSent: 0
         });
         listingContract.update(address(this), updates);
     }
