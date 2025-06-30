@@ -1,17 +1,20 @@
 // SPDX-License-Identifier: BSD-3-Clause
 pragma solidity ^0.8.2;
 
-// Version: 0.0.60 (Updated)
+// Version: 0.0.61 (Updated)
 // Changes:
-// - v0.0.60: Fixed stack-too-deep error in settleBuyOrders and settleSellOrders by introducing _processBuyOrder and _processSellOrder helper functions to handle loop bodies, reducing stack usage to ~12 variables. Ensured explicit destructuring of getBuyOrderAmounts and getSellOrderAmounts for pendingAmount, filled, and amountSent. Maintained compatibility with SSSettlementPartial.sol v0.0.57.
-// - v0.0.59: Fixed TypeError in _prepBuyOrderUpdate and _prepSellOrderUpdate by using PrepOrderUpdateResult struct. Fixed tuple destructuring mismatch in settleBuyOrders, settleSellOrders, executeSingleBuyLiquid, and executeSingleSellLiquid for getBuyOrderAmounts and getSellOrderAmounts.
-// - v0.0.58: Fixed ParserError in createSellOrder by correcting OrderPrep declaration and removing redundant casts. Fixed settleSellOrders syntax errors (iterationCount, _getTokenAndDecimals, ISSListingTemplate).
+// - v0.0.61: Modified clearSingleOrder to enforce maker-only cancellation via _clearOrderData’s maker check.
+// - v0.0.61: Updated clearOrders to cancel only msg.sender’s orders using makerPendingOrdersView, respecting maxIterations.
+// - v0.0.60: Fixed stack-too-deep error in settleBuyOrders and settleSellOrders by introducing _processBuyOrder and _processSellOrder helpers, reducing stack usage to ~12 variables. Ensured explicit destructuring of getBuyOrderAmounts and getSellOrderAmounts.
+// - v0.0.59: Fixed TypeError in _prepBuyOrderUpdate and _prepSellOrderUpdate by using PrepOrderUpdateResult struct. Fixed tuple destructuring mismatch in settleBuyOrders, settleSellOrders, executeSingleBuyLiquid, and executeSingleSellLiquid.
+// - v0.0.58: Fixed ParserError in createSellOrder by correcting OrderPrep declaration and removing redundant casts.
 // - v0.0.57: Added settleLongLiquid and settleShortLiquid from v0.0.44, integrated with settleSingleLongLiquid and settleSingleShortLiquid in SSSettlementPartial.sol v0.0.51.
 // - v0.0.56: Fixed TypeError by replacing liquidityContract.addresses(address(this)) with liquidityContract.routers(address(this)).
 // - v0.0.55: Added amountSent to BuyOrderAmounts, SellOrderAmounts, and UpdateType structs.
 // - v0.0.54: Fixed stack depth in _prepBuyLiquidUpdates and _prepSellLiquidUpdates.
 // - v0.0.53: Replaced safeTransferFrom with transferFrom in _checkAndTransferPrincipal.
 // - v0.0.52: Added pre/post balance checks in _checkAndTransferPrincipal.
+// Compatible with SSListingTemplate.sol (v0.0.10), SSLiquidityTemplate.sol (v0.0.6), SSMainPartial.sol (v0.0.25), SSSettlementPartial.sol (v0.0.57), SSOrderPartial.sol (v0.0.19).
 
 import "./utils/SSSettlementPartial.sol";
 
@@ -688,22 +691,28 @@ contract SSRouter is SSSettlementPartial {
     }
 
     function clearSingleOrder(address listingAddress, uint256 orderIdentifier, bool isBuyOrder) external onlyValidListing(listingAddress) nonReentrant {
-        // Clears a single order
+        // Clears a single order, maker check enforced in _clearOrderData
         _clearOrderData(listingAddress, orderIdentifier, isBuyOrder);
     }
 
     function clearOrders(address listingAddress, uint256 maxIterations) external onlyValidListing(listingAddress) nonReentrant {
-        // Clears multiple orders up to maxIterations
+        // Clears multiple orders for msg.sender up to maxIterations
         ISSListingTemplate listingContract = ISSListingTemplate(listingAddress);
-        uint256[] memory buyOrderIds = listingContract.pendingBuyOrdersView();
-        uint256 buyIterationCount = maxIterations < buyOrderIds.length ? maxIterations : buyOrderIds.length;
-        for (uint256 i = 0; i < buyIterationCount; i++) {
-            _clearOrderData(listingAddress, buyOrderIds[i], true);
-        }
-        uint256[] memory sellOrderIds = listingContract.pendingSellOrdersView();
-        uint256 sellIterationCount = maxIterations < sellOrderIds.length ? maxIterations : sellOrderIds.length;
-        for (uint256 k = 0; k < sellIterationCount; k++) {
-            _clearOrderData(listingAddress, sellOrderIds[k], false);
+        uint256[] memory orderIds = listingContract.makerPendingOrdersView(msg.sender);
+        uint256 iterationCount = maxIterations < orderIds.length ? maxIterations : orderIds.length;
+        for (uint256 i = 0; i < iterationCount; i++) {
+            uint256 orderId = orderIds[i];
+            bool isBuyOrder = false;
+            (address maker,,) = listingContract.getBuyOrderCore(orderId);
+            if (maker == msg.sender) {
+                isBuyOrder = true;
+            } else {
+                (,maker,) = listingContract.getSellOrderCore(orderId);
+                if (maker != msg.sender) {
+                    continue;
+                }
+            }
+            _clearOrderData(listingAddress, orderId, isBuyOrder);
         }
     }
 
