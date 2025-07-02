@@ -1,8 +1,9 @@
 // SPDX-License-Identifier: BSD-3-Clause
-pragma solidity ^0.8.1;
+pragma solidity ^0.8.2;
 
-// Version: 0.0.8
+// Version: 0.0.9
 // Changes:
+// - v0.0.9: Replaced proxyRouter, isolatedDriver, crossDriver with routers array; replaced setProxyRouter, setIsolatedDriver, setCrossDriver with addRouter and removeRouter; added getRouters view function; updated _initializeListing and _initializeLiquidity to use routers array.
 // - v0.0.8: Added liquidityProviders mapping to track users per listingId, updated _updateGlobalLiquidity to append users, fixed getTopLiquidityProviders to use liquidityProviders, added listingId validation, and added inline comments.
 // - v0.0.7: Changed isValidListing visibility from internal to public to support both internal use in globalizeLiquidity and external calls.
 // - v0.0.6: Changed isValidListing visibility from external to internal to resolve undeclared identifier error in globalizeLiquidity.
@@ -59,9 +60,7 @@ interface ISSListing {
 contract SSAgent is Ownable {
     using SafeERC20 for IERC20;
 
-    address public proxyRouter; // Proxy router contract address
-    address public isolatedDriver; // Isolated driver contract address
-    address public crossDriver; // Cross driver contract address
+    address[] public routers; // Array of router contract addresses
     address public listingLogicAddress; // SSListingLogic contract address
     address public liquidityLogicAddress; // SSLiquidityLogic contract address
     address public registryAddress; // Registry contract address
@@ -123,11 +122,23 @@ contract SSAgent is Ownable {
     event ListingCreated(address indexed tokenA, address indexed tokenB, address listingAddress, address liquidityAddress, uint256 listingId);
     event GlobalLiquidityChanged(uint256 listingId, address tokenA, address tokenB, address user, uint256 amount, bool isDeposit);
     event GlobalOrderChanged(uint256 listingId, address tokenA, address tokenB, uint256 orderId, bool isBuy, address maker, uint256 amount, uint8 status);
+    event RouterAdded(address indexed router); // Emitted when a router is added
+    event RouterRemoved(address indexed router); // Emitted when a router is removed
 
     // Checks if a token exists in allListedTokens
     function tokenExists(address token) internal view returns (bool) {
         for (uint256 i = 0; i < allListedTokens.length; i++) {
             if (allListedTokens[i] == token) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    // Checks if a router exists in the routers array
+    function routerExists(address router) internal view returns (bool) {
+        for (uint256 i = 0; i < routers.length; i++) {
+            if (routers[i] == router) {
                 return true;
             }
         }
@@ -145,11 +156,7 @@ contract SSAgent is Ownable {
 
     // Initializes listing contract with routers, listing ID, liquidity address, tokens, agent, and registry
     function _initializeListing(address listingAddress, address liquidityAddress, address tokenA, address tokenB, uint256 listingId) internal {
-        address[] memory routers = new address[](3);
-        routers[0] = proxyRouter;
-        routers[1] = isolatedDriver;
-        routers[2] = crossDriver;
-        ISSListingTemplate(listingAddress).setRouters(routers);
+        ISSListingTemplate(listingAddress).setRouters(routers); // Use routers array directly
         ISSListingTemplate(listingAddress).setListingId(listingId);
         ISSListingTemplate(listingAddress).setLiquidityAddress(liquidityAddress);
         ISSListingTemplate(listingAddress).setTokens(tokenA, tokenB);
@@ -159,11 +166,7 @@ contract SSAgent is Ownable {
 
     // Initializes liquidity contract with routers, listing ID, listing address, tokens, and agent
     function _initializeLiquidity(address listingAddress, address liquidityAddress, address tokenA, address tokenB, uint256 listingId) internal {
-        address[] memory routers = new address[](3);
-        routers[0] = proxyRouter;
-        routers[1] = isolatedDriver;
-        routers[2] = crossDriver;
-        ISSLiquidityTemplate(liquidityAddress).setRouters(routers);
+        ISSLiquidityTemplate(liquidityAddress).setRouters(routers); // Use routers array directly
         ISSLiquidityTemplate(liquidityAddress).setListingId(listingId);
         ISSLiquidityTemplate(liquidityAddress).setListingAddress(listingAddress);
         ISSLiquidityTemplate(liquidityAddress).setTokens(tokenA, tokenB);
@@ -180,22 +183,31 @@ contract SSAgent is Ownable {
         queryByAddress[tokenB].push(listingId);
     }
 
-    // Sets proxy router address, restricted to owner
-    function setProxyRouter(address _proxyRouter) external onlyOwner {
-        require(_proxyRouter != address(0), "Invalid proxy router address");
-        proxyRouter = _proxyRouter;
+    // Adds a router address to the routers array, restricted to owner
+    function addRouter(address router) external onlyOwner {
+        require(router != address(0), "Invalid router address");
+        require(!routerExists(router), "Router already exists");
+        routers.push(router);
+        emit RouterAdded(router); // Emit event for router addition
     }
 
-    // Sets isolated driver address, restricted to owner
-    function setIsolatedDriver(address _isolatedDriver) external onlyOwner {
-        require(_isolatedDriver != address(0), "Invalid SSD address");
-        isolatedDriver = _isolatedDriver;
+    // Removes a router address from the routers array, restricted to owner
+    function removeRouter(address router) external onlyOwner {
+        require(router != address(0), "Invalid router address");
+        require(routerExists(router), "Router does not exist");
+        for (uint256 i = 0; i < routers.length; i++) {
+            if (routers[i] == router) {
+                routers[i] = routers[routers.length - 1]; // Move last element to current position
+                routers.pop(); // Remove last element
+                break;
+            }
+        }
+        emit RouterRemoved(router); // Emit event for router removal
     }
 
-    // Sets cross driver address, restricted to owner
-    function setCrossDriver(address _crossDriver) external onlyOwner {
-        require(_crossDriver != address(0), "Invalid CSD address");
-        crossDriver = _crossDriver;
+    // Returns the current list of routers
+    function getRouters() external view returns (address[] memory) {
+        return routers; // Returns the entire routers array
     }
 
     // Sets listing logic contract address, restricted to owner
@@ -220,7 +232,7 @@ contract SSAgent is Ownable {
     function listToken(address tokenA, address tokenB) external returns (address listingAddress, address liquidityAddress) {
         require(tokenA != tokenB, "Identical tokens");
         require(getListing[tokenA][tokenB] == address(0), "Pair already listed");
-        require(proxyRouter != address(0), "Proxy router not set");
+        require(routers.length > 0, "No routers set"); // Updated to check routers array
         require(listingLogicAddress != address(0), "Listing logic not set");
         require(liquidityLogicAddress != address(0), "Liquidity logic not set");
         require(registryAddress != address(0), "Registry not set");
@@ -243,7 +255,7 @@ contract SSAgent is Ownable {
 
         require(tokenA != tokenB, "Identical tokens");
         require(getListing[tokenA][tokenB] == address(0), "Pair already listed");
-        require(proxyRouter != address(0), "Proxy router not set");
+        require(routers.length > 0, "No routers set"); // Updated to check routers array
         require(listingLogicAddress != address(0), "Listing logic not set");
         require(liquidityLogicAddress != address(0), "Liquidity logic not set");
         require(registryAddress != address(0), "Registry not set");
