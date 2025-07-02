@@ -1,10 +1,9 @@
 /* SPDX-License-Identifier: BSD-3-Clause */
 pragma solidity ^0.8.2;
 
+//For documentation, can be used in code but it's better to inline the exact methods used. 
+
 // Version: 0.0.5
-// Changes:
-// - v0.0.5: Added ISSAgent interface to reflect SSAgent.sol v0.0.9, replacing proxyRouter, isolatedDriver, and crossDriver with routers array, updating addRouter, removeRouter, and getRouters; preserved ISSLiquidityTemplate and ISSListingTemplate as they align with SSLiquidityTemplate.sol v0.0.13 and SSListingTemplate.sol v0.0.10.
-// - v0.0.4: Initial interface definitions for SSListingTemplate, SSLiquidityTemplate, SSRouter, SSCrossDriver, and SSIsolatedDriver.
 
 // Interface for SSAgent contract
 interface ISSAgent {
