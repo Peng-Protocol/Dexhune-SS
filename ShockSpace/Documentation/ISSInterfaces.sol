@@ -1,15 +1,164 @@
 /* SPDX-License-Identifier: BSD-3-Clause */
 pragma solidity ^0.8.2;
 
-//For documentation, can be used in code but it's better to inline the exact methods used. 
-
 // Version: 0.0.5
+// Changes:
+// - v0.0.5: Added ISSAgent interface to reflect SSAgent.sol v0.0.9, replacing proxyRouter, isolatedDriver, and crossDriver with routers array, updating addRouter, removeRouter, and getRouters; preserved ISSLiquidityTemplate and ISSListingTemplate as they align with SSLiquidityTemplate.sol v0.0.13 and SSListingTemplate.sol v0.0.10.
+// - v0.0.4: Initial interface definitions for SSListingTemplate, SSLiquidityTemplate, SSRouter, SSCrossDriver, and SSIsolatedDriver.
+
+// Interface for SSAgent contract
+interface ISSAgent {
+    // Events
+    event ListingCreated(address indexed tokenA, address indexed tokenB, address listingAddress, address liquidityAddress, uint256 listingId);
+    event GlobalLiquidityChanged(uint256 listingId, address tokenA, address tokenB, address user, uint256 amount, bool isDeposit);
+    event GlobalOrderChanged(uint256 listingId, address tokenA, address tokenB, uint256 orderId, bool isBuy, address maker, uint256 amount, uint8 status);
+    event RouterAdded(address indexed router); // Emitted when a router is added
+    event RouterRemoved(address indexed router); // Emitted when a router is removed
+
+    // Structs
+    struct GlobalOrder {
+        uint256 orderId; // Unique order identifier
+        bool isBuy; // True for buy order, false for sell
+        address maker; // Address creating the order
+        address recipient; // Address receiving the order outcome
+        uint256 amount; // Order amount
+        uint8 status; // 0 = cancelled, 1 = pending, 2 = partially filled, 3 = filled
+        uint256 timestamp; // Timestamp of order creation or update
+    }
+
+    struct TrendData {
+        address token; // Token or user address for sorting
+        uint256 timestamp; // Timestamp of data point
+        uint256 amount; // Amount for liquidity or volume
+    }
+
+    struct OrderData {
+        uint256 orderId; // Order identifier
+        bool isBuy; // True for buy order, false for sell
+        address maker; // Order creator
+        address recipient; // Order recipient
+        uint256 amount; // Order amount
+        uint8 status; // Order status
+        uint256 timestamp; // Order timestamp
+    }
+
+    struct ListingDetails {
+        address listingAddress; // Listing contract address
+        address liquidityAddress; // Associated liquidity contract address
+        address tokenA; // First token in pair
+        address tokenB; // Second token in pair
+        uint256 listingId; // Listing ID
+    }
+
+    // State Variables
+    function routers(uint256 index) external view returns (address); // Array of router contract addresses
+    function listingLogicAddress() external view returns (address); // SSListingLogic contract address
+    function liquidityLogicAddress() external view returns (address); // SSLiquidityLogic contract address
+    function registryAddress() external view returns (address); // Registry contract address
+    function listingCount() external view returns (uint256); // Counter for total listings created
+
+    // Mappings
+    function getListing(address tokenA, address tokenB) external view returns (address); // tokenA => tokenB => listing address
+    function allListings(uint256 index) external view returns (address); // Array of all listing addresses
+    function allListedTokens(uint256 index) external view returns (address); // Array of all unique listed tokens
+    function queryByAddress(address token, uint256 index) external view returns (uint256); // token => listing IDs
+    function liquidityProviders(uint256 listingId, uint256 index) external view returns (address); // listingId => array of users providing liquidity
+    function globalLiquidity(address tokenA, address tokenB, address user) external view returns (uint256); // tokenA => tokenB => user => amount
+    function totalLiquidityPerPair(address tokenA, address tokenB) external view returns (uint256); // tokenA => tokenB => amount
+    function userTotalLiquidity(address user) external view returns (uint256); // user => total liquidity
+    function listingLiquidity(uint256 listingId, address user) external view returns (uint256); // listingId => user => amount
+    function historicalLiquidityPerPair(address tokenA, address tokenB, uint256 timestamp) external view returns (uint256); // tokenA => tokenB => timestamp => amount
+    function historicalLiquidityPerUser(address tokenA, address tokenB, address user, uint256 timestamp) external view returns (uint256); // tokenA => tokenB => user => timestamp => amount
+    function globalOrders(address tokenA, address tokenB, uint256 orderId) external view returns (GlobalOrder memory); // tokenA => tokenB => orderId => GlobalOrder
+    function pairOrders(address tokenA, address tokenB, uint256 index) external view returns (uint256); // tokenA => tokenB => orderId[]
+    function userOrders(address user, uint256 index) external view returns (uint256); // user => orderId[]
+    function historicalOrderStatus(address tokenA, address tokenB, uint256 orderId, uint256 timestamp) external view returns (uint8); // tokenA => tokenB => orderId => timestamp => status
+    function userTradingSummaries(address user, address tokenA, address tokenB) external view returns (uint256); // user => tokenA => tokenB => volume
+
+    // External Functions
+    // Adds a router address to the routers array (owner only)
+    function addRouter(address router) external;
+    // Removes a router address from the routers array (owner only)
+    function removeRouter(address router) external;
+    // Returns the current list of routers
+    function getRouters() external view returns (address[] memory);
+    // Sets listing logic contract address (owner only)
+    function setListingLogic(address _listingLogic) external;
+    // Sets liquidity logic contract address (owner only)
+    function setLiquidityLogic(address _liquidityLogic) external;
+    // Sets registry contract address (owner only)
+    function setRegistry(address _registryAddress) external;
+    // Lists a new token pair, deploying listing and liquidity contracts
+    function listToken(address tokenA, address tokenB) external returns (address listingAddress, address liquidityAddress);
+    // Lists a token paired with native currency
+    function listNative(address token, bool isA) external returns (address listingAddress, address liquidityAddress);
+    // Checks if a listing address is valid and returns its details
+    function isValidListing(address listingAddress) external view returns (bool isValid, ListingDetails memory details);
+    // Updates global liquidity state for a user and emits event
+    function globalizeLiquidity(uint256 listingId, address tokenA, address tokenB, address user, uint256 amount, bool isDeposit) external;
+    // Updates global order state and emits event
+    function globalizeOrders(
+        uint256 listingId,
+        address tokenA,
+        address tokenB,
+        uint256 orderId,
+        bool isBuy,
+        address maker,
+        address recipient,
+        uint256 amount,
+        uint8 status
+    ) external;
+    // Returns liquidity trend for a token pair
+    function getPairLiquidityTrend(address tokenA, bool focusOnTokenA, uint256 startTime, uint256 endTime)
+        external view returns (uint256[] memory timestamps, uint256[] memory amounts);
+    // Returns liquidity trend for a user across tokens
+    function getUserLiquidityTrend(address user, bool focusOnTokenA, uint256 startTime, uint256 endTime)
+        external view returns (address[] memory tokens, uint256[] memory timestamps, uint256[] memory amounts);
+    // Returns user's liquidity across token pairs
+    function getUserLiquidityAcrossPairs(address user, uint256 maxIterations)
+        external view returns (address[] memory tokenAs, address[] memory tokenBs, uint256[] memory amounts);
+    // Returns top liquidity providers for a listing
+    function getTopLiquidityProviders(uint256 listingId, uint256 maxIterations)
+        external view returns (address[] memory users, uint256[] memory amounts);
+    // Returns user's liquidity share for a token pair
+    function getUserLiquidityShare(address user, address tokenA, address tokenB)
+        external view returns (uint256 share, uint256 total);
+    // Returns pairs with liquidity above a threshold
+    function getAllPairsByLiquidity(uint256 minLiquidity, bool focusOnTokenA, uint256 maxIterations)
+        external view returns (address[] memory tokenAs, address[] memory tokenBs, uint256[] memory amounts);
+    // Returns order activity for a token pair within a time range
+    function getOrderActivityByPair(address tokenA, address tokenB, uint256 startTime, uint256 endTime)
+        external view returns (uint256[] memory orderIds, OrderData[] memory orders);
+    // Returns user's trading profile across token pairs
+    function getUserTradingProfile(address user)
+        external view returns (address[] memory tokenAs, address[] memory tokenBs, uint256[] memory volumes);
+    // Returns top traders by volume for a listing
+    function getTopTradersByVolume(uint256 listingId, uint256 maxIterations)
+        external view returns (address[] memory traders, uint256[] memory volumes);
+    // Returns pairs with order volume above a threshold
+    function getAllPairsByOrderVolume(uint256 minVolume, bool focusOnTokenA, uint256 maxIterations)
+        external view returns (address[] memory tokenAs, address[] memory tokenBs, uint256[] memory volumes);
+    // Returns listing address by index
+    function queryByIndex(uint256 index) external view returns (address);
+    // Returns paginated listing IDs for a token
+    function queryByAddressView(address target, uint256 maxIteration, uint256 step) external view returns (uint256[] memory);
+    // Returns number of listing IDs for a token
+    function queryByAddressLength(address target) external view returns (uint256);
+    // Returns total number of listings
+    function allListingsLength() external view returns (uint256);
+    // Returns total number of listed tokens
+    function allListedTokensLength() external view returns (uint256);
+}
 
 // Interface for SSLiquidityTemplate contract
 interface ISSLiquidityTemplate {
     // Events
-    event RouterAdded(address indexed router); // Emitted when a router is added
-    event RouterRemoved(address indexed router); // Emitted when a router is removed
+    event LiquidityUpdated(uint256 listingId, uint256 xLiquid, uint256 yLiquid);
+    event FeesUpdated(uint256 listingId, uint256 xFees, uint256 yFees);
+    event FeesClaimed(uint256 listingId, uint256 liquidityIndex, uint256 xFees, uint256 yFees);
+    event SlotDepositorChanged(bool isX, uint256 slotIndex, address indexed oldDepositor, address indexed newDepositor);
+    event GlobalizeUpdateFailed(address indexed caller, uint256 listingId, bool isX, uint256 amount);
+    event UpdateRegistryFailed(address indexed caller, bool isX);
 
     // Structs
     struct LiquidityDetails {
@@ -17,19 +166,21 @@ interface ISSLiquidityTemplate {
         uint256 yLiquid; // Total liquidity for tokenB
         uint256 xFees;   // Accumulated fees for tokenA
         uint256 yFees;   // Accumulated fees for tokenB
+        uint256 xFeesAcc; // Cumulative fee volume for x-token
+        uint256 yFeesAcc; // Cumulative fee volume for y-token
     }
 
     struct Slot {
         address depositor;  // Address of the liquidity provider
         address recipient;  // Address to receive withdrawals (not used)
         uint256 allocation; // Amount of liquidity allocated to the slot
-        uint256 dVolume;    // Volume at the time of deposit
+        uint256 dFeesAcc;   // Cumulative fees at deposit (yFeesAcc for xSlot, xFeesAcc for ySlot)
         uint256 timestamp;  // Timestamp of slot creation
     }
 
     struct UpdateType {
-        uint8 updateType;  // Type of update: 0 = balance, 1 = fees, 2 = xSlot, 3 = ySlot
-        uint256 index;     // Index for fees/liquidity (0 = xFees/xLiquid, 1 = yFees/yLiquid) or slot index
+        uint8 updateType;  // 0 = balance, 1 = fees, 2 = xSlot, 3 = ySlot
+        uint256 index;     // 0 = xFees/xLiquid, 1 = yFees/yLiquid, or slot index
         uint256 value;     // Amount or allocation (normalized to 18 decimals)
         address addr;      // Depositor address
         address recipient; // Recipient address (not used)
@@ -41,18 +192,12 @@ interface ISSLiquidityTemplate {
     }
 
     // Mappings
-    // Tracks registered router addresses
-    function routers(address router) external view returns (bool);
-    // Stores liquidity slots for tokenA
-    function xLiquiditySlots(uint256 index) external view returns (Slot memory);
-    // Stores liquidity slots for tokenB
-    function yLiquiditySlots(uint256 index) external view returns (Slot memory);
-    // Lists active liquidity slot indices for tokenA
-    function activeXLiquiditySlots(uint256 index) external view returns (uint256);
-    // Lists active liquidity slot indices for tokenB
-    function activeYLiquiditySlots(uint256 index) external view returns (uint256);
-    // Maps user address to their liquidity slot indices
-    function userIndex(address user) external view returns (uint256[] memory);
+    function routers(address router) external view returns (bool); // Tracks registered router addresses
+    function xLiquiditySlots(uint256 index) external view returns (Slot memory); // Stores liquidity slots for tokenA
+    function yLiquiditySlots(uint256 index) external view returns (Slot memory); // Stores liquidity slots for tokenB
+    function activeXLiquiditySlots(uint256 index) external view returns (uint256); // Lists active liquidity slot indices for tokenA
+    function activeYLiquiditySlots(uint256 index) external view returns (uint256); // Lists active liquidity slot indices for tokenB
+    function userIndex(address user) external view returns (uint256[] memory); // Maps user address to their liquidity slot indices
 
     // External Functions
     // Sets router addresses (callable once)
@@ -91,8 +236,8 @@ interface ISSLiquidityTemplate {
     function getListingAddress(uint256) external view returns (address);
     // Returns current liquidity amounts for tokenA and tokenB
     function liquidityAmounts() external view returns (uint256 xAmount, uint256 yAmount);
-    // Returns liquidity details (xLiquid, yLiquid, xFees, yFees)
-    function liquidityDetailsView() external view returns (uint256 xLiquid, uint256 yLiquid, uint256 xFees, uint256 yFees);
+    // Returns liquidity details (xLiquid, yLiquid, xFees, yFees, xFeesAcc, yFeesAcc)
+    function liquidityDetailsView() external view returns (uint256 xLiquid, uint256 yLiquid, uint256 xFees, uint256 yFees, uint256 xFeesAcc, uint256 yFeesAcc);
     // Returns active tokenA liquidity slot indices
     function activeXLiquiditySlotsView() external view returns (uint256[] memory);
     // Returns active tokenB liquidity slot indices
@@ -108,8 +253,9 @@ interface ISSLiquidityTemplate {
 // Interface for SSListingTemplate contract
 interface ISSListingTemplate {
     // Events
-    event RouterAdded(address indexed router); // Emitted when a router is added
-    event RouterRemoved(address indexed router); // Emitted when a router is removed
+    event OrderUpdated(uint256 listingId, uint256 orderId, bool isBuy, uint8 status);
+    event PayoutOrderCreated(uint256 orderId, bool isLong, uint8 status);
+    event BalancesUpdated(uint256 listingId, uint256 xBalance, uint256 yBalance);
 
     // Structs
     struct VolumeBalance {
@@ -172,6 +318,7 @@ interface ISSListingTemplate {
         address makerAddress;    // Address of the payout creator
         address recipientAddress;// Address to receive payout
         uint256 amount;         // Amount for payout
+        Ascending
         uint256 filled;         // Amount filled
         uint256 orderId;        // Order ID
         uint8 status;           // Payout status
@@ -187,7 +334,7 @@ interface ISSListingTemplate {
     }
 
     struct UpdateType {
-        uint8 updateType;  // Type of update: 0 = balance, 1 = buy order, 2 = sell order, 3 = historical
+        uint8 updateType;  // 0 = balance, 1 = buy order, 2 = sell order, 3 = historical
         uint8 structId;    // 0 = Core, 1 = Pricing, 2 = Amounts
         uint256 index;     // Order ID or balance/volume index (0 = xBalance, 1 = yBalance, 2 = xVolume, 3 = yVolume)
         uint256 value;     // Amount or price (normalized)
@@ -199,38 +346,22 @@ interface ISSListingTemplate {
     }
 
     // Mappings
-    // Tracks registered router addresses
-    function routers(address router) external view returns (bool);
-    // Stores buy order core details by order ID
-    function buyOrderCores(uint256 orderId) external view returns (BuyOrderCore memory);
-    // Stores buy order pricing details by order ID
-    function buyOrderPricings(uint256 orderId) external view returns (BuyOrderPricing memory);
-    // Stores buy order amounts by order ID
-    function buyOrderAmounts(uint256 orderId) external view returns (BuyOrderAmounts memory);
-    // Stores sell order core details by order ID
-    function sellOrderCores(uint256 orderId) external view returns (SellOrderCore memory);
-    // Stores sell order pricing details by order ID
-    function sellOrderPricings(uint256 orderId) external view returns (SellOrderPricing memory);
-    // Stores sell order amounts by order ID
-    function sellOrderAmounts(uint256 orderId) external view returns (SellOrderAmounts memory);
-    // Stores long payout details by order ID
-    function longPayouts(uint256 orderId) external view returns (LongPayoutStruct memory);
-    // Stores short payout details by order ID
-    function shortPayouts(uint256 orderId) external view returns (ShortPayoutStruct memory);
-    // Lists pending buy order IDs
-    function pendingBuyOrders(uint256 index) external view returns (uint256);
-    // Lists pending sell order IDs
-    function pendingSellOrders(uint256 index) external view returns (uint256);
-    // Lists long payout order IDs
-    function longPayoutsByIndex(uint256 index) external view returns (uint256);
-    // Lists short payout order IDs
-    function shortPayoutsByIndex(uint256 index) external view returns (uint256);
-    // Maps user address to their payout order IDs
-    function userPayoutIDs(address user) external view returns (uint256[] memory);
-    // Maps maker address to their pending order IDs
-    function makerPendingOrders(address maker) external view returns (uint256[] memory);
-    // Stores historical data by index
-    function historicalData(uint256 index) external view returns (HistoricalData memory);
+    function routers(address router) external view returns (bool); // Tracks registered router addresses
+    function buyOrderCores(uint256 orderId) external view returns (BuyOrderCore memory); // Stores buy order core details by order ID
+    function buyOrderPricings(uint256 orderId) external view returns (BuyOrderPricing memory); // Stores buy order pricing details by order ID
+    function buyOrderAmounts(uint256 orderId) external view returns (BuyOrderAmounts memory); // Stores buy order amounts by order ID
+    function sellOrderCores(uint256 orderId) external view returns (SellOrderCore memory); // Stores sell order core details by order ID
+    function sellOrderPricings(uint256 orderId) external view returns (SellOrderPricing memory); // Stores sell order pricing details by order ID
+    function sellOrderAmounts(uint256 orderId) external view returns (SellOrderAmounts memory); // Stores sell order amounts by order ID
+    function longPayouts(uint256 orderId) external view returns (LongPayoutStruct memory); // Stores long payout details by order ID
+    function shortPayouts(uint256 orderId) external view returns (ShortPayoutStruct memory); // Stores short payout details by order ID
+    function pendingBuyOrders(uint256 index) external view returns (uint256); // Lists pending buy order IDs
+    function pendingSellOrders(uint256 index) external view returns (uint256); // Lists pending sell order IDs
+    function longPayoutsByIndex(uint256 index) external view returns (uint256); // Lists long payout order IDs
+    function shortPayoutsByIndex(uint256 index) external view returns (uint256); // Lists short payout order IDs
+    function userPayoutIDs(address user) external view returns (uint256[] memory); // Maps user address to their payout order IDs
+    function makerPendingOrders(address maker) external view returns (uint256[] memory); // Maps maker address to their pending order IDs
+    function historicalData(uint256 index) external view returns (HistoricalData memory); // Stores historical data by index
 
     // External Functions
     // Sets router addresses (callable once)
@@ -260,7 +391,8 @@ interface ISSListingTemplate {
     // Returns liquidity contract address
     function liquidityAddressView(uint256) external view returns (address);
     // Returns tokenX and tokenY addresses
-    function getTokens() external view returns (address tokenA, address tokenB);
+    function tokenA() external view returns (address);
+    function tokenB() external view returns (address);
     // Returns tokenX decimals
     function decimalsA() external view returns (uint8);
     // Returns tokenY decimals
@@ -311,7 +443,7 @@ interface ISSListingTemplate {
 
 // Interface for SSRouter contract
 interface ISSRouter {
-    // Structs in SSMainPartial.sol (imported to SSRouter via SSOrderPartial -> SSSettlementPartial) 
+    // Structs
     struct BuyOrderDetails {
         uint256 orderId;        // Unique identifier for the buy order
         address maker;          // Address of the order creator
@@ -340,13 +472,6 @@ interface ISSRouter {
         uint256 amount;         // Amount to clear
     }
 
-    // External Functions in SSMainPartial.sol (imported to SSRouter via SSOrderPartial -> SSSettlementPartial)  
-    // Sets the agent address (owner only)
-    function setAgent(address newAgent) external;
-    // Returns the current agent address
-    function agentView() external view returns (address);
-
-    // Structs in SSRouter.sol 
     struct OrderContext {
         ISSListingTemplate listingContract; // Reference to the listing contract
         address tokenIn;                   // Input token address
@@ -357,23 +482,27 @@ interface ISSRouter {
     struct SellOrderUpdateContext {
         address makerAddress;    // Address of the sell order creator
         address recipient;       // Address to receive filled order
-        uint8 status;            // Order status (0 = cancelled, 1 = pending, 2 = partially filled, 3 = filled)
+        uint8 status;            // Order status
         uint256 amountReceived;  // Amount of tokenY received
-        uint256 normalizedReceived; // Normalized amount received (18 decimals)
-        uint256 amountSent;      // Amount of tokenY sent during settlement
+        uint256 normalizedReceived; // Normalized amount received
+        uint256 amountSent;      // Amount of tokenY sent
     }
 
     struct BuyOrderUpdateContext {
         address makerAddress;    // Address of the buy order creator
         address recipient;       // Address to receive filled order
-        uint8 status;            // Order status (0 = cancelled, 1 = pending, 2 = partially filled, 3 = filled)
+        uint8 status;            // Order status
         uint256 amountReceived;  // Amount of tokenX received
-        uint256 normalizedReceived; // Normalized amount received (18 decimals)
-        uint256 amountSent;      // Amount of tokenX sent during settlement
+        uint256 normalizedReceived; // Normalized amount received
+        uint256 amountSent;      // Amount of tokenX sent
     }
 
-    // External Functions in SSRouter.sol
-    // Creates a buy order, transfers input tokens, and executes (valid listing only)
+    // External Functions
+    // Sets the agent address (owner only)
+    function setAgent(address newAgent) external;
+    // Returns the current agent address
+    function agentView() external view returns (address);
+    // Creates a buy order, transfers input tokens, and executes
     function createBuyOrder(
         address listingAddress,
         address recipientAddress,
@@ -381,7 +510,7 @@ interface ISSRouter {
         uint256 maxPrice,
         uint256 minPrice
     ) external payable;
-    // Creates a sell order, transfers input tokens, and executes (valid listing only)
+    // Creates a sell order, transfers input tokens, and executes
     function createSellOrder(
         address listingAddress,
         address recipientAddress,
@@ -389,33 +518,33 @@ interface ISSRouter {
         uint256 maxPrice,
         uint256 minPrice
     ) external payable;
-    // Settles multiple buy orders up to maxIterations (valid listing only)
+    // Settles multiple buy orders up to maxIterations
     function settleBuyOrders(address listingAddress, uint256 maxIterations) external;
-    // Settles multiple sell orders up to maxIterations (valid listing only)
+    // Settles multiple sell orders up to maxIterations
     function settleSellOrders(address listingAddress, uint256 maxIterations) external;
-    // Settles multiple buy order liquidations up to maxIterations (valid listing only)
+    // Settles multiple buy order liquidations up to maxIterations
     function settleBuyLiquid(address listingAddress, uint256 maxIterations) external;
-    // Settles multiple sell order liquidations up to maxIterations (valid listing only)
+    // Settles multiple sell order liquidations up to maxIterations
     function settleSellLiquid(address listingAddress, uint256 maxIterations) external;
-    // Settles multiple long liquidations up to maxIterations (valid listing only)
+    // Settles multiple long liquidations up to maxIterations
     function settleLongLiquid(address listingAddress, uint256 maxIterations) external;
-    // Settles multiple short liquidations up to maxIterations (valid listing only)
+    // Settles multiple short liquidations up to maxIterations
     function settleShortLiquid(address listingAddress, uint256 maxIterations) external;
-    // Executes long payouts (valid listing only)
+    // Executes long payouts
     function settleLongPayouts(address listingAddress, uint256 maxIterations) external;
-    // Executes short payouts (valid listing only)
+    // Executes short payouts
     function settleShortPayouts(address listingAddress, uint256 maxIterations) external;
-    // Deposits tokens or ETH to liquidity pool (valid listing only)
+    // Deposits tokens or ETH to liquidity pool
     function deposit(address listingAddress, bool isTokenA, uint256 inputAmount, address user) external payable;
-    // Withdraws tokens from liquidity pool (valid listing only)
+    // Withdraws tokens from liquidity pool
     function withdraw(address listingAddress, uint256 inputAmount, uint256 index, bool isX, address user) external;
-    // Claims fees from liquidity pool (valid listing only)
+    // Claims fees from liquidity pool
     function claimFees(address listingAddress, uint256 liquidityIndex, bool isX, uint256 volumeAmount, address user) external;
-    // Clears a single order (valid listing only)
+    // Clears a single order
     function clearSingleOrder(address listingAddress, uint256 orderIdentifier, bool isBuyOrder) external;
-    // Clears multiple orders up to maxIterations (valid listing only)
+    // Clears multiple orders up to maxIterations
     function clearOrders(address listingAddress, uint256 maxIterations) external;
-    // Changes depositor for a liquidity slot (valid listing only)
+    // Changes depositor for a liquidity slot
     function changeDepositor(
         address listingAddress,
         bool isX,
@@ -428,10 +557,9 @@ interface ISSRouter {
 // Interface for SSCrossDriver contract
 interface ISSCrossDriver {
     // Events
-    // Emitted when a position is closed
     event PositionClosed(uint256 indexed positionId, address indexed maker, uint256 payout);
 
-    // Structs from SSCrossDriver and CSDUtilityPartial
+    // Structs
     struct PositionCore1 {
         uint256 positionId;      // Unique identifier for the position
         address listingAddress; // Address of the associated listing contract
@@ -492,44 +620,26 @@ interface ISSCrossDriver {
     }
 
     // State Variables
-    // Total number of positions created
-    function positionCount() external view returns (uint256);
-    // Address of the agent contract
-    function agentAddress() external view returns (address);
+    function positionCount() external view returns (uint256); // Total number of positions created
+    function agentAddress() external view returns (address); // Address of the agent contract
 
     // Mappings
-    // Maps position ID to token address
-    function positionToken(uint256 positionId) external view returns (address);
-    // Tracks long open interest by block height
-    function longIOByHeight(uint256 height) external view returns (uint256);
-    // Tracks short open interest by block height
-    function shortIOByHeight(uint256 height) external view returns (uint256);
-    // Stores timestamps for historical interest by block height
-    function historicalInterestTimestamps(uint256 height) external view returns (uint256);
-    // Tracks maker's margin balance by token
-    function makerTokenMargin(address maker, address token) external view returns (uint256);
-    // Lists tokens with non-zero margin for a maker
-    function makerMarginTokens(address maker) external view returns (address[] memory);
-    // Stores position core data (part 1)
-    function positionCore1(uint256 positionId) external view returns (PositionCore1 memory);
-    // Stores position core data (part 2)
-    function positionCore2(uint256 positionId) external view returns (PositionCore2 memory);
-    // Stores price parameters (part 1)
-    function priceParams1(uint256 positionId) external view returns (PriceParams1 memory);
-    // Stores price parameters (part 2)
-    function priceParams2(uint256 positionId) external view returns (PriceParams2 memory);
-    // Stores margin parameters (part 1)
-    function marginParams1(uint256 positionId) external view returns (MarginParams1 memory);
-    // Stores margin parameters (part 2)
-    function marginParams2(uint256 positionId) external view returns (MarginParams2 memory);
-    // Stores exit parameters
-    function exitParams(uint256 positionId) external view returns (ExitParams memory);
-    // Stores open interest data
-    function openInterest(uint256 positionId) external view returns (OpenInterest memory);
-    // Lists positions by type (0 = Long, 1 = Short)
-    function positionsByType(uint8 positionType) external view returns (uint256[] memory);
-    // Maps listing address to pending positions by type
-    function pendingPositions(address listingAddress, uint8 positionType) external view returns (uint256[] memory);
+    function positionToken(uint256 positionId) external view returns (address); // Maps position ID to token address
+    function longIOByHeight(uint256 height) external view returns (uint256); // Tracks long open interest by block height
+    function shortIOByHeight(uint256 height) external view returns (uint256); // Tracks short open interest by block height
+    function historicalInterestTimestamps(uint256 height) external view returns (uint256); // Stores timestamps for historical interest by block height
+    function makerTokenMargin(address maker, address token) external view returns (uint256); // Tracks maker's margin balance by token
+    function makerMarginTokens(address maker) external view returns (address[] memory); // Lists tokens with non-zero margin for a maker
+    function positionCore1(uint256 positionId) external view returns (PositionCore1 memory); // Stores position core data (part 1)
+    function positionCore2(uint256 positionId) external view returns (PositionCore2 memory); // Stores position core data (part 2)
+    function priceParams1(uint256 positionId) external view returns (PriceParams1 memory); // Stores price parameters (part 1)
+    function priceParams2(uint256 positionId) external view returns (PriceParams2 memory); // Stores price parameters (part 2)
+    function marginParams1(uint256 positionId) external view returns (MarginParams1 memory); // Stores margin parameters (part 1)
+    function marginParams2(uint256 positionId) external view returns (MarginParams2 memory); // Stores margin parameters (part 2)
+    function exitParams(uint256 positionId) external view returns (ExitParams memory); // Stores exit parameters
+    function openInterest(uint256 positionId) external view returns (OpenInterest memory); // Stores open interest data
+    function positionsByType(uint8 positionType) external view returns (uint256[] memory); // Lists positions by type (0 = Long, 1 = Short)
+    function pendingPositions(address listingAddress, uint8 positionType) external view returns (uint256[] memory); // Maps listing address to pending positions by type
 
     // External Functions
     // Sets the agent address (owner only)
@@ -636,7 +746,7 @@ interface ISSCrossDriver {
 
 // Interface for SSIsolatedDriver contract
 interface ISSIsolatedDriver {
-    // Structs from SSIsolatedDriver and SSDUtilityPartial
+    // Structs
     struct PositionCoreBase {
         address makerAddress;    // Address of the position creator
         address listingAddress;  // Address of the associated listing contract
@@ -646,14 +756,14 @@ interface ISSIsolatedDriver {
 
     struct PositionCoreStatus {
         bool status1;        // False: pending, True: executable
-        uint8 status2;      // 0 = Open, 1 = Closed, 2 = Cancelled
+        uint8 status2;       // 0 = Open, 1 = Closed, 2 = Cancelled
     }
 
     struct PriceParams {
         uint256 priceMin;    // Minimum entry price
-        uint256 priceMax;   // Maximum entry price
+        uint256 priceMax;    // Maximum entry price
         uint256 priceAtEntry;// Actual entry price
-        uint256 priceClose; // Price at closing
+        uint256 priceClose;  // Price at closing
     }
 
     struct MarginParams {
@@ -670,7 +780,7 @@ interface ISSIsolatedDriver {
 
     struct RiskParams {
         uint256 priceLiquidation;// Liquidation price
-        uint256 priceStopLoss; // Stop loss price
+        uint256 priceStopLoss;  // Stop loss price
         uint256 priceTakeProfit;// Take profit price
     }
 
@@ -682,40 +792,24 @@ interface ISSIsolatedDriver {
     }
 
     // State Variables
-    // Address of the agent contract
-    function agent() external view returns (address);
-    // Total number of positions created
-    function positionIdCounter() external view returns (uint256);
-    // Nonce for position creation
-    function nonce() external view returns (uint256);
-    // Tracks the height of historical interest data
-    function historicalInterestHeight() external view returns (uint256);
+    function agent() external view returns (address); // Address of the agent contract
+    function positionIdCounter() external view returns (uint256); // Total number of positions created
+    function nonce() external view returns (uint256); // Nonce for position creation
+    function historicalInterestHeight() external view returns (uint256); // Tracks the height of historical interest data
 
     // Mappings
-    // Maps position ID to token address
-    function positionToken(uint256 positionId) external view returns (address);
-    // Tracks long open interest by height
-    function longIOByHeight(uint256 height) external view returns (uint256);
-    // Tracks short open interest by height
-    function shortIOByHeight(uint256 height) external view returns (uint256);
-    // Stores timestamps for historical interest
-    function historicalInterestTimestamps(uint256 height) external view returns (uint256);
-    // Maps pending positions by maker and type
-    function pendingPositions(address maker, uint8 positionType) external view returns (uint256[] memory);
-    // Lists positions by type
-    function positionsByType(uint8 positionType) external view returns (uint256[] memory);
-    // Stores position core base data
-    function positionCoreBase(uint256 positionId) external view returns (PositionCoreBase memory);
-    // Stores position core status data
-    function positionCoreStatus(uint256 positionId) external view returns (PositionCoreStatus memory);
-    // Stores price parameters
-    function priceParams(uint256 positionId) external view returns (PriceParams memory);
-    // Stores margin parameters
-    function marginParams(uint256 positionId) external view returns (MarginParams memory);
-    // Stores leverage parameters
-    function leverageParams(uint256 positionId) external view returns (LeverageParams memory);
-    // Stores risk parameters
-    function riskParams(uint256 positionId) external view returns (RiskParams memory);
+    function positionToken(uint256 positionId) external view returns (address); // Maps position ID to token address
+    function longIOByHeight(uint256 height) external view returns (uint256); // Tracks long open interest by height
+    function shortIOByHeight(uint256 height) external view returns (uint256); // Tracks short open interest by height
+    function historicalInterestTimestamps(uint256 height) external view returns (uint256); // Stores timestamps for historical interest
+    function pendingPositions(address maker, uint8 positionType) external view returns (uint256[] memory); // Maps pending positions by maker and type
+    function positionsByType(uint8 positionType) external view returns (uint256[] memory); // Lists positions by type
+    function positionCoreBase(uint256 positionId) external view returns (PositionCoreBase memory); // Stores position core base data
+    function positionCoreStatus(uint256 positionId) external view returns (PositionCoreStatus memory); // Stores position core status data
+    function priceParams(uint256 positionId) external view returns (PriceParams memory); // Stores price parameters
+    function marginParams(uint256 positionId) external view returns (MarginParams memory); // Stores margin parameters
+    function leverageParams(uint256 positionId) external view returns (LeverageParams memory); // Stores leverage parameters
+    function riskParams(uint256 positionId) external view returns (RiskParams memory); // Stores risk parameters
 
     // External Functions
     // Sets the agent address (owner only)
