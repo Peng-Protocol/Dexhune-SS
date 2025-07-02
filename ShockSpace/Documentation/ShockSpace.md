@@ -1,5 +1,5 @@
-# Shock Space Contracts Documentation
-The System comprises of SSAgent  SSListingLogic - SSLiquidityLogic - SSLiquidityTemplate - SSListingTemplate - SSRouter - SSIsolatedDriver and SSCrossDriver. 
+ # Shock Space Contracts Documentation
+The System comprises of SSAgent, SSListingLogic, and SSLiquidityLogic.
 
 ## SSLiquidityLogic Contract
 
@@ -60,9 +60,7 @@ The System comprises of SSAgent  SSListingLogic - SSLiquidityLogic - SSLiquidity
 - `userTradingSummaries` (mapping - address, address, address, uint256): Trading volume per user for each tokenA-tokenB pair.
 
 ### State Variables
-- `proxyRouter` (address): Address of the proxy router contract, set post-deployment.
-- `isolatedDriver` (address): Address of the isolated driver contract, set post-deployment.
-- `crossDriver` (address): Address of the cross driver contract, set post-deployment.
+- `routers` (address[]): Array of router contract addresses, set post-deployment via addRouter.
 - `listingLogicAddress` (address): Address of the SSListingLogic contract, set post-deployment.
 - `liquidityLogicAddress` (address): Address of the SSLiquidityLogic contract, set post-deployment.
 - `registryAddress` (address): Address of the registry contract, set post-deployment.
@@ -71,27 +69,27 @@ The System comprises of SSAgent  SSListingLogic - SSLiquidityLogic - SSLiquidity
 ### Functions
 
 #### Setter Functions
-- **setProxyRouter**
+- **addRouter**
   - **Parameters:**
-    - `_proxyRouter` (address): Address to set as the proxy router.
+    - `router` (address): Address to add to the routers array.
   - **Actions:**
-    - Requires non-zero address.
-    - Updates proxyRouter state variable.
+    - Requires non-zero address and that the router does not already exist.
+    - Appends the router to the routers array.
+    - Emits RouterAdded event.
     - Restricted to owner via onlyOwner modifier.
-- **setIsolatedDriver**
+- **removeRouter**
   - **Parameters:**
-    - `_isolatedDriver` (address): Address to set as the isolated driver.
+    - `router` (address): Address to remove from the routers array.
   - **Actions:**
-    - Requires non-zero address.
-    - Updates isolatedDriver state variable.
+    - Requires non-zero address and that the router exists.
+    - Removes the router by swapping with the last element and popping the array.
+    - Emits RouterRemoved event.
     - Restricted to owner via onlyOwner modifier.
-- **setCrossDriver**
-  - **Parameters:**
-    - `_crossDriver` (address): Address to set as the cross driver.
+- **getRouters**
   - **Actions:**
-    - Requires non-zero address.
-    - Updates crossDriver state variable.
-    - Restricted to owner via onlyOwner modifier.
+    - Returns the current routers array.
+  - **Returns:**
+    - `address[]`: Array of all router addresses.
 - **setListingLogic**
   - **Parameters:**
     - `_listingLogic` (address): Address to set as the listing logic contract.
@@ -121,10 +119,10 @@ The System comprises of SSAgent  SSListingLogic - SSLiquidityLogic - SSLiquidity
     - `tokenB` (address): Second token in the pair.
   - **Actions:**
     - Checks tokens are not identical and pair isn’t already listed.
-    - Verifies proxyRouter, listingLogicAddress, liquidityLogicAddress, and registryAddress are set.
+    - Verifies at least one router, listingLogicAddress, liquidityLogicAddress, and registryAddress are set.
     - Calls _deployPair to create listing and liquidity contracts.
-    - Calls _initializeListing to set up listing contract with routers, listing ID, liquidity address, tokens, agent, and registry.
-    - Calls _initializeLiquidity to set up liquidity contract with routers, listing ID, listing address, tokens, and agent.
+    - Calls _initializeListing to set up listing contract with routers array, listing ID, liquidity address, tokens, agent, and registry.
+    - Calls _initializeLiquidity to set up liquidity contract with routers array, listing ID, listing address, tokens, and agent.
     - Calls _updateState to update mappings and arrays.
     - Emits ListingCreated event.
     - Increments listingCount.
@@ -139,10 +137,10 @@ The System comprises of SSAgent  SSListingLogic - SSLiquidityLogic - SSLiquidity
     - Sets nativeAddress to address(0) for native currency.
     - Determines tokenA and tokenB based on isA.
     - Checks tokens are not identical and pair isn’t already listed.
-    - Verifies proxyRouter, listingLogicAddress, liquidityLogicAddress, and registryAddress are set.
+    - Verifies at least one router, listingLogicAddress, liquidityLogicAddress, and registryAddress are set.
     - Calls _deployPair to create listing and liquidity contracts.
-    - Calls _initializeListing to set up listing contract.
-    - Calls _initializeLiquidity to set up liquidity contract.
+    - Calls _initializeListing to set up listing contract with routers array, listing ID, liquidity address, tokens, agent, and registry.
+    - Calls _initializeLiquidity to set up liquidity contract with routers array, listing ID, listing address, tokens, and agent.
     - Calls _updateState to update mappings and arrays.
     - Emits ListingCreated event.
     - Increments listingCount.
@@ -209,7 +207,7 @@ The System comprises of SSAgent  SSListingLogic - SSLiquidityLogic - SSLiquidity
     - Iterates allListings to find matching address.
     - If found, retrieves tokenA and tokenB via ISSListingTemplate.getTokens.
     - Retrieves liquidity address via ISSListing.liquidityAddressView.
-    - Constructs ListingDetails struct with listing details.
+    - Constructs ListingDetails struct with listingAddress, liquidityAddress, tokenA, tokenB, and listingId.
   - **Returns:**
     - `isValid` (bool): True if listing is valid.
     - `details` (ListingDetails): Struct with listingAddress, liquidityAddress, tokenA, tokenB, and listingId.
@@ -1378,11 +1376,11 @@ The `SSRouter` contract, implemented in Solidity (`^0.8.2`), facilitates order c
   - `listingAddress` (address): Listing contract address.
   - `liquidityIndex` (uint256): Liquidity slot index.
   - `isX` (bool): True for tokenA (claims yFees), false for tokenB (claims xFees).
-  - `volumeAmount` (uint256): Unused parameter (maintained for interface compatibility, internally set to 7777).
+  - `volumeAmount` (uint256): Unused parameter (maintained for interface compatibility).
   - `user` (address): User claiming fees, must be the slot depositor.
 - **Behavior**: Claims fees from the liquidity pool for `user`, restricted to the slot’s depositor.
 - **Internal Call Flow**:
-  - Calls `liquidityContract.claimFees(user, listingAddress, liquidityIndex, isX, 7777)`, where `volumeAmount` is ignored and internally set to 7777.
+  - Calls `liquidityContract.claimFees(user, listingAddress, liquidityIndex, isX, volumeAmount)`.
   - `liquidityContract` verifies `user` is the slot depositor.
   - No direct transfers or balance checks in `SSRouter`.
 - **Balance Checks**: None, handled by `liquidityContract` via `_processFeeClaim` with pre/post balance checks.
