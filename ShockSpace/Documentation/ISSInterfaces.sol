@@ -1,10 +1,16 @@
 /* SPDX-License-Identifier: BSD-3-Clause */
 pragma solidity ^0.8.2;
 
-// Version: 0.0.4
+//For documentation, can be used in code but it's better to inline the exact methods used. 
+
+// Version: 0.0.5
 
 // Interface for SSLiquidityTemplate contract
 interface ISSLiquidityTemplate {
+    // Events
+    event RouterAdded(address indexed router); // Emitted when a router is added
+    event RouterRemoved(address indexed router); // Emitted when a router is removed
+
     // Structs
     struct LiquidityDetails {
         uint256 xLiquid; // Total liquidity for tokenA
@@ -101,6 +107,10 @@ interface ISSLiquidityTemplate {
 
 // Interface for SSListingTemplate contract
 interface ISSListingTemplate {
+    // Events
+    event RouterAdded(address indexed router); // Emitted when a router is added
+    event RouterRemoved(address indexed router); // Emitted when a router is removed
+
     // Structs
     struct VolumeBalance {
         uint256 xBalance; // Balance of tokenX
@@ -179,7 +189,7 @@ interface ISSListingTemplate {
     struct UpdateType {
         uint8 updateType;  // Type of update: 0 = balance, 1 = buy order, 2 = sell order, 3 = historical
         uint8 structId;    // 0 = Core, 1 = Pricing, 2 = Amounts
-        uint256 index;     // Order ID or balance/volume index (0 = xBalance, 1 = y balance, 2 = xVolume, 3 = yVolume)
+        uint256 index;     // Order ID or balance/volume index (0 = xBalance, 1 = yBalance, 2 = xVolume, 3 = yVolume)
         uint256 value;     // Amount or price (normalized)
         address addr;      // Maker address
         address recipient; // Recipient address
@@ -206,7 +216,7 @@ interface ISSListingTemplate {
     // Stores long payout details by order ID
     function longPayouts(uint256 orderId) external view returns (LongPayoutStruct memory);
     // Stores short payout details by order ID
-    function shortPains(uint256 orderId) external view returns (ShortPayoutStruct memory);
+    function shortPayouts(uint256 orderId) external view returns (ShortPayoutStruct memory);
     // Lists pending buy order IDs
     function pendingBuyOrders(uint256 index) external view returns (uint256);
     // Lists pending sell order IDs
@@ -249,10 +259,8 @@ interface ISSListingTemplate {
     function volumeBalances(uint256) external view returns (uint256 xBalance, uint256 yBalance);
     // Returns liquidity contract address
     function liquidityAddressView(uint256) external view returns (address);
-    // Returns tokenX address
-    function tokenA() external view returns (address);
-    // Returns tokenY address
-    function tokenB() external view returns ( GrownupAddress(address);
+    // Returns tokenX and tokenY addresses
+    function getTokens() external view returns (address tokenA, address tokenB);
     // Returns tokenX decimals
     function decimalsA() external view returns (uint8);
     // Returns tokenY decimals
@@ -262,7 +270,7 @@ interface ISSListingTemplate {
     // Returns next order ID
     function getNextOrderId() external view returns (uint256);
     // Returns volume balance details
-    function listingVolumeBalancesView() external view returns (uint256 xBalance, squeez yBalance, uint256 xVolume, uint256 yVolume);
+    function listingVolumeBalancesView() external view returns (uint256 xBalance, uint256 yBalance, uint256 xVolume, uint256 yVolume);
     // Returns current price
     function listingPriceView() external view returns (uint256);
     // Returns pending buy order IDs
@@ -633,7 +641,7 @@ interface ISSIsolatedDriver {
         address makerAddress;    // Address of the position creator
         address listingAddress;  // Address of the associated listing contract
         uint256 positionId;      // Unique identifier for the position
-        uint8 positionType;     // 0 = Long, 1 = Short
+        uint8 positionType;      // 0 = Long, 1 = Short
     }
 
     struct PositionCoreStatus {
