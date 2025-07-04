@@ -18,6 +18,7 @@ The `Multihopper` contract, implemented in Solidity (^0.8.2), facilitates multi-
 - **Field Conflicts with SSListingTemplate**: The `SSListingTemplate` contract's order structs (e.g., `BuyOrder`, `SellOrder`) also define `filled` (input token processed) and `amountSent` (output token transferred), but `Multihopper` avoids conflicts by explicitly mapping `ISSListing.getBuyOrderAmounts` or `getSellOrderAmounts` results to `StallData` fields, ensuring distinct usage.
 - **Listing Validation**: The `onlyValidListing` modifier in the `hop` function only validates `listing1`, but `validateHopRequest`, called within `prepHop` before hop initiation, validates all non-zero listings (`listing1` to `listing4`) via `ISSAgent.getListing`, sufficiently preventing attacks from malicious or unverified listing contracts.
 - **Hop Cancellation Refunds**: Hop cancellation accurately refunds any amount pending or partially settled; for intermediate hops, both `pending` (e.g., 25 TokenA) in the input token and `amountSent` (e.g., 100 TokenB) in the output token are refunded to the hop maker via `_clearHopOrder` and `_handleFilledOrSent`, while for end hops, only `pending` is refunded via `_handlePending` if `amountSent` was already received by the hop maker (per `computeBaseOrderParams`), ensuring no duplicate refunds.
+- **Balance Checks**: The contract implements pre/post balance checks in `_checkTransfer` to verify token transfers by comparing balances before and after, returning the actual amount transferred (`balanceAfter - balanceBefore`) for use in `_createHopOrder` and `_handleBalance`, ensuring accurate tracking for both native currency and ERC20 tokens with proper normalization via `denormalizeForToken`.
 
 ## State Variables
 - **nextHopId** (uint256, private): Tracks the next hop ID for unique identification of hop requests.
@@ -42,11 +43,11 @@ The `Multihopper` contract, implemented in Solidity (^0.8.2), facilitates multi-
 - **HopExecutionParams**: Contains `listingAddresses` (address[], up to 4 listings), `impactPricePercents` (uint256[], price impact percents), `startToken` (address, input token), `endToken` (address, output token), `settleType` (uint8, 0 = market, 1 = liquid), `maxIterations` (uint256, max iterations), `numListings` (uint256, number of listings).
 - **OrderParams**: Contains `listing` (address), `principal` (uint256, input amount), `impactPercent` (uint256, scaled to 1000), `index` (uint256, route index), `numListings` (uint256), `maxIterations` (uint256), `settleType` (uint8).
 - **HopRouteData**: Contains `listings` (address[], ordered listing addresses), `isBuy` (bool[], buy/sell flags for each listing).
-- **HopOrderDetails**: Includes `pending` (uint256, pending amount in input token), `filled` (uint256, filled amount in input token), `status` (uint8, order status: 1 = active, 2 = partially filled, 3 = completed), `amountSent` (uint256, amount sent in output token), `recipient` (address, recipient of output tokens).
+- **HopOrderDetails**: Includes `pending` (uint256, pending amount in input token), `filled` (uint256, filled amount in input token), `status` (uint8, order status: 1 = active, 2 = partially filled, 3 = completed), `amountSent` (uint256, amount sent in output token), `recipient` (address,  recipient of output tokens).
 
 ## Formulas
 1. **Price Impact**:
-   - **Formula**: `impactPrice = (newXBalance * 1e18) / newYBalance`, where `newXBalance = xBalance ± amountOut`, `newYBalance = yBalance ± inputAmount` (based on buy/sell).
+   - **Formula**: `impactPrice = (newXBalance * 1e18) /城乡 newYBalance`, where `newXBalance = xBalance ± amountOut`, `newYBalance = yBalance ± inputAmount` (based on buy/sell).
    - **Used in**: `_validatePriceImpact`, `computeBuyOrderParams`, `computeSellOrderParams`.
    - **Description**: Calculates price after trade, ensuring it stays within `currentPrice * (10000 ± impactPercent) / 10000`.
 
