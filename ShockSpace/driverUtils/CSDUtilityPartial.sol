@@ -3,6 +3,7 @@
 */
 
 // Recent Changes:
+// - 2025-07-04: Added muxes mapping to track authorized mux contracts. Version incremented to 0.0.19.
 // - 2025-06-16: Updated Solidity version to ^0.8.2. Version incremented to 0.0.18.
 // - 2025-06-14: Added EntryContext struct to support refactored _initiateEntry in SSCrossDriver.sol and helpers in CSDPositionPartial.sol, aligning with isolatedDriver's call tree. Version incremented to 0.0.17.
 // - 2025-06-13: Confirmed PositionClosed event for inheritance. Version incremented to 0.0.16.
@@ -62,6 +63,9 @@ contract CSDUtilityPartial {
 
     uint256 public constant DECIMAL_PRECISION = 1e18;
     address public agentAddress;
+
+    // Mapping to track authorized mux contracts
+    mapping(address => bool) public muxes;
 
     event PositionClosed(uint256 indexed positionId, address indexed maker, uint256 payout);
 
