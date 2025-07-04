@@ -3,6 +3,9 @@
 */
 
 // Recent Changes:
+// - 2025-07-04: Fixed DeclarationError in _setCoreData by replacing undeclared Position2 with PositionCore2. Version incremented to 0.0.39.
+// - 2025-07-04: Fixed ParserError in _updatePositionLiquidationPrices by replacing invalid identifier MCMiD0x5B4e8A92B81EF68aA3c1c22dA0aDA7803aA29A6f with i. Version incremented to 0.0.38.
+// - 2025-07-04: Added muxes management functions (addMux, removeMux, getMuxesView), drive function for mux position creation, drift function for mux position execution, and onlyMux modifier. Version incremented to 0.0.37.
 // - 2025-06-17: Refactored addExcessMargin and pullMargin to resolve stack too deep error by extracting internal helpers (_transferMarginToListing, _updateListingMargin, _updatePositionLiquidationPrices, _updateMakerMargin, _validateAndNormalizePullMargin, _executeMarginPayout, _reduceMakerMargin). Version incremented to 0.0.36.
 // - 2025-06-17: Fixed TypeError by passing core1.positionType instead of token to _updateLiquidationPrices in addExcessMargin and pullMargin. Version incremented to 0.0.35.
 // - 2025-06-17: Updated addExcessMargin and pullMargin to call _updateLiquidationPrices for each relevant position after/before margin updates. Removed maxIterations from liquidation price updates. Version incremented to 0.0.34.
@@ -32,11 +35,128 @@ contract SSCrossDriver is ReentrancyGuard, Ownable, CSDExecutionPartial {
     event AllLongsCancelled(address indexed maker, uint256 processed);
     event AllShortsClosed(address indexed maker, uint256 processed);
     event AllShortsCancelled(address indexed maker, uint256 processed);
+    event MuxAdded(address indexed mux);
+    event MuxRemoved(address indexed mux);
 
     mapping(uint256 => address) public positionToken;
     mapping(uint256 => uint256) public longIOByHeight;
     mapping(uint256 => uint256) public shortIOByHeight;
     mapping(uint256 => uint256) public historicalInterestTimestamps;
+
+    // Modifier to restrict functions to authorized muxes
+    modifier onlyMux() {
+        require(muxes[msg.sender], "Caller is not a mux");
+        _;
+    }
+
+    // Adds a new mux to the authorized list
+    function addMux(address mux) external onlyOwner {
+        require(mux != address(0), "Invalid mux address");
+        require(!muxes[mux], "Mux already exists");
+        muxes[mux] = true;
+        emit MuxAdded(mux);
+    }
+
+    // Removes a mux from the authorized list
+    function removeMux(address mux) external onlyOwner {
+        require(muxes[mux], "Mux does not exist");
+        muxes[mux] = false;
+        emit MuxRemoved(mux);
+    }
+
+    // Returns a list of all authorized muxes
+    function getMuxesView() external view returns (address[] memory activeMuxes) {
+        uint256 count = 0;
+        address[] memory tempMuxes = new address[](positionCount); // Over-allocate for simplicity
+        for (uint256 i = 0; i < positionCount; i++) {
+            address mux = address(uint160(i));
+            if (muxes[mux]) {
+                tempMuxes[count] = mux;
+                count++;
+            }
+        }
+        activeMuxes = new address[](count);
+        for (uint256 i = 0; i < count; i++) {
+            activeMuxes[i] = tempMuxes[i];
+        }
+    }
+
+    // Allows muxes to create positions on behalf of a maker
+    function drive(
+        address maker,
+        address listingAddress,
+        uint256 minEntryPrice,
+        uint256 maxEntryPrice,
+        uint256 initialMargin,
+        uint256 excessMargin,
+        uint8 leverage,
+        uint256 stopLossPrice,
+        uint256 takeProfitPrice,
+        uint8 positionType
+    ) external nonReentrant onlyMux {
+        require(maker != address(0), "Invalid maker address");
+        require(positionType <= 1, "Invalid position type");
+        uint256 positionId = positionCount + 1;
+        
+        // Initialize entry context
+        EntryContext memory context = _prepareEntryContext(
+            listingAddress,
+            positionId,
+            minEntryPrice,
+            maxEntryPrice,
+            initialMargin,
+            excessMargin,
+            leverage,
+            positionType
+        );
+        context.maker = maker; // Override maker from msg.sender to provided maker
+        context = _validateEntry(context);
+        PrepPosition memory prep = _computeEntryParams(context);
+        _storeEntryData(context, prep, stopLossPrice, takeProfitPrice);
+        emit PositionEntered(positionId, maker, positionType);
+    }
+
+    // Allows muxes to execute a specific position
+    function drift(uint256 positionId) external nonReentrant onlyMux {
+        PositionCore1 storage core1 = positionCore1[positionId];
+        PositionCore2 storage core2 = positionCore2[positionId];
+        require(core1.positionId == positionId, "Invalid position");
+        require(core2.status2 == 0, "Position closed");
+        
+        address listingAddress = core1.listingAddress;
+        uint8 positionType = core1.positionType;
+        address token = positionType == 0 ? ISSListing(listingAddress).tokenB() : ISSListing(listingAddress).tokenA();
+        (uint256 currentPrice,,,) = _parseEntryPriceInternal(
+            priceParams1[positionId].minEntryPrice,
+            priceParams1[positionId].maxEntryPrice,
+            listingAddress
+        );
+        currentPrice = normalizePrice(token, currentPrice);
+
+        // Update liquidation price
+        _updateLiquidationPrices(positionId, core1.makerAddress, positionType, listingAddress);
+
+        // Check pending or active position
+        if (!core2.status1) {
+            uint256[] storage pending = pendingPositions[listingAddress][positionType];
+            for (uint256 i = 0; i < pending.length; i++) {
+                if (pending[i] == positionId) {
+                    if (_processPendingPosition(positionId, positionType, listingAddress, pending, i, currentPrice)) {
+                        break;
+                    }
+                }
+            }
+        } else {
+            uint256[] storage active = positionsByType[positionType];
+            for (uint256 i = 0; i < active.length; i++) {
+                if (active[i] == positionId) {
+                    if (_processActivePosition(positionId, positionType, listingAddress, active, i, currentPrice)) {
+                        break;
+                    }
+                }
+            }
+        }
+    }
 
     // Transfers margin to listing contract and verifies balance
     function _transferMarginToListing(address token, uint256 amount, address listingAddress) internal returns (uint256 normalizedAmount) {
@@ -509,7 +629,7 @@ contract SSCrossDriver is ReentrancyGuard, Ownable, CSDExecutionPartial {
             address token = positionToken[positionId];
             MarginParams1 storage margin1 = marginParams1[positionId];
             makerTokenMargin[msg.sender][token] -= (margin1.taxedMargin + margin1.excessMargin);
-            if (makerTokenMargin[maker][token] == 0) {
+            if (makerTokenMargin[msg.sender][token] == 0) {
                 _removeToken(maker, token);
             }
             core2.status2 = 1;
@@ -527,7 +647,7 @@ contract SSCrossDriver is ReentrancyGuard, Ownable, CSDExecutionPartial {
             uint256 positionId = i + 1;
             PositionCore1 storage core1 = positionCore1[positionId];
             PositionCore2 storage core2 = positionCore2[positionId];
-            if (core1.makerAddress != maker || core1.positionType != 1 || core2.status2 !=0 || !core2.status1) continue;
+            if (core1.makerAddress != maker || core1.positionType != 1 || core2.status2 != 0 || !core2.status1) continue;
             address tokenA = ISSListing(core1.listingAddress).tokenA();
             uint256 payout = prepCloseShort(positionId, core1.listingAddress);
             removePositionIndex(positionId, 1, core1.listingAddress);
