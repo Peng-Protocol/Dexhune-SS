@@ -1,22 +1,21 @@
 // SPDX-License-Identifier: BSD-3-Clause
-pragma solidity ^0.8.1;
+pragma solidity ^0.8.2;
 
-// Version 0.0.13:
-// - Updated compatibility with SSDExecutionPartial.sol v0.0.30 to support new updateSLInternal and updateTPInternal functions.
-// - Compatible with SSDUtilityPartial.sol v0.0.5, SSDPositionPartial.sol v0.0.7, SSDExecutionPartial.sol v0.0.30.
+// Version 0.0.15:
+// - Fixed TypeError by updating PositionEntered event emissions to include 6 arguments (added mux address).
+// - In drive function, emit PositionEntered with msg.sender as mux address.
+// - In finalizeEntryPosition, emit PositionEntered with address(0) for non-mux calls.
+// - Compatible with SSDUtilityPartial.sol v0.0.7, SSDPositionPartial.sol v0.0.7, SSDExecutionPartial.sol v0.0.30.
+// - v0.0.14:
+//   - Added addMux, removeMux, getMuxesView, drive, and drift functions to support external mux contracts.
+//   - muxes mapping moved to SSDUtilityPartial.sol for centralized state management.
+// - v0.0.13:
+//   - Updated compatibility with SSDExecutionPartial.sol v0.0.30 to support new updateSLInternal and updateTPInternal functions.
 // - v0.0.12:
 //   - Updated compatibility with SSDExecutionPartial.sol v0.0.28 to support addExcessMarginInternal changes.
 // - v0.0.11:
 //   - Removed tokenAddr parameter from enterLong and enterShort functions.
 //   - Modified prepareEntryContext to compute tokenAddr internally using ISSListing.tokenA() for longs and ISSListing.tokenB() for shorts.
-// - v0.0.10:
-//   - Fixed updateEntryParamsStore.
-// - v0.0.9:
-//   - Fixed closeShortPosition.
-// - v0.0.8:
-//   - Fixed updateEntryParams.
-// - v0.0.7:
-//   - Fixed finalizeEntry.
 
 import "./driverUtils/SSDExecutionPartial.sol";
 import "./imports/ReentrancyGuard.sol";
@@ -60,7 +59,149 @@ contract SSIsolatedDriver is SSDExecutionPartial, ReentrancyGuard, Ownable {
         positionIdCounter = uint256(0);
     }
 
-    // Helper: Normalize margin amounts
+    // Modifier to restrict functions to authorized muxes
+    modifier onlyMux() {
+        require(muxes[msg.sender], "Caller is not an authorized mux");
+        _;
+    }
+
+    // Add a new mux to the authorized list (owner only)
+    function addMux(address mux) external onlyOwner {
+        require(mux != address(0), "Invalid mux address");
+        require(!muxes[mux], "Mux already authorized");
+        muxes[mux] = true;
+        emit MuxAdded(mux); // Emits event defined in SSDUtilityPartial.sol
+    }
+
+    // Remove a mux from the authorized list (owner only)
+    function removeMux(address mux) external onlyOwner {
+        require(mux != address(0), "Invalid mux address");
+        require(muxes[mux], "Mux not authorized");
+        muxes[mux] = false;
+        emit MuxRemoved(mux); // Emits event defined in SSDUtilityPartial.sol
+    }
+
+    // View function to return all authorized muxes
+    function getMuxesView() external view returns (address[] memory) {
+        uint256 count = 0;
+        // Count authorized muxes (limit to 1000 for gas safety)
+        for (uint256 i = 0; i < 1000; i++) {
+            if (muxes[address(uint160(i))]) {
+                count++;
+            }
+        }
+        address[] memory result = new address[](count);
+        uint256 index = 0;
+        // Populate result array
+        for (uint256 i = 0; i < 1000; i++) {
+            if (muxes[address(uint160(i))]) {
+                result[index] = address(uint160(i));
+                index++;
+            }
+        }
+        return result;
+    }
+
+    // Create a position on behalf of a maker (mux only)
+    function drive(
+        address maker,
+        address listingAddress,
+        uint256 minEntryPrice,
+        uint256 maxEntryPrice,
+        uint256 initialMargin,
+        uint256 excessMargin,
+        uint8 leverage,
+        uint256 stopLossPrice,
+        uint256 takeProfitPrice,
+        uint8 positionType
+    ) external nonReentrant onlyMux returns (uint256 positionId) {
+        require(maker != address(0), "Invalid maker address");
+        require(listingAddress != address(0), "Invalid listing address");
+        require(positionType <= 1, "Invalid position type");
+        require(initialMargin > 0, "Invalid initial margin");
+        require(leverage >= 2 && leverage <= 100, "Invalid leverage");
+
+        // Prepare EntryContext
+        EntryContext memory context = prepareEntryContext(
+            listingAddress,
+            initialMargin,
+            excessMargin,
+            positionType
+        );
+
+        // Convert prices to string for compatibility with existing logic
+        string memory entryPriceStr = string(abi.encodePacked(uint2str(minEntryPrice), "-", uint2str(maxEntryPrice)));
+
+        // Initiate entry
+        positionId = initiateEntry(
+            context,
+            entryPriceStr,
+            initialMargin,
+            excessMargin,
+            leverage,
+            stopLossPrice,
+            takeProfitPrice,
+            positionType
+        );
+
+        // Override makerAddress in pendingEntries to ensure correct ownership
+        pendingEntries[positionId].makerAddress = maker;
+
+        // Finalize entry to complete position creation
+        finalizeEntry(positionId);
+
+        emit PositionEntered(positionId, maker, positionType, minEntryPrice, maxEntryPrice, msg.sender); // Include mux address
+        return positionId;
+    }
+
+    // Execute a specific position (mux only)
+    function drift(uint256 positionId) external nonReentrant onlyMux {
+        PositionCoreBase memory coreBase = positionCoreBase[positionId];
+        PositionCoreStatus memory coreStatus = positionCoreStatus[positionId];
+        require(coreBase.positionId == positionId, "Invalid position ID");
+        require(coreStatus.status2 == uint8(0), "Position not open");
+
+        // Prepare PositionAction for execution
+        PositionAction memory action = computeActiveAction(
+            positionId,
+            coreBase.positionType,
+            getCurrentPrice(coreBase.listingAddress),
+            coreBase.listingAddress
+        );
+
+        require(action.actionType == uint8(1), "Position not ready to close");
+
+        // Execute close position
+        ExecutionContextBase memory contextBase = ExecutionContextBase({
+            listingAddress: coreBase.listingAddress,
+            driver: address(this),
+            currentPrice: getCurrentPrice(coreBase.listingAddress)
+        });
+
+        executeClosePosition(action, coreBase, coreStatus, contextBase);
+    }
+
+    // Helper: Convert uint to string for entryPriceStr
+    function uint2str(uint256 _i) internal pure returns (string memory) {
+        if (_i == 0) {
+            return "0";
+        }
+        uint256 temp = _i;
+        uint256 digits;
+        while (temp != 0) {
+            digits++;
+            temp /= 10;
+        }
+        bytes memory buffer = new bytes(digits);
+        while (_i != 0) {
+            digits--;
+            buffer[digits] = bytes1(uint8(48 + (_i % 10)));
+            _i /= 10;
+        }
+        return string(buffer);
+    }
+
+    // Normalize margin amounts
     function normalizeMargins(
         address tokenAddr,
         uint256 initMargin,
@@ -70,7 +211,7 @@ contract SSIsolatedDriver is SSDExecutionPartial, ReentrancyGuard, Ownable {
         normExtraMargin = normalizeAmount(tokenAddr, extraMargin);
     }
 
-    // Helper: Prepare entry context
+    // Prepare entry context
     function prepareEntryContext(
         address listingAddr,
         uint256 initMargin,
@@ -91,7 +232,7 @@ contract SSIsolatedDriver is SSDExecutionPartial, ReentrancyGuard, Ownable {
         });
     }
 
-    // Helper: Prepare base entry data
+    // Prepare entry base
     function prepareEntryBase(
         EntryContext memory context,
         string memory entryPriceStr,
@@ -118,7 +259,7 @@ contract SSIsolatedDriver is SSDExecutionPartial, ReentrancyGuard, Ownable {
         return positionId;
     }
 
-    // Helper: Prepare risk parameters
+    // Prepare risk parameters
     function prepareEntryRisk(
         uint256 positionId,
         uint8 leverage,
@@ -132,13 +273,13 @@ contract SSIsolatedDriver is SSDExecutionPartial, ReentrancyGuard, Ownable {
         entry.takeProfit = takeProfit;
     }
 
-    // Helper: Prepare token parameters
+    // Prepare token parameters
     function prepareEntryToken(uint256 positionId) internal view {
         PendingEntry storage entry = pendingEntries[positionId];
         require(entry.positionId == positionId, "Invalid position ID");
     }
 
-    // Helper: Validate base parameters
+    // Validate base parameters
     function validateEntryBase(uint256 positionId) internal view {
         PendingEntry storage entry = pendingEntries[positionId];
         require(entry.positionId == positionId, "Invalid position ID");
@@ -153,7 +294,7 @@ contract SSIsolatedDriver is SSDExecutionPartial, ReentrancyGuard, Ownable {
         validateListing(baseParams.listingAddr);
     }
 
-    // Helper: Validate risk parameters
+    // Validate risk parameters
     function validateEntryRisk(uint256 positionId) internal view {
         PendingEntry storage entry = pendingEntries[positionId];
         require(entry.positionId == positionId, "Invalid position ID");
@@ -165,7 +306,7 @@ contract SSIsolatedDriver is SSDExecutionPartial, ReentrancyGuard, Ownable {
         require(riskParams.leverageVal >= uint8(2) && riskParams.leverageVal <= uint8(100), "Invalid leverage");
     }
 
-    // Helper: Update entry core
+    // Update entry core
     function updateEntryCore(uint256 positionId) internal {
         PendingEntry storage entry = pendingEntries[positionId];
         require(entry.positionId == positionId, "Invalid position ID");
@@ -182,7 +323,7 @@ contract SSIsolatedDriver is SSDExecutionPartial, ReentrancyGuard, Ownable {
         updatePositionCore(positionId, coreBase, coreStatus);
     }
 
-    // Helper: Compute entry parameters
+    // Compute entry parameters
     function updateEntryParamsCompute(
         uint256 positionId,
         EntryParamsBase memory baseParams,
@@ -203,7 +344,7 @@ contract SSIsolatedDriver is SSDExecutionPartial, ReentrancyGuard, Ownable {
         );
     }
 
-    // Helper: Validate computed parameters
+    // Validate computed parameters
     function updateEntryParamsValidate(
         uint256 positionId,
         uint256 minPrice,
@@ -219,7 +360,7 @@ contract SSIsolatedDriver is SSDExecutionPartial, ReentrancyGuard, Ownable {
         );
     }
 
-    // Helper: Store entry parameters
+    // Store entry parameters
     function updateEntryParamsStore(
         uint256 positionId,
         uint256 minPrice,
@@ -256,7 +397,7 @@ contract SSIsolatedDriver is SSDExecutionPartial, ReentrancyGuard, Ownable {
         );
     }
 
-    // Helper: Update entry parameters
+    // Update entry parameters
     function updateEntryParams(uint256 positionId) internal {
         PendingEntry storage entry = pendingEntries[positionId];
         require(entry.positionId == positionId, "Invalid position ID");
@@ -301,14 +442,14 @@ contract SSIsolatedDriver is SSDExecutionPartial, ReentrancyGuard, Ownable {
         );
     }
 
-    // Helper: Update entry indexes
+    // Update entry indexes
     function updateEntryIndexes(uint256 positionId) internal {
         PendingEntry storage entry = pendingEntries[positionId];
         require(entry.positionId == positionId, "Invalid position ID");
         updateIndexes(entry.makerAddress, entry.positionType, positionId, entry.listingAddr, true);
     }
 
-    // Helper: Finalize entry fees
+    // Finalize entry fees
     function finalizeEntryFees(uint256 positionId) internal returns (uint256 actualFee) {
         PendingEntry storage entry = pendingEntries[positionId];
         require(entry.positionId == positionId, "Invalid position ID");
@@ -322,7 +463,7 @@ contract SSIsolatedDriver is SSDExecutionPartial, ReentrancyGuard, Ownable {
         return actualFee;
     }
 
-    // Helper: Finalize entry margin transfer
+    // Finalize entry margin transfer
     function finalizeEntryTransfer(uint256 positionId, uint256 actualFee) internal returns (uint256) {
         PendingEntry storage entry = pendingEntries[positionId];
         require(entry.positionId == positionId, "Invalid position ID");
@@ -347,7 +488,7 @@ contract SSIsolatedDriver is SSDExecutionPartial, ReentrancyGuard, Ownable {
         return io;
     }
 
-    // Helper: Finalize entry position
+    // Finalize entry position
     function finalizeEntryPosition(uint256 positionId, uint256 io) internal {
         PendingEntry storage entry = pendingEntries[positionId];
         require(entry.positionId == positionId, "Invalid position ID");
@@ -384,15 +525,15 @@ contract SSIsolatedDriver is SSDExecutionPartial, ReentrancyGuard, Ownable {
         emit PositionEntered(
             positionId,
             entry.makerAddress,
-            entry.listingAddr,
             entry.positionType,
             minPrice,
-            maxPrice
+            maxPrice,
+            address(0) // Non-mux call
         );
         delete pendingEntries[positionId];
     }
 
-    // Helper: Finalize entry
+    // Finalize entry
     function finalizeEntry(uint256 positionId) internal {
         uint256 actualFee = finalizeEntryFees(positionId);
         uint256 io = finalizeEntryTransfer(positionId, actualFee);
