@@ -1,9 +1,15 @@
-/* SPDX-License-Identifier: BSD-3-Clause */
+// SPDX-License-Identifier: BSD-3-Clause
 pragma solidity ^0.8.1;
 
-// Version 0.0.5:
-// - Fixed shadowing warning by consolidating 'decimals' declaration in parseEntryPrice.
-// - Compatible with SSDPositionPartial.sol v0.0.3, SSDExecutionPartial.sol v0.0.2, SSIsolatedDriver.sol v0.0.2.
+// Version 0.0.7:
+// - Updated PositionEntered event to include mux address for consistency with ISSCrossDriver interface.
+// - Fixed TypeError in SSIsolatedDriver.sol by ensuring PositionEntered emits 6 arguments.
+// - Compatible with SSDPositionPartial.sol v0.0.7, SSDExecutionPartial.sol v0.0.30, SSIsolatedDriver.sol v0.0.15.
+// - v0.0.6:
+//   - Moved muxes mapping from SSIsolatedDriver.sol to SSDUtilityPartial.sol to centralize state management.
+//   - Added MuxAdded and MuxRemoved events to align with ISSCrossDriver interface.
+// - v0.0.5:
+//   - Fixed shadowing warning by consolidating 'decimals' declaration in parseEntryPrice.
 
 import "../imports/SafeERC20.sol";
 import "../imports/IERC20Metadata.sol";
@@ -66,6 +72,19 @@ contract SSDUtilityPartial {
     uint256 public historicalInterestHeight;
     uint256 public nonce;
     uint256 public positionIdCounter;
+    mapping(address => bool) public muxes; // Tracks authorized mux contracts
+
+    // Events for mux operations
+    event MuxAdded(address indexed mux); // Emitted when a mux is added
+    event MuxRemoved(address indexed mux); // Emitted when a mux is removed
+    event PositionEntered(
+        uint256 indexed positionId,
+        address indexed maker,
+        uint8 positionType,
+        uint256 minEntryPrice,
+        uint256 maxEntryPrice,
+        address mux // Indicates mux involvement, address(0) for non-mux calls
+    ); // Emitted when a position is created
 
     // Structs
     struct PositionCoreBase {
