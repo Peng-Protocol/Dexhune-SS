@@ -3,7 +3,7 @@ pragma solidity ^0.8.2;
 
 //For documentation, can be used in code but it's better to inline the exact methods used. 
 
-// Version: 0.0.5
+// Version: 0.0.6
 
 // Interface for SSAgent contract
 interface ISSAgent {
@@ -556,7 +556,17 @@ interface ISSRouter {
 // Interface for SSCrossDriver contract
 interface ISSCrossDriver {
     // Events
+    event PositionEntered(uint256 indexed positionId, address indexed maker, uint8 positionType);
     event PositionClosed(uint256 indexed positionId, address indexed maker, uint256 payout);
+    event PositionCancelled(uint256 indexed positionId, address indexed maker);
+    event StopLossUpdated(uint256 indexed positionId, uint256 newStopLossPrice, uint256 currentPrice, uint256 timestamp);
+    event TakeProfitUpdated(uint256 indexed positionId, uint256 newTakeProfitPrice, uint256 currentPrice, uint256 timestamp);
+    event AllLongsClosed(address indexed maker, uint256 processed);
+    event AllLongsCancelled(address indexed maker, uint256 processed);
+    event AllShortsClosed(address indexed maker, uint256 processed);
+    event AllShortsCancelled(address indexed maker, uint256 processed);
+    event MuxAdded(address indexed mux);
+    event MuxRemoved(address indexed mux);
 
     // Structs
     struct PositionCore1 {
@@ -639,10 +649,32 @@ interface ISSCrossDriver {
     function openInterest(uint256 positionId) external view returns (OpenInterest memory); // Stores open interest data
     function positionsByType(uint8 positionType) external view returns (uint256[] memory); // Lists positions by type (0 = Long, 1 = Short)
     function pendingPositions(address listingAddress, uint8 positionType) external view returns (uint256[] memory); // Maps listing address to pending positions by type
+    function muxes(address mux) external view returns (bool); // Tracks authorized mux contracts
 
     // External Functions
     // Sets the agent address (owner only)
     function setAgent(address newAgentAddress) external;
+    // Adds a new mux to the authorized list (owner only)
+    function addMux(address mux) external;
+    // Removes a mux from the authorized list (owner only)
+    function removeMux(address mux) external;
+    // Returns a list of all authorized muxes
+    function getMuxesView() external view returns (address[] memory);
+    // Creates a position on behalf of a maker (mux only)
+    function drive(
+        address maker,
+        address listingAddress,
+        uint256 minEntryPrice,
+        uint256 maxEntryPrice,
+        uint256 initialMargin,
+        uint256 excessMargin,
+        uint8 leverage,
+        uint256 stopLossPrice,
+        uint256 takeProfitPrice,
+        uint8 positionType
+    ) external;
+    // Executes a specific position (mux only)
+    function drift(uint256 positionId) external;
     // Enters a long position with specified parameters
     function enterLong(
         address listingAddress,
@@ -744,76 +776,311 @@ interface ISSCrossDriver {
 }
 
 // Interface for SSIsolatedDriver contract
+
 interface ISSIsolatedDriver {
-    // Structs
-    struct PositionCoreBase {
-        address makerAddress;    // Address of the position creator
-        address listingAddress;  // Address of the associated listing contract
-        uint256 positionId;      // Unique identifier for the position
-        uint8 positionType;      // 0 = Long, 1 = Short
-    }
-
-    struct PositionCoreStatus {
-        bool status1;        // False: pending, True: executable
-        uint8 status2;       // 0 = Open, 1 = Closed, 2 = Cancelled
-    }
-
-    struct PriceParams {
-        uint256 priceMin;    // Minimum entry price
-        uint256 priceMax;    // Maximum entry price
-        uint256 priceAtEntry;// Actual entry price
-        uint256 priceClose;  // Price at closing
-    }
-
-    struct MarginParams {
-        uint256 marginInitial; // Initial margin amount
-        uint256 marginTaxed;  // Margin after fees
-        uint256 marginExcess; // Excess margin
-    }
-
-    struct LeverageParams {
-        uint8 leverageVal;    // Leverage multiplier
-        uint256 leverageAmount;// Leveraged amount
-        uint256 loanInitial;  // Initial loan amount
-    }
-
-    struct RiskParams {
-        uint256 priceLiquidation;// Liquidation price
-        uint256 priceStopLoss;  // Stop loss price
-        uint256 priceTakeProfit;// Take profit price
-    }
-
-    struct EntryContext {
-        address listingAddr;    // Listing contract address
-        address tokenAddr;      // Token address (A for long, B for short)
-        uint256 normInitMargin; // Normalized initial margin
-        uint256 normExtraMargin;// Normalized extra margin
-    }
+    // Events
+    // Emitted when a mux is added.
+    event MuxAdded(address indexed mux);
+    
+    // Emitted when a mux is removed.
+    event MuxRemoved(address indexed mux);
+    
+    // Emitted when a position is created.
+    event PositionEntered(
+        uint256 indexed positionId,
+        address indexed maker,
+        uint8 positionType,
+        uint256 minEntryPrice,
+        uint256 maxEntryPrice,
+        address mux
+    );
+    
+    // Emitted when a position is closed.
+    event PositionClosed(uint256 indexed positionId, address indexed maker, uint256 payout);
+    
+    // Emitted when a position is cancelled.
+    event PositionCancelled(uint256 indexed positionId, address indexed maker);
+    
+    // Emitted when excess margin is added.
+    event ExcessMarginAdded(uint256 indexed positionId, address indexed maker, uint256 amount);
+    
+    // Emitted when stop-loss is updated.
+    event StopLossUpdated(uint256 indexed positionId, address indexed maker, uint256 newStopLossPrice);
+    
+    // Emitted when take-profit is updated.
+    event TakeProfitUpdated(uint256 indexed positionId, address indexed maker, uint256 newTakeProfitPrice);
+    
+    // Emitted when all long positions are closed.
+    event AllLongsClosed(address indexed maker, uint256 count);
+    
+    // Emitted when all long positions are cancelled.
+    event AllLongsCancelled(address indexed maker, uint256 count);
+    
+    // Emitted when all short positions are closed.
+    event AllShortsClosed(address indexed maker, uint256 count);
+    
+    // Emitted when all short positions are cancelled.
+    event AllShortsCancelled(address indexed maker, uint256 count);
+    
+    // Emitted when positions are executed.
+    event PositionsExecuted(address indexed listingAddress, uint256 count);
 
     // State Variables
-    function agent() external view returns (address); // Address of the agent contract
-    function positionIdCounter() external view returns (uint256); // Total number of positions created
-    function nonce() external view returns (uint256); // Nonce for position creation
-    function historicalInterestHeight() external view returns (uint256); // Tracks the height of historical interest data
-
+    // Precision for normalizing amounts/prices (1e18).
+    uint256 constant DECIMAL_PRECISION = 1e18;
+    
+    // ISSAgent address for listing validation.
+    address agent;
+    
+    // Block height for open interest updates, starts at 1.
+    uint256 historicalInterestHeight;
+    
+    // Nonce for transaction tracking, starts at 0.
+    uint256 nonce;
+    
+    // Counter for unique position IDs, starts at 1.
+    uint256 positionIdCounter;
+    
     // Mappings
-    function positionToken(uint256 positionId) external view returns (address); // Maps position ID to token address
-    function longIOByHeight(uint256 height) external view returns (uint256); // Tracks long open interest by height
-    function shortIOByHeight(uint256 height) external view returns (uint256); // Tracks short open interest by height
-    function historicalInterestTimestamps(uint256 height) external view returns (uint256); // Stores timestamps for historical interest
-    function pendingPositions(address maker, uint8 positionType) external view returns (uint256[] memory); // Maps pending positions by maker and type
-    function positionsByType(uint8 positionType) external view returns (uint256[] memory); // Lists positions by type
-    function positionCoreBase(uint256 positionId) external view returns (PositionCoreBase memory); // Stores position core base data
-    function positionCoreStatus(uint256 positionId) external view returns (PositionCoreStatus memory); // Stores position core status data
-    function priceParams(uint256 positionId) external view returns (PriceParams memory); // Stores price parameters
-    function marginParams(uint256 positionId) external view returns (MarginParams memory); // Stores margin parameters
-    function leverageParams(uint256 positionId) external view returns (LeverageParams memory); // Stores leverage parameters
-    function riskParams(uint256 positionId) external view returns (RiskParams memory); // Stores risk parameters
+    // Authorized mux contracts for position management.
+    mapping(address => bool) muxes;
+    
+    // Core position data: maker, listing, ID, type.
+    mapping(uint256 => PositionCoreBase) positionCoreBase;
+    
+    // Position status: pending/executable, open/closed/cancelled.
+    mapping(uint256 => PositionCoreStatus) positionCoreStatus;
+    
+    // Price data: min/max entry, entry, close prices.
+    mapping(uint256 => PriceParams) priceParams;
+    
+    // Margin details: initial, taxed, excess.
+    mapping(uint256 => MarginParams) marginParams;
+    
+    // Leverage details: value, amount, initial loan.
+    mapping(uint256 => LeverageParams) leverageParams;
+    
+    // Risk parameters: liquidation, stop-loss, take-profit.
+    mapping(uint256 => RiskParams) riskParams;
+    
+    // Pending position IDs by maker and type (0: long, 1: short).
+    mapping(address => mapping(uint8 => uint256[])) pendingPositions;
+    
+    // Position IDs by type (0: long, 1: short).
+    mapping(uint8 => uint256[]) positionsByType;
+    
+    // Position ID to margin token (tokenA: long, tokenB: short).
+    mapping(uint256 => address) positionToken;
+    
+    // Long open interest by block height.
+    mapping(uint256 => uint256) longIOByHeight;
+    
+    // Short open interest by block height.
+    mapping(uint256 => uint256) shortIOByHeight;
+    
+    // Timestamps for open interest updates.
+    mapping(uint256 => uint256) historicalInterestTimestamps;
+    
+    // Temporary storage for position entry parameters.
+    mapping(uint256 => PendingEntry) pendingEntries;
+
+    // Structs
+    // Core position data: maker, listing, ID, type (0: long, 1: short).
+    struct PositionCoreBase {
+        address makerAddress;
+        address listingAddress;
+        uint256 positionId;
+        uint8 positionType;
+    }
+
+    // Position status: pending/executable, open/closed/cancelled.
+    struct PositionCoreStatus {
+        bool status1; // false: pending, true: executable
+        uint8 status2; // 0: open, 1: closed, 2: cancelled
+    }
+
+    // Price parameters: min/max entry, entry, close (1e18 normalized).
+    struct PriceParams {
+        uint256 priceMin;
+        uint256 priceMax;
+        uint256 priceAtEntry;
+        uint256 priceClose;
+    }
+
+    // Margin details: initial, taxed, excess (1e18 normalized).
+    struct MarginParams {
+        uint256 marginInitial;
+        uint256 marginTaxed;
+        uint256 marginExcess;
+    }
+
+    // Leverage details: value (2–100), amount, initial loan (1e18 normalized).
+    struct LeverageParams {
+        uint8 leverageVal;
+        uint256 leverageAmount;
+        uint256 loanInitial;
+    }
+
+    // Risk parameters: liquidation, stop-loss, take-profit (1e18 normalized).
+    struct RiskParams {
+        uint256 priceLiquidation;
+        uint256 priceStopLoss;
+        uint256 priceTakeProfit;
+    }
+
+    // Combines price and margin parameters.
+    struct PosParamsCore {
+        PriceParams priceParams;
+        MarginParams marginParams;
+    }
+
+    // Combines leverage and risk parameters.
+    struct PosParamsExt {
+        LeverageParams leverageParams;
+        RiskParams riskParams;
+    }
+
+    // Entry parameters: listing, price range, margins.
+    struct EntryParamsBase {
+        address listingAddr;
+        string entryPriceStr;
+        uint256 initMargin;
+        uint256 extraMargin;
+    }
+
+    // Entry risk parameters: leverage, stop-loss, take-profit.
+    struct EntryParamsRisk {
+        uint8 leverageVal;
+        uint256 stopLoss;
+        uint256 takeProfit;
+    }
+
+    // Entry token parameters: token, normalized margins, driver.
+    struct EntryParamsToken {
+        address tokenAddr;
+        uint256 normInitMargin;
+        uint256 normExtraMargin;
+        address driverAddr;
+    }
+
+    // Closing position data: ID, listing, maker, driver.
+    struct ClosePositionBase {
+        uint256 positionId;
+        address listingAddress;
+        address makerAddress;
+        address driver;
+    }
+
+    // Closing position margin: taxed, excess.
+    struct ClosePositionMargin {
+        uint256 taxedMargin;
+        uint256 excessMargin;
+    }
+
+    // Long position close: leverage amount, initial loan.
+    struct LongCloseParams {
+        uint256 leverageAmount;
+        uint256 loanInitial;
+    }
+
+    // Short position close: min price, initial margin, leverage.
+    struct ShortCloseParams {
+        uint256 minPrice;
+        uint256 initialMargin;
+        uint8 leverage;
+    }
+
+    // Position action: ID, action type (0: update, 1: close).
+    struct PositionAction {
+        uint256 positionId;
+        uint8 actionType;
+    }
+
+    // Execution context: listing, driver, current price.
+    struct ExecutionContextBase {
+        address listingAddress;
+        address driver;
+        uint256 currentPrice;
+    }
+
+    // Execution counts: action count, max actions.
+    struct ExecutionContextCounts {
+        uint256 actionCount;
+        uint256 maxActions;
+    }
+
+    // Entry context: listing, token, normalized margins.
+    struct EntryContext {
+        address listingAddr;
+        address tokenAddr;
+        uint256 normInitMargin;
+        uint256 normExtraMargin;
+    }
+
+    // Pending entry parameters.
+    struct PendingEntry {
+        address listingAddr;
+        address tokenAddr;
+        uint256 positionId;
+        uint8 positionType;
+        uint256 initialMargin;
+        uint256 extraMargin;
+        string entryPriceStr;
+        address makerAddress;
+        uint8 leverageVal;
+        uint256 stopLoss;
+        uint256 takeProfit;
+        uint256 normInitMargin;
+        uint256 normExtraMargin;
+    }
+
+    // Payout update: recipient, amount, type (0: long, 1: short).
+    struct PayoutUpdate {
+        address recipient;
+        uint256 required;
+        uint8 payoutType;
+    }
+
+    // Listing update: type, index, value, addresses.
+    struct UpdateType {
+        uint8 updateType;
+        uint256 index;
+        uint256 value;
+        address addr;
+        address recipient;
+    }
 
     // External Functions
-    // Sets the agent address (owner only)
+    // Sets ISSAgent address, owner only.
     function setAgent(address newAgent) external;
-    // Enters a long position with specified parameters
+
+    // Authorizes mux contract, owner only.
+    function addMux(address mux) external;
+
+    // Deauthorizes mux contract, owner only.
+    function removeMux(address mux) external;
+
+    // Returns authorized mux addresses.
+    function getMuxesView() external view returns (address[] memory);
+
+    // Creates position for maker via mux, market order if min/max prices zero.
+    function drive(
+        address maker,
+        address listingAddress,
+        uint256 minEntryPrice,
+        uint256 maxEntryPrice,
+        uint256 initialMargin,
+        uint256 excessMargin,
+        uint8 leverage,
+        uint256 stopLossPrice,
+        uint256 takeProfitPrice,
+        uint8 positionType
+    ) external returns (uint256);
+
+    // Closes position via mux based on price triggers.
+    function drift(uint256 positionId) external;
+
+    // Creates pending long position, market order if entryPriceStr is "0" or "0-0".
     function enterLong(
         address listingAddr,
         string memory entryPriceStr,
@@ -823,7 +1090,8 @@ interface ISSIsolatedDriver {
         uint256 stopLoss,
         uint256 takeProfit
     ) external;
-    // Enters a short position with specified parameters
+
+    // Creates pending short position, market order if entryPriceStr is "0" or "0-0".
     function enterShort(
         address listingAddr,
         string memory entryPriceStr,
@@ -833,45 +1101,69 @@ interface ISSIsolatedDriver {
         uint256 stopLoss,
         uint256 takeProfit
     ) external;
-    // Closes a long position by ID
-    function closeLongPosition(uint256 positionId) external;
-    // Closes a short position by ID
-    function closeShortPosition(uint256 positionId) external;
-    // Cancels a position by ID
-    function cancelPosition(uint256 positionId) external;
-    // Adds excess margin to a position
+
+    // Adds margin to open position, updates liquidation price.
     function addExcessMargin(uint256 positionId, uint256 amount, address token) external;
-    // Updates stop loss price for a position
+
+    // Closes long position, pays tokenB to caller.
+    function closeLongPosition(uint256 positionId) external;
+
+    // Closes short position, pays tokenA to caller.
+    function closeShortPosition(uint256 positionId) external;
+
+    // Cancels pending position, returns margins to caller.
+    function cancelPosition(uint256 positionId) external;
+
+    // Updates stop-loss price for open position.
     function updateSL(uint256 positionId, uint256 newStopLossPrice) external;
-    // Updates take profit price for a position
+
+    // Updates take-profit price for open position.
     function updateTP(uint256 positionId, uint256 newTakeProfitPrice) external;
-    // Closes all short positions for the caller
-    function closeAllShort(uint256 maxIterations) external;
-    // Cancels all short positions for the caller
-    function cancelAllShort(uint256 maxIterations) external;
-    // Closes all long positions for the caller
+
+    // Closes all active long positions for caller, up to maxIterations.
     function closeAllLongs(uint256 maxIterations) external;
-    // Cancels all long positions for the caller
+
+    // Cancels all pending long positions for caller, up to maxIterations.
     function cancelAllLong(uint256 maxIterations) external;
-    // Executes positions for a listing
+
+    // Closes all active short positions for caller, up to maxIterations.
+    function closeAllShort(uint256 maxIterations) external;
+
+    // Cancels all pending short positions for caller, up to maxIterations.
+    function cancelAllShort(uint256 maxIterations) external;
+
+    // Processes pending/active positions, activates/closes based on price triggers.
     function executePositions(address listingAddress) external;
-    // Views positions by type with pagination
-    function positionsByTypeView(uint8 positionType, uint256 step, uint256 maxIterations) 
-        external view returns (uint256[] memory);
-    // Views positions by address and type
-    function positionsByAddressView(address user, uint8 positionType, uint256 step, uint8 id) 
-        external view returns (uint8[] memory);
-    // Returns detailed position data by index
-    function positionByIndex(uint256 positionId) external view returns (
-        PositionCoreBase memory coreBase,
-        PositionCoreStatus memory coreStatus,
-        PriceParams memory price,
-        MarginParams memory margin,
-        LeverageParams memory leverage,
-        RiskParams memory risk,
-        address token
-    );
-    // Queries historical interest data
-    function queryInterest(uint256 step, uint256 maxIterations) 
-        external view returns (uint256[] memory longIO, uint256[] memory shortIO, uint256[] memory timestamps);
+
+    // Returns active position IDs by type (0: long, 1: short) from step.
+    function positionsByTypeView(uint8 positionType, uint256 step, uint256 maxIterations)
+        external
+        view
+        returns (uint256[] memory);
+
+    // Returns pending position IDs for user by type from step.
+    function positionsByAddressView(address user, uint8 positionType, uint256 step, uint256 maxIterations)
+        external
+        view
+        returns (uint256[] memory);
+
+    // Returns position data: core, status, price, margin, leverage, risk, token.
+    function positionByIndex(uint256 positionId)
+        external
+        view
+        returns (
+            PositionCoreBase memory,
+            PositionCoreStatus memory,
+            PriceParams memory,
+            MarginParams memory,
+            LeverageParams memory,
+            RiskParams memory,
+            address
+        );
+
+    // Returns open interest and timestamps from step.
+    function queryInterest(uint256 step, uint256 maxIterations)
+        external
+        view
+        returns (uint256[] memory, uint256[] memory, uint256[] memory);
 }
