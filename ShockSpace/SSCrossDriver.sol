@@ -3,6 +3,7 @@
 */
 
 // Recent Changes:
+// - 2025-07-05: Adjusted getMuxesView function "positionCount" usage, now uses a max return of 1000. 
 // - 2025-07-05: Modified drift function to set payout recipient as the mux (caller) instead of the position maker, ensuring payouts are directed to the mux for further processing. Version incremented to 0.0.41.
 // - 2025-07-05: Modified drift function to close a specific position for a maker, restricted to onlyMux callers, without additional verification. Version incremented to 0.0.40.
 // - 2025-07-04: Fixed DeclarationError in _setCoreData by replacing undeclared Position2 with PositionCore2. Version incremented to 0.0.39.
@@ -66,21 +67,25 @@ contract SSCrossDriver is ReentrancyGuard, Ownable, CSDExecutionPartial {
         emit MuxRemoved(mux);
     }
 
-    // Returns a list of all authorized muxes
-    function getMuxesView() external view returns (address[] memory activeMuxes) {
+    // View function to return all authorized muxes
+    function getMuxesView() external view returns (address[] memory) {
         uint256 count = 0;
-        address[] memory tempMuxes = new address[](positionCount); // Over-allocate for simplicity
-        for (uint256 i = 0; i < positionCount; i++) {
-            address mux = address(uint160(i));
-            if (muxes[mux]) {
-                tempMuxes[count] = mux;
+        // Count authorized muxes (limit to 1000 for gas safety)
+        for (uint256 i = 0; i < 1000; i++) {
+            if (muxes[address(uint160(i))]) {
                 count++;
             }
         }
-        activeMuxes = new address[](count);
-        for (uint256 i = 0; i < count; i++) {
-            activeMuxes[i] = tempMuxes[i];
+        address[] memory result = new address[](count);
+        uint256 index = 0;
+        // Populate result array
+        for (uint256 i = 0; i < 1000; i++) {
+            if (muxes[address(uint160(i))]) {
+                result[index] = address(uint160(i));
+                index++;
+            }
         }
+        return result;
     }
 
     // Allows muxes to create positions on behalf of a maker
@@ -575,7 +580,7 @@ contract SSCrossDriver is ReentrancyGuard, Ownable, CSDExecutionPartial {
         PriceParams1 storage price1 = priceParams1[positionId];
 
         _updateTP(
-            PositionId,
+            positionId,
             normalizePrice(token, newTakeProfitPrice),
             core1.listingAddress,
             core1.positionType,
