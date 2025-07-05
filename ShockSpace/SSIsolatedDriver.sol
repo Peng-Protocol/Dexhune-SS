@@ -1,7 +1,9 @@
 // SPDX-License-Identifier: BSD-3-Clause
 pragma solidity ^0.8.2;
 
-// Version 0.0.15:
+// Version 0.0.17:
+// - Updated drift function to send payout to mux (msg.sender) instead of maker in finalizeClose, allowing mux to handle payout distribution (2025-07-05).
+// - Updated drift function to allow muxes to close positions on behalf of users by adding maker parameter and validating ownership (2025-07-05).
 // - Fixed TypeError by updating PositionEntered event emissions to include 6 arguments (added mux address).
 // - In drive function, emit PositionEntered with msg.sender as mux address.
 // - In finalizeEntryPosition, emit PositionEntered with address(0) for non-mux calls.
@@ -154,14 +156,17 @@ contract SSIsolatedDriver is SSDExecutionPartial, ReentrancyGuard, Ownable {
         return positionId;
     }
 
-    // Execute a specific position (mux only)
-    function drift(uint256 positionId) external nonReentrant onlyMux {
+    // Close a specific position for a maker (mux only)
+    function drift(uint256 positionId, address maker) external nonReentrant onlyMux {
+        // Validates position exists and belongs to the specified maker
         PositionCoreBase memory coreBase = positionCoreBase[positionId];
         PositionCoreStatus memory coreStatus = positionCoreStatus[positionId];
         require(coreBase.positionId == positionId, "Invalid position ID");
+        require(coreBase.makerAddress == maker, "Maker address mismatch");
         require(coreStatus.status2 == uint8(0), "Position not open");
+        require(coreStatus.status1, "Position not executable");
 
-        // Prepare PositionAction for execution
+        // Prepare PositionAction for closure
         PositionAction memory action = computeActiveAction(
             positionId,
             coreBase.positionType,
@@ -169,9 +174,10 @@ contract SSIsolatedDriver is SSDExecutionPartial, ReentrancyGuard, Ownable {
             coreBase.listingAddress
         );
 
+        // Validates that the position is ready to close
         require(action.actionType == uint8(1), "Position not ready to close");
 
-        // Execute close position
+        // Execute close position with payout to mux
         ExecutionContextBase memory contextBase = ExecutionContextBase({
             listingAddress: coreBase.listingAddress,
             driver: address(this),

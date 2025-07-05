@@ -3,6 +3,8 @@
 */
 
 // Recent Changes:
+// - 2025-07-05: Modified drift function to set payout recipient as the mux (caller) instead of the position maker, ensuring payouts are directed to the mux for further processing. Version incremented to 0.0.41.
+// - 2025-07-05: Modified drift function to close a specific position for a maker, restricted to onlyMux callers, without additional verification. Version incremented to 0.0.40.
 // - 2025-07-04: Fixed DeclarationError in _setCoreData by replacing undeclared Position2 with PositionCore2. Version incremented to 0.0.39.
 // - 2025-07-04: Fixed ParserError in _updatePositionLiquidationPrices by replacing invalid identifier MCMiD0x5B4e8A92B81EF68aA3c1c22dA0aDA7803aA29A6f with i. Version incremented to 0.0.38.
 // - 2025-07-04: Added muxes management functions (addMux, removeMux, getMuxesView), drive function for mux position creation, drift function for mux position execution, and onlyMux modifier. Version incremented to 0.0.37.
@@ -116,46 +118,37 @@ contract SSCrossDriver is ReentrancyGuard, Ownable, CSDExecutionPartial {
         emit PositionEntered(positionId, maker, positionType);
     }
 
-    // Allows muxes to execute a specific position
-    function drift(uint256 positionId) external nonReentrant onlyMux {
+    // Allows muxes to close a specific position on behalf of a maker, sending payout to mux
+    function drift(uint256 positionId, address maker) external nonReentrant onlyMux {
         PositionCore1 storage core1 = positionCore1[positionId];
         PositionCore2 storage core2 = positionCore2[positionId];
         require(core1.positionId == positionId, "Invalid position");
         require(core2.status2 == 0, "Position closed");
+        require(core1.makerAddress == maker, "Maker mismatch");
         
-        address listingAddress = core1.listingAddress;
-        uint8 positionType = core1.positionType;
-        address token = positionType == 0 ? ISSListing(listingAddress).tokenB() : ISSListing(listingAddress).tokenA();
-        (uint256 currentPrice,,,) = _parseEntryPriceInternal(
-            priceParams1[positionId].minEntryPrice,
-            priceParams1[positionId].maxEntryPrice,
-            listingAddress
-        );
-        currentPrice = normalizePrice(token, currentPrice);
-
-        // Update liquidation price
-        _updateLiquidationPrices(positionId, core1.makerAddress, positionType, listingAddress);
-
-        // Check pending or active position
-        if (!core2.status1) {
-            uint256[] storage pending = pendingPositions[listingAddress][positionType];
-            for (uint256 i = 0; i < pending.length; i++) {
-                if (pending[i] == positionId) {
-                    if (_processPendingPosition(positionId, positionType, listingAddress, pending, i, currentPrice)) {
-                        break;
-                    }
-                }
-            }
+        uint256 payout;
+        address token;
+        if (core1.positionType == 0) {
+            token = ISSListing(core1.listingAddress).tokenB();
+            payout = prepCloseLong(positionId, core1.listingAddress);
         } else {
-            uint256[] storage active = positionsByType[positionType];
-            for (uint256 i = 0; i < active.length; i++) {
-                if (active[i] == positionId) {
-                    if (_processActivePosition(positionId, positionType, listingAddress, active, i, currentPrice)) {
-                        break;
-                    }
-                }
-            }
+            token = ISSListing(core1.listingAddress).tokenA();
+            payout = prepCloseShort(positionId, core1.listingAddress);
         }
+        
+        // Remove position from active/pending arrays
+        removePositionIndex(positionId, core1.positionType, core1.listingAddress);
+        
+        // Execute payout to mux (caller)
+        ISSListing.PayoutUpdate[] memory updates = new ISSListing.PayoutUpdate[](1);
+        updates[0] = ISSListing.PayoutUpdate({
+            payoutType: core1.positionType,
+            recipient: msg.sender, // Payout to mux instead of maker
+            required: denormalizeAmount(token, payout)
+        });
+        ISSListing(core1.listingAddress).ssUpdate(address(this), updates);
+        
+        emit PositionClosed(positionId, maker, payout);
     }
 
     // Transfers margin to listing contract and verifies balance
@@ -582,7 +575,7 @@ contract SSCrossDriver is ReentrancyGuard, Ownable, CSDExecutionPartial {
         PriceParams1 storage price1 = priceParams1[positionId];
 
         _updateTP(
-            positionId,
+            PositionId,
             normalizePrice(token, newTakeProfitPrice),
             core1.listingAddress,
             core1.positionType,
