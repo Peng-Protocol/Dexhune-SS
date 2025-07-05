@@ -1507,7 +1507,8 @@ The `SSCrossDriver` contract, implemented in Solidity (^0.8.2), manages trading 
 
 **SPDX License:** BSD-3-Clause
 
-**Version:** 0.0.41 (last updated 2025-07-05)
+**Version:** 0.0.42 (last updated 2025-07-05)
+- **Changes in 0.0.42**: Corrected `positionToken` mapping descriptions for `drive` and `drift` to reflect long positions using tokenA margins and short positions using tokenB margins; clarified `drift` payout destination as mux (`msg.sender`) only for delegated closures; added balance checks for `drift`.
 
 ## State Variables
 - **DECIMAL_PRECISION** (uint256, constant, public): Set to 1e18 for normalizing amounts and prices across token decimals (defined in `CSDUtilityPartial`).
@@ -1527,7 +1528,7 @@ The `SSCrossDriver` contract, implemented in Solidity (^0.8.2), manages trading 
 - **openInterest** (mapping(uint256 => OpenInterest)): Records leverage amount and timestamp for each position.
 - **positionsByType** (mapping(uint8 => uint256[])): Lists position IDs by type (0 for long, 1 for short).
 - **pendingPositions** (mapping(address => mapping(uint8 => uint256[]))): Tracks pending position IDs by listing address and position type.
-- **positionToken** (mapping(uint256 => address)): Maps position ID to margin token (tokenA for short, tokenB for long).
+- **positionToken** (mapping(uint256 => address)): Maps position ID to margin token (tokenA for long, tokenB for short).
 - **longIOByHeight** (mapping(uint256 => uint256)): Tracks long open interest by block height.
 - **shortIOByHeight** (mapping(uint256 => uint256)): Tracks short open interest by block height.
 - **historicalInterestTimestamps** (mapping(uint256 => uint256)): Stores timestamps for open interest updates.
@@ -1574,12 +1575,12 @@ Formulas drive position calculations, detailed in their functional context.
    - **Description**: Loan for short positions based on minimum entry price.
 
 6. **Liquidation Price (Long)**:
-   - **Formula**: `liquidationPrice = marginRatio < minPrice ? minPrice - marginRatio : 0`, where `marginRatio = makerTokenMargin[maker][tokenB] / leverageAmount`
+   - **Formula**: `liquidationPrice = marginRatio < minPrice ? minPrice - marginRatio : 0`, where `marginRatio = makerTokenMargin[maker][tokenA] / leverageAmount`
    - **Used in**: `_computeLoanAndLiquidationLong`, `_updateLiquidationPrices`.
    - **Description**: Liquidation price for long positions, adjusted for updated margins.
 
 7. **Liquidation Price (Short)**:
-   - **Formula**: `liquidationPrice = minPrice + marginRatio`, where `marginRatio = makerTokenMargin[maker][tokenA] / leverageAmount`
+   - **Formula**: `liquidationPrice = minPrice + marginRatio`, where `marginRatio = makerTokenMargin[maker][tokenB] / leverageAmount`
    - **Used in**: `_computeLoanAndLiquidationShort`, `_updateLiquidationPrices`.
    - **Description**: Liquidation price for short positions, adjusted for updated margins.
 
@@ -1669,12 +1670,12 @@ Each function details its parameters, behavior, internal call flow (including ex
 
 ### getMuxesView()
 - **Parameters**: None.
-- **Behavior**: Returns a list of all authorized mux addresses.
-- **Internal Call Flow**: Iterates over a range of possible addresses (using `positionCount` as an upper bound) to check `muxes` mapping, collecting active muxes into a dynamically resized array. No external calls, transfers, or balance checks.
+- **Behavior**: Returns an array of authorized mux addresses.
+- **Internal Call Flow**: Iterates over a fixed range (0 to 999) to count and collect addresses where `muxes[address] == true`. No external calls, transfers, or balance checks.
 - **Mappings/Structs Used**:
-  - **Mappings**: `muxes`, `positionCount`.
+  - **Mappings**: `muxes`.
 - **Restrictions**: None.
-- **Gas Usage Controls**: View function, iterates up to `positionCount`, dynamically resizes array to minimize gas.
+- **Gas Usage Controls**: View function, fixed iteration limit (1000) for gas safety.
 
 ### drive(address maker, address listingAddress, uint256 minEntryPrice, uint256 maxEntryPrice, uint256 initialMargin, uint256 excessMargin, uint8 leverage, uint256 stopLossPrice, uint256 takeProfitPrice, uint8 positionType)
 - **Parameters**:
@@ -1693,7 +1694,7 @@ Each function details its parameters, behavior, internal call flow (including ex
   - Validates `maker` and `positionType` (0 or 1).
   - Calls `_initiateEntry` with provided parameters:
     - `_prepareEntryContext` creates `EntryContext`, overriding `maker` with provided address.
-    - `_validateEntry` calls `_validateAndInit`, incrementing `positionCount`, validating listing via `ISSAgent.getListing`, and selecting `tokenA` (short) or `tokenB` (long).
+    - `_validateEntry` calls `_validateAndInit`, incrementing `positionCount`, validating listing via `ISSAgent.getListing`, and selecting `tokenA` (long) or `tokenB` (short).
     - `_computeEntryParams` uses `prepEnterLong` or `prepEnterShort`:
       - `_parseEntryPriceInternal` fetches `currentPrice` via `ISSListing.prices`. If `minEntryPrice` and `maxEntryPrice` are zero, sets `priceAtEntry = currentPrice` for instant execution as a market order.
       - Computes fee, taxed margin, leverage amount, and loan.
@@ -1719,7 +1720,7 @@ Each function details its parameters, behavior, internal call flow (including ex
 - **Parameters**:
   - `positionId` (uint256): Position ID to close.
   - `maker` (address): Position owner.
-- **Behavior**: Allows authorized mux contracts to close a specific position for the given `maker`, computing payouts in tokenB (long) or tokenA (short), transferring to the mux (`msg.sender`), updating state, and removing the position from arrays. Emits `PositionClosed`.
+- **Behavior**: Allows authorized mux contracts to close a specific position for the given `maker`, computing payouts in tokenB (long) or tokenA (short), transferring to the mux (`msg.sender`) for delegated closures, updating state, and removing the position from arrays. Emits `PositionClosed`.
 - **Internal Call Flow**:
   - Validates position exists (`positionCore1.positionId == positionId`), is not closed (`positionCore2.status2 == 0`), and belongs to `maker` (`positionCore1.makerAddress == maker`).
   - Determines token: `ISSListing.tokenB()` for long, `ISSListing.tokenA()` for short.
@@ -1728,11 +1729,12 @@ Each function details its parameters, behavior, internal call flow (including ex
     - `_deductMarginAndRemoveToken` deducts `taxedMargin + excessMargin` from `makerTokenMargin` with pre-balance check.
     - `_executePayoutUpdate` sets `exitParams.exitPrice` and `positionCore2.status2 = 1`.
   - Calls `removePositionIndex` to update `positionsByType` and `pendingPositions` using pop-and-swap.
-  - Calls `ISSListing.ssUpdate` (input: `PayoutUpdate[]` with `msg.sender`, `denormalizedPayout`, returns: none) to transfer payout to the mux (`msg.sender`).
-  - Payout destination: `msg.sender` (mux).
+  - Calls `ISSListing.ssUpdate` (input: `PayoutUpdate[]` with `msg.sender`, `denormalizedPayout`, returns: none) to transfer payout to the mux (`msg.sender`) for delegated closures.
+  - Payout destination: `msg.sender` (mux) for delegated closures.
 - **Balance Checks**:
-  - **Pre-Balance Check**: `makerTokenMargin[maker][positionToken] >= taxedMargin + excessMargin` during `prepCloseLong` or `prepCloseShort`.
-  - **Post-Balance Check**: None, as payout is handled by `ISSListing`.
+  - **Pre-Balance Check (Margin)**: `makerTokenMargin[maker][positionToken] >= taxedMargin + excessMargin` during `prepCloseLong` or `prepCloseShort`.
+  - **Pre-Balance Check (Payout)**: `IERC20.balanceOf(listingAddress)` captures balance before payout transfer via `ISSListing.ssUpdate`.
+  - **Post-Balance Check (Payout)**: `balanceAfter - balanceBefore == denormalizedPayout` confirms payout transfer.
 - **Mappings/Structs Used**:
   - **Mappings**: `positionCore1`, `positionCore2`, `marginParams1`, `exitParams`, `makerTokenMargin`, `makerMarginTokens`, `positionToken`, `positionsByType`, `pendingPositions`.
   - **Structs**: `PositionCore1`, `PositionCore2`, `MarginParams1`, `ExitParams`.
@@ -1751,24 +1753,24 @@ Each function details its parameters, behavior, internal call flow (including ex
   - `leverage` (uint8): Leverage multiplier (2–100).
   - `stopLossPrice` (uint256): Stop-loss price (denormalized).
   - `takeProfitPrice` (uint256): Take-profit price (denormalized).
-- **Behavior**: Creates a pending long position, transferring margins in tokenB to the listing contract, computing fees, loans, and liquidation prices, and storing position data. Executes instantly as a market order if `minEntryPrice` and `maxEntryPrice` are zero. Emits `PositionEntered`.
+- **Behavior**: Creates a pending long position, transferring margins in tokenA to the listing contract, computing fees, loans, and liquidation prices, and storing position data. Executes instantly as a market order if `minEntryPrice` and `maxEntryPrice` are zero. Emits `PositionEntered`.
 - **Internal Call Flow**: 
   - Invokes `_initiateEntry` with `positionType = 0`.
   - `_prepareEntryContext` creates `EntryContext` with inputs and `positionId` from `positionCount + 1`.
-  - `_validateEntry` calls `_validateAndInit`, incrementing `positionCount`, invoking `ISSAgent.getListing` (input: `tokenA`, `tokenB` from `ISSListing`, returns: `listingAddress`) to validate listing, and selecting `tokenB` for margins. Ensures `initialMargin > 0` and `leverage` is 2–100.
+  - `_validateEntry` calls `_validateAndInit`, incrementing `positionCount`, invoking `ISSAgent.getListing` (input: `tokenA`, `tokenB` from `ISSListing`, returns: `listingAddress`) to validate listing, and selecting `tokenA` for margins. Ensures `initialMargin > 0` and `leverage` is 2–100.
   - `_computeEntryParams` calls `prepEnterLong`:
     - `_parseEntryPriceInternal` fetches `currentPrice` via `ISSListing.prices` (input: `listingAddress`, returns: `currentPrice`). If `minEntryPrice` and `maxEntryPrice` are zero, sets `priceAtEntry = currentPrice` for instant execution; otherwise, validates against `minEntryPrice` and `maxEntryPrice`.
     - `computeFee` applies fee formula.
     - `normalizeAmount` adjusts margins using `IERC20.decimals` (input: none, returns: `decimals`).
-    - Updates `makerTokenMargin` and `makerMarginTokens` for `tokenB`.
+    - Updates `makerTokenMargin` and `makerMarginTokens` for `tokenA`.
     - `_computeLoanAndLiquidationLong` calculates loan and liquidation price using updated margin.
     - `_checkLiquidityLimitLong` verifies liquidity limit formula (`initialLoan <= yLiquid * (101 - leverage) / 100`) using `ISSLiquidityTemplate.liquidityDetailsView` (input: `this`, returns: `yLiquid`).
     - `_transferMarginToListing` handles transfers after calculations:
-      - `_transferLiquidityFee` transfers fee in `tokenB` to `liquidityAddress` using `IERC20.transfer` (input: `liquidityAddress`, `denormalizedFee`, returns: `bool success`), with pre/post balance checks via `IERC20.balanceOf(liquidityAddr)`.
-      - Transfers `taxedMargin + excessMargin` in `tokenB` to `listingAddress` using `IERC20.transferFrom` (input: `msg.sender`, `listingAddress`, `denormalizedAmount`, returns: `bool success`), with pre/post balance checks via `IERC20.balanceOf(listingAddress)`.
+      - `_transferLiquidityFee` transfers fee in `tokenA` to `liquidityAddress` using `IERC20.transfer` (input: `liquidityAddress`, `denormalizedFee`, returns: `bool success`), with pre/post balance checks via `IERC20.balanceOf(liquidityAddr)`.
+      - Transfers `taxedMargin + excessMargin` in `tokenA` to `listingAddress` using `IERC20.transferFrom` (input: `msg.sender`, `listingAddress`, `denormalizedAmount`, returns: `bool success`), with pre/post balance checks via `IERC20.balanceOf(listingAddress)`.
       - Calls `ISSLiquidityTemplate.addFees` (input: `this`, `true`, `denormalizedFee`, returns: none).
   - Updates `ISSListing.update` (input: `UpdateType[]` with type 0, `denormalizedAmount`, returns: none).
-  - `_storeEntryData` calls `_setCoreData`, `_setPriceData`, `_setMarginData`, `_setExitData`, updating `pendingPositions`, `positionToken` (`tokenB`), and `longIOByHeight` via `updateHistoricalInterest`.
+  - `_storeEntryData` calls `_setCoreData`, `_setPriceData`, `_setMarginData`, `_setExitData`, updating `pendingPositions`, `positionToken` (`tokenA`), and `longIOByHeight` via `updateHistoricalInterest`.
   - Transfer destinations: `liquidityAddress` (fee), `listingAddress` (margins).
 - **Balance Checks**:
   - **Pre-Balance Check (Fee)**: `IERC20.balanceOf(liquidityAddr)` captures balance before fee transfer.
@@ -1785,25 +1787,25 @@ Each function details its parameters, behavior, internal call flow (including ex
 
 ### enterShort(address listingAddress, uint256 minEntryPrice, uint256 maxEntryPrice, uint256 initialMargin, uint256 excessMargin, uint8 leverage, uint256 stopLossPrice, uint256 takeProfitPrice)
 - **Parameters**: Same as `enterLong`, for short positions.
-- **Behavior**: Creates a pending short position, transferring margins in tokenA to the listing contract, computing fees, loans, and liquidation prices. Executes instantly as a market order if `minEntryPrice` and `maxEntryPrice` are zero. Emits `PositionEntered`.
+- **Behavior**: Creates a pending short position, transferring margins in tokenB to the listing contract, computing fees, loans, and liquidation prices. Executes instantly as a market order if `minEntryPrice` and `maxEntryPrice` are zero. Emits `PositionEntered`.
 - **Internal Call Flow**: 
   - Mirrors `enterLong`, calling `_initiateEntry` with `positionType = 1`.
   - `prepEnterShort`:
     - Uses `_parseEntryPriceInternal` for price validation. If `minEntryPrice` and `maxEntryPrice` are zero, sets `priceAtEntry = currentPrice` for instant execution.
     - Computes fee and taxed margin.
-    - Updates `makerTokenMargin` and `makerMarginTokens` for `tokenA`.
+    - Updates `makerTokenMargin` and `makerMarginTokens` for `tokenB`.
     - `_computeLoanAndLiquidationShort` calculates loan and liquidation price using updated margin.
     - `_checkLiquidityLimitShort` verifies liquidity limit formula (`initialLoan <= xLiquid * (101 - leverage) / 100`) using `ISSLiquidityTemplate.liquidityDetailsView` (input: `this`, returns: `xLiquid`).
-    - `_transferMarginToListing` transfers fee in `tokenA` to `liquidityAddress` via `IERC20.transfer` and margins to `listingAddress` via `IERC20.transferFrom`, with pre/post balance checks.
+    - `_transferMarginToListing` transfers fee in `tokenB` to `liquidityAddress` via `IERC20.transfer` and margins to `listingAddress` via `IERC20.transferFrom`, with pre/post balance checks.
     - Calls `ISSLiquidityTemplate.addFees` (input: `this`, `false`, `denormalizedFee`).
-  - Updates `ISSListing.update` and stores data in same mappings/structs as `enterLong`, with `positionToken` as `tokenA` and `shortIOByHeight` updated.
+  - Updates `ISSListing.update` and stores data in same mappings/structs as `enterLong`, with `positionToken` as `tokenB` and `shortIOByHeight` updated.
 - **Balance Checks**:
   - **Pre-Balance Check (Fee)**: `IERC20.balanceOf(liquidityAddr)` captures balance before fee transfer.
   - **Post-Balance Check (Fee)**: `balanceAfter - balanceBefore == denormalizedFee` confirms fee transfer.
   - **Pre-Balance Check (Margin)**: `IERC20.balanceOf(listingAddress)` captures balance before margin transfer.
   - **Post-Balance Check (Margin)**: `balanceAfter - balanceBefore == denormalizedAmount` confirms margin transfer.
-- **Mappings/Structs Used**: Same as `enterLong`, with `positionToken` for `tokenA`, `shortIOByHeight`.
-- **Restrictions**: Same as `enterLong`, with tokenA liquidity checks.
+- **Mappings/Structs Used**: Same as `enterLong`, with `positionToken` for `tokenB`, `shortIOByHeight`.
+- **Restrictions**: Same as `enterLong`, with tokenB liquidity checks.
 - **Gas Usage Controls**: Identical to `enterLong`.
 
 ### addExcessMargin(address listingAddress, bool tokenA, uint256 amount, address maker)
@@ -1866,12 +1868,12 @@ Each function details its parameters, behavior, internal call flow (including ex
   - Validates position in `positionCore1`, ensures not closed (`positionCore2.status2 == 0`) and owned by `msg.sender`.
   - `prepCloseLong`:
     - `_computePayoutLong` uses payout formula for tokenB.
-    - `_deductMarginAndRemoveToken` deducts `taxedMargin + excessMargin` from `makerTokenMargin` (tokenB) with pre-balance check.
+    - `_deductMarginAndRemoveToken` deducts `taxedMargin + excessMargin` from `makerTokenMargin` (tokenA) with pre-balance check.
     - `_executePayoutUpdate` updates `ISSListing.ssUpdate` (input: `PayoutUpdate[]` with `msg.sender`, `denormalizedPayout`, returns: none), sets `exitParams.exitPrice` and `positionCore2.status2`.
   - `removePositionIndex` updates `positionsByType` and `pendingPositions`.
   - Payout destination: `msg.sender`.
 - **Balance Checks**:
-  - **Pre-Balance Check**: `makerTokenMargin[maker][tokenB] >= taxedMargin + excessMargin` ensures sufficient margin.
+  - **Pre-Balance Check**: `makerTokenMargin[maker][tokenA] >= taxedMargin + excessMargin` ensures sufficient margin.
   - **Post-Balance Check**: None, as payout is handled by `ISSListing`.
 - **Mappings/Structs Used**:
   - **Mappings**: `positionCore1`, `positionCore2`, `marginParams1`, `exitParams`, `makerTokenMargin`, `makerMarginTokens`, `positionToken`, `positionsByType`, `pendingPositions`.
@@ -1888,14 +1890,14 @@ Each function details its parameters, behavior, internal call flow (including ex
 - **Internal Call Flow**: 
   - Similar to `closeLongPosition`, but calls `prepCloseShort`:
     - `_computePayoutShort` uses payout formula for tokenA.
-    - `_deductMarginAndRemoveToken` deducts margins for tokenA with pre-balance check.
+    - `_deductMarginAndRemoveToken` deducts margins for tokenB with pre-balance check.
     - `_executePayoutUpdate` updates `ISSListing.ssUpdate` for tokenA payout.
   - `removePositionIndex` updates arrays.
   - Payout destination: `msg.sender`.
 - **Balance Checks**:
-  - **Pre-Balance Check**: `makerTokenMargin[maker][tokenA] >= taxedMargin + excessMargin` ensures sufficient margin.
+  - **Pre-Balance Check**: `makerTokenMargin[maker][tokenB] >= taxedMargin + excessMargin` ensures sufficient margin.
   - **Post-Balance Check**: None, as payout is handled by `ISSListing`.
-- **Mappings/Structs Used**: Same as `closeLongPosition`, with tokenA margins and tokenA payouts.
+- **Mappings/Structs Used**: Same as `closeLongPosition`, with tokenB margins and tokenA payouts.
 - **Restrictions**: Same as `closeLongPosition`.
 - **Gas Usage Controls**: Identical to `closeLongPosition`.
 
@@ -1968,7 +1970,7 @@ Each function details its parameters, behavior, internal call flow (including ex
   - Pre-balance checks on `makerTokenMargin` ensure sufficient margins.
   - Payout destination: `msg.sender`.
 - **Balance Checks**:
-  - **Pre-Balance Check**: `makerTokenMargin[maker][tokenB] >= taxedMargin + excessMargin` per position.
+  - **Pre-Balance Check**: `makerTokenMargin[maker][tokenA] >= taxedMargin + excessMargin` per position.
   - **Post-Balance Check**: None, as payouts are handled by `ISSListing`.
 - **Mappings/Structs Used**:
   - **Mappings**: `positionCore1`, `positionCore2`, `marginParams1`, `exitParams`, `makerTokenMargin`, `makerMarginTokens`, `positionToken`, `positionsByType`, `pendingPositions`.
@@ -1981,13 +1983,13 @@ Each function details its parameters, behavior, internal call flow (including ex
 ### cancelAllLongs(uint256 maxIterations)
 - **Parameters**:
   - `maxIterations` (uint256): Maximum positions to process.
-- **Behavior**: Cancels all pending long positions, returning margins in tokenB to `msg.sender`. Emits `AllLongsCancelled` and `PositionCancelled` per position.
+- **Behavior**: Cancels all pending long positions, returning margins in tokenA to `msg.sender`. Emits `AllLongsCancelled` and `PositionCancelled` per position.
 - **Internal Call Flow**: 
   - Iterates `positionCount`, processing up to `maxIterations` pending long positions.
   - For each, deducts margins from `makerTokenMargin` with pre-balance checks, updates `positionCore2` and `exitParams`, calls `removePositionIndex`, and emits `PositionCancelled`.
   - Margin destination: `msg.sender`.
 - **Balance Checks**:
-  - **Pre-Balance Check**: `makerTokenMargin[maker][tokenB] >= taxedMargin + excessMargin` per position.
+  - **Pre-Balance Check**: `makerTokenMargin[maker][tokenA] >= taxedMargin + excessMargin` per position.
   - **Post-Balance Check**: None, as transfers are handled by `ISSListing`.
 - **Mappings/Structs Used**: Same as `cancelPosition`.
 - **Restrictions**:
@@ -2001,10 +2003,10 @@ Each function details its parameters, behavior, internal call flow (including ex
 - **Behavior**: Closes all active short positions, paying out in tokenA to `msg.sender`. Emits `AllShortsClosed` and `PositionClosed` per position.
 - **Internal Call Flow**: 
   - Similar to `closeAllLongs`, using `prepCloseShort` for tokenA payouts.
-  - Pre-balance checks on `makerTokenMargin` for tokenA.
+  - Pre-balance checks on `makerTokenMargin` for tokenB.
   - Payout destination: `msg.sender`.
 - **Balance Checks**:
-  - **Pre-Balance Check**: `makerTokenMargin[maker][tokenA] >= taxedMargin + excessMargin` per position.
+  - **Pre-Balance Check**: `makerTokenMargin[maker][tokenB] >= taxedMargin + excessMargin` per position.
   - **Post-Balance Check**: None, as payouts are handled by `ISSListing`.
 - **Mappings/Structs Used**: Same as `closeShortPosition`.
 - **Restrictions**: Same as `closeAllLongs`.
@@ -2013,13 +2015,13 @@ Each function details its parameters, behavior, internal call flow (including ex
 ### cancelAllShorts(uint256 maxIterations)
 - **Parameters**:
   - `maxIterations` (uint256): Maximum positions to process.
-- **Behavior**: Cancels all pending short positions, returning margins in tokenA to `msg.sender`. Emits `AllShortsCancelled` and `PositionCancelled` per position.
+- **Behavior**: Cancels all pending short positions, returning margins in tokenB to `msg.sender`. Emits `AllShortsCancelled` and `PositionCancelled` per position.
 - **Internal Call Flow**: 
-  - Similar to `cancelAllLongs`, for short positions with tokenA margins.
+  - Similar to `cancelAllLongs`, for short positions with tokenB margins.
   - Pre-balance checks on `makerTokenMargin`.
   - Margin destination: `msg.sender`.
 - **Balance Checks**:
-  - **Pre-Balance Check**: `makerTokenMargin[maker][tokenA] >= taxedMargin + excessMargin` per position.
+  - **Pre-Balance Check**: `makerTokenMargin[maker][tokenB] >= taxedMargin + excessMargin` per position.
   - **Post-Balance Check**: None, as transfers are handled by `ISSListing`.
 - **Mappings/Structs Used**: Same as `cancelPosition`.
 - **Restrictions**: Same as `closeAllLongs`.
@@ -2195,13 +2197,13 @@ Each function details its parameters, behavior, internal call flow (including ex
 - **Reentrancy Protection**: All state-changing functions use `nonReentrant`.
 - **Gas Optimization**: Employs `maxIterations`, `gasleft() >= 50000`, and pop-and-swap for arrays.
 - **Listing Validation**: Uses `ISSAgent.isValidListing` or `ISSAgent.getListing` for robust checks.
-- **Token Usage**: Long positions use tokenB margins, tokenB payouts; short positions use tokenA margins, tokenA payouts.
+- **Token Usage**: Long positions use tokenA margins, tokenB payouts; short positions use tokenB margins, tokenA payouts.
 - **Position Lifecycle**: Pending (`status1 == false`) to active (`status1 == true`) to closed (`status2 == 1`), with state updates.
 - **Market Orders**: If `minEntryPrice` and `maxEntryPrice` are zero in `enterLong`, `enterShort`, `drive`, or `executePositions`, positions execute instantly at the current price as market orders, bypassing price bound validation in `_parseEntryPriceInternal`.
 - **Events**: Emitted for entry (`PositionEntered`), closure (`PositionClosed`), cancellation (`PositionCancelled`), SL/TP updates (`StopLossUpdated`, `TakeProfitUpdated`), batch operations (`AllLongsClosed`, `AllLongsCancelled`, `AllShortsClosed`, `AllShortsCancelled`), and mux management (`MuxAdded`, `MuxRemoved`).
 - **Safety**: Balance checks, explicit casting, no inline assembly, and liquidation price updates ensure robustness.
 - **Liquidation Price Updates**: `addExcessMargin` and `pullMargin` update liquidation prices for all relevant positions to reflect margin changes, ensuring accurate risk assessment.
-- **Mux Functionality**: Authorized mux contracts can create (`drive`) and close (`drift`) positions, restricted by `onlyMux` modifier, with `muxes` mapping tracking authorization. The `drift` function directs payouts to the mux (`msg.sender`) instead of the maker for further processing.
+- **Mux Functionality**: Authorized mux contracts can create (`drive`) and close (`drift`) positions, restricted by `onlyMux` modifier, with `muxes` mapping tracking authorization. The `drift` function directs payouts to the mux (`msg.sender`) for delegated closures, ensuring proper fund routing.
 
 # SSIsolatedDriver Contract Documentation
 
