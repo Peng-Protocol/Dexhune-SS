@@ -1507,7 +1507,7 @@ The `SSCrossDriver` contract, implemented in Solidity (^0.8.2), manages trading 
 
 **SPDX License:** BSD-3-Clause
 
-**Version:** 0.0.40 (last updated 2025-07-04)
+**Version:** 0.0.41 (last updated 2025-07-05)
 
 ## State Variables
 - **DECIMAL_PRECISION** (uint256, constant, public): Set to 1e18 for normalizing amounts and prices across token decimals (defined in `CSDUtilityPartial`).
@@ -1531,7 +1531,7 @@ The `SSCrossDriver` contract, implemented in Solidity (^0.8.2), manages trading 
 - **longIOByHeight** (mapping(uint256 => uint256)): Tracks long open interest by block height.
 - **shortIOByHeight** (mapping(uint256 => uint256)): Tracks short open interest by block height.
 - **historicalInterestTimestamps** (mapping(uint256 => uint256)): Stores timestamps for open interest updates.
-- **muxes** (mapping(address => bool)): Tracks authorized mux contracts for delegated position creation and execution (defined in `CSDUtilityPartial`).
+- **muxes** (mapping(address => bool)): Tracks authorized mux contracts for delegated position creation and closure (defined in `CSDUtilityPartial`).
 
 ## Structs
 - **PositionCore1**: Contains `positionId` (uint256), `listingAddress` (address), `makerAddress` (address), `positionType` (uint8: 0 for long, 1 for short).
@@ -1715,33 +1715,31 @@ Each function details its parameters, behavior, internal call flow (including ex
   - Reverts if `maker` is zero, `positionType > 1`, or transfers fail.
 - **Gas Usage Controls**: Single-element updates, no loops in critical paths, pop-and-swap for arrays.
 
-### drift(uint256 positionId)
+### drift(uint256 positionId, address maker)
 - **Parameters**:
-  - `positionId` (uint256): Position ID to process.
-- **Behavior**: Allows authorized mux contracts to execute a specific position, checking for activation or closure based on price triggers, updating liquidation prices, and handling payouts or liquidations. Emits `PositionClosed` if closed.
+  - `positionId` (uint256): Position ID to close.
+  - `maker` (address): Position owner.
+- **Behavior**: Allows authorized mux contracts to close a specific position for the given `maker`, computing payouts in tokenB (long) or tokenA (short), transferring to the mux (`msg.sender`), updating state, and removing the position from arrays. Emits `PositionClosed`.
 - **Internal Call Flow**:
-  - Validates position (`positionCore1`, `positionCore2.status2 == 0`).
-  - Determines token (`tokenB` for long, `tokenA` for short).
-  - Fetches `currentPrice` via `ISSListing.prices`, normalizes with `normalizePrice`.
-  - Updates liquidation price via `_updateLiquidationPrices`.
-  - For pending positions (`status1 == false`):
-    - Iterates `pendingPositions`, calling `_processPendingPosition` to check entry or liquidation conditions.
-    - If activated, sets `status1 = true`, moves to `positionsByType`.
-    - If liquidated, calls `prepCloseLong` or `prepCloseShort`, updates `ISSListing.ssUpdate`, and removes position.
-  - For active positions (`status1 == true`):
-    - Iterates `positionsByType`, calling `_processActivePosition` to check stop-loss, take-profit, or liquidation triggers.
-    - If triggered, processes closure with payouts.
-  - Payout destination: `positionCore1.makerAddress`.
+  - Validates position exists (`positionCore1.positionId == positionId`), is not closed (`positionCore2.status2 == 0`), and belongs to `maker` (`positionCore1.makerAddress == maker`).
+  - Determines token: `ISSListing.tokenB()` for long, `ISSListing.tokenA()` for short.
+  - Calls `prepCloseLong` (long) or `prepCloseShort` (short):
+    - `_computePayoutLong` or `_computePayoutShort` calculates payout using respective formulas.
+    - `_deductMarginAndRemoveToken` deducts `taxedMargin + excessMargin` from `makerTokenMargin` with pre-balance check.
+    - `_executePayoutUpdate` sets `exitParams.exitPrice` and `positionCore2.status2 = 1`.
+  - Calls `removePositionIndex` to update `positionsByType` and `pendingPositions` using pop-and-swap.
+  - Calls `ISSListing.ssUpdate` (input: `PayoutUpdate[]` with `msg.sender`, `denormalizedPayout`, returns: none) to transfer payout to the mux (`msg.sender`).
+  - Payout destination: `msg.sender` (mux).
 - **Balance Checks**:
-  - **Pre-Balance Check**: `makerTokenMargin[maker][positionToken] >= taxedMargin + excessMargin` during closure.
-  - **Post-Balance Check**: None, as payouts are handled by `ISSListing`.
+  - **Pre-Balance Check**: `makerTokenMargin[maker][positionToken] >= taxedMargin + excessMargin` during `prepCloseLong` or `prepCloseShort`.
+  - **Post-Balance Check**: None, as payout is handled by `ISSListing`.
 - **Mappings/Structs Used**:
-  - **Mappings**: `positionCore1`, `positionCore2`, `priceParams1`, `priceParams2`, `marginParams1`, `exitParams`, `pendingPositions`, `positionsByType`, `positionToken`.
-  - **Structs**: `PositionCore1`, `PositionCore2`, `PriceParams1`, `PriceParams2`, `MarginParams1`, `ExitParams`.
+  - **Mappings**: `positionCore1`, `positionCore2`, `marginParams1`, `exitParams`, `makerTokenMargin`, `makerMarginTokens`, `positionToken`, `positionsByType`, `pendingPositions`.
+  - **Structs**: `PositionCore1`, `PositionCore2`, `MarginParams1`, `ExitParams`.
 - **Restrictions**:
   - Protected by `nonReentrant` and `onlyMux`.
-  - Reverts if position is invalid or closed.
-- **Gas Usage Controls**: Single position processing, pop-and-swap for arrays, minimal gas.
+  - Reverts if position is invalid (`"Invalid position"`), closed (`"Position closed"`), or maker mismatches (`"Maker mismatch"`).
+- **Gas Usage Controls**: Single position processing, pop-and-swap for arrays, minimal gas usage.
 
 ### enterLong(address listingAddress, uint256 minEntryPrice, uint256 maxEntryPrice, uint256 initialMargin, uint256 excessMargin, uint8 leverage, uint256 stopLossPrice, uint256 takeProfitPrice)
 - **Parameters**:
@@ -1820,7 +1818,7 @@ Each function details its parameters, behavior, internal call flow (including ex
   - Calls `ISSAgent.isValidListing` (input: `listingAddress`, returns: `bool isValid`) to validate listing.
   - Selects token via `ISSListing.tokenA()` or `tokenB()`.
   - `_transferMarginToListing` transfers `amount` in selected token from `msg.sender` to `listingAddress` using `IERC20.transferFrom` (input: `msg.sender`, `listingAddress`, `amount`, returns: `bool success`), with pre/post balance checks via `IERC20.balanceOf(listingAddress)`.
-  - `_updateListingMargin` calls `ISSListing.update` (input: `UpdateType[]` with type 0, `amount`, returns: none).
+  - `_updateListingMargin` calls `ISSListing.update` (input: `UpdateType[]` with type 0, `denormalizedAmount`, returns: none).
   - `_updateMakerMargin` updates `makerTokenMargin` and `makerMarginTokens`.
   - `_updatePositionLiquidationPrices` iterates `positionCount`, updating `priceParams2.liquidationPrice` for matching positions using `_computeLoanAndLiquidationLong` or `_computeLoanAndLiquidationShort` based on `positionType`.
   - `updateHistoricalInterest` updates `longIOByHeight` (positionType = 0).
@@ -2065,7 +2063,7 @@ Each function details its parameters, behavior, internal call flow (including ex
 - **Mappings/Structs Used**:
   - **Mappings**: `positionsByType`.
 - **Restrictions**: Reverts if `positionType > 1` (`"Invalid position type"`).
-- **Gas Usage Controls**: View function, `maxIterations` limits iteration, minimal gas.
+- **Gas Usage Controls**: `maxIterations`, view function, minimal gas.
 
 ### PositionsByAddressView(address maker, uint256 startIndex, uint256 maxIterations)
 - **Parameters**:
@@ -2203,7 +2201,7 @@ Each function details its parameters, behavior, internal call flow (including ex
 - **Events**: Emitted for entry (`PositionEntered`), closure (`PositionClosed`), cancellation (`PositionCancelled`), SL/TP updates (`StopLossUpdated`, `TakeProfitUpdated`), batch operations (`AllLongsClosed`, `AllLongsCancelled`, `AllShortsClosed`, `AllShortsCancelled`), and mux management (`MuxAdded`, `MuxRemoved`).
 - **Safety**: Balance checks, explicit casting, no inline assembly, and liquidation price updates ensure robustness.
 - **Liquidation Price Updates**: `addExcessMargin` and `pullMargin` update liquidation prices for all relevant positions to reflect margin changes, ensuring accurate risk assessment.
-- **Mux Functionality**: Authorized mux contracts can create (`drive`) and execute (`drift`) positions, restricted by `onlyMux` modifier, with `muxes` mapping tracking authorization.
+- **Mux Functionality**: Authorized mux contracts can create (`drive`) and close (`drift`) positions, restricted by `onlyMux` modifier, with `muxes` mapping tracking authorization. The `drift` function directs payouts to the mux (`msg.sender`) instead of the maker for further processing.
 
 # SSIsolatedDriver Contract Documentation
 
@@ -2214,7 +2212,7 @@ The `SSIsolatedDriver` contract, implemented in Solidity (^0.8.2), manages tradi
 
 **SPDX License:** BSD-3-Clause
 
-**Version:** 0.0.15 (last updated 2025-07-05)
+**Version:** 0.0.17 (last updated 2025-07-05)
 
 ## State Variables
 - **DECIMAL_PRECISION** (uint256, constant, public): Set to 1e18 for normalizing amounts and prices across token decimals.
@@ -2396,20 +2394,21 @@ Each function details its parameters, behavior, internal call flow (including ex
   - Reverts if `maker` is zero (`"Invalid maker address"`), `listingAddress` is zero (`"Invalid listing address"`), `positionType > 1` (`"Invalid position type"`), `initialMargin == 0` (`"Invalid initial margin"`), `leverage` is out of range (`"Invalid leverage"`), or transfers fail.
 - **Gas Usage Controls**: Single-element array updates, balance checks, and pop-and-swap minimize gas.
 
-### drift(uint256 positionId)
+### drift(uint256 positionId, address maker)
 - **Parameters**:
   - `positionId` (uint256): Position ID to execute.
-- **Behavior**: Closes an open position on behalf of an authorized mux based on price triggers (liquidation, stop-loss, take-profit). Emits `PositionClosed`.
-- **Internal Call Flow**: Restricted by `onlyMux`. Validates `positionId` in `positionCoreBase` and `status2 == 0`. Calls `computeActiveAction` with `getCurrentPrice` (`ISSListing.prices`, input: `listingAddress`, returns: `uint256`) to check triggers. Requires `actionType == 1` (`"Position not ready to close"`). Calls `executeClosePosition` with `ExecutionContextBase` (`currentPrice`, `listingAddress`, `driver = this`), invoking `internalCloseLongPosition` or `internalCloseShortPosition`. Payout goes to `makerAddress` via `ISSListing.ssUpdate` (input: `PayoutUpdate[]`, returns: none) in tokenB (long) or tokenA (short).
+  - `maker` (address): Address of the position owner.
+- **Behavior**: Closes an open position on behalf of an authorized mux for the specified `maker` based on price triggers (liquidation, stop-loss, take-profit), sending payouts to the mux (`msg.sender`) for further distribution to the user. Emits `PositionClosed`.
+- **Internal Call Flow**: Restricted by `onlyMux`. Validates `positionId` in `positionCoreBase`, ensures `makerAddress == maker` (`"Maker address mismatch"`), `status2 == 0` (`"Position not open"`), and `status1 == true` (`"Position not executable"`). Calls `computeActiveAction` with `getCurrentPrice` (`ISSListing.prices`, input: `listingAddress`, returns: `uint256`) to check triggers. Requires `actionType == 1` (`"Position not ready to close"`). Calls `executeClosePosition` with `ExecutionContextBase` (`currentPrice`, `listingAddress`, `driver = this`), invoking `internalCloseLongPosition` or `internalCloseShortPosition`. Payout goes to `msg.sender` (mux) via `ISSListing.ssUpdate` (input: `PayoutUpdate[]` with `recipient = msg.sender`, returns: none) in tokenB (long) or tokenA (short). Updates `positionCoreStatus`, `positionsByType`, `pendingPositions`, `longIOByHeight` or `shortIOByHeight`, and emits `PositionClosed` with `maker`.
 - **Balance Checks**:
-  - **Pre-Balance Check**: `status2 == 0` ensures position is open.
+  - **Pre-Balance Check**: `status2 == 0` and `status1 == true` ensure position is open and executable.
   - **Post-Balance Check**: None, as payout is handled by `ISSListing`.
 - **Mappings/Structs Used**:
   - **Mappings**: `positionCoreBase`, `positionCoreStatus`, `priceParams`, `marginParams`, `leverageParams`, `positionToken`, `positionsByType`, `pendingPositions`, `longIOByHeight`, `shortIOByHeight`, `historicalInterestTimestamps`.
   - **Structs**: `PositionCoreBase`, `PositionCoreStatus`, `PriceParams`, `MarginParams`, `LeverageParams`, `ClosePositionBase`, `ClosePositionMargin`, `LongCloseParams`, `ShortCloseParams`, `PositionAction`, `ExecutionContextBase`, `PayoutUpdate`.
 - **Restrictions**:
   - Protected by `nonReentrant` and `onlyMux`.
-  - Reverts if `positionId` is invalid (`"Invalid position ID"`), position is not open (`"Position not open"`), or not ready to close (`"Position not ready to close"`).
+  - Reverts if `positionId` is invalid (`"Invalid position ID"`), `maker` does not match (`"Maker address mismatch"`), position is not open (`"Position not open"`), not executable (`"Position not executable"`), or not ready to close (`"Position not ready to close"`).
 - **Gas Usage Controls**: Single position processing with pop-and-swap minimizes gas.
 
 ### enterLong(address listingAddr, string entryPriceStr, uint256 initMargin, uint256 extraMargin, uint8 leverage, uint256 stopLoss, uint256 takeProfit)
@@ -2496,7 +2495,7 @@ Each function details its parameters, behavior, internal call flow (including ex
 - **Internal Call Flow**: Validates position in `positionCoreBase`, ensures `status1 == false`, `status2 == 0`, and owned by `msg.sender` (`"Not position owner"`). Calls `internalCancelPosition`: sets `positionCoreStatus.status2 = 2`, calls `ISSListing.ssUpdate` (input: `PayoutUpdate[]` with `totalMargin`, returns: none) for `positionToken` margin return, adjusts `longIOByHeight` or `shortIOByHeight`, increments `historicalInterestHeight`, and calls `removePositionIndex`. Pre-balance check in `validatePositionStatus`; no post-balance check as transfer is handled by `ISSListing`. Margin destination is `msg.sender`.
 - **Balance Checks**:
   - **Pre-Balance Check**: `status1 == false` and `status2 == 0` ensure position is pending and open.
-  - **Post-Balance Check**: None, as transfer is handled by `ISSListing`.
+  - **Post-Balance Check**: None, as transfers are handled by `ISSListing`.
 - **Mappings/Structs Used**:
   - **Mappings**: `positionCoreBase`, `positionCoreStatus`, `marginParams`, `positionToken`, `pendingPositions`, `longIOByHeight`, `shortIOByHeight`, `historicalInterestTimestamps`.
   - **Structs**: `PositionCoreBase`, `PositionCoreStatus`, `MarginParams`, `ClosePositionBase`, `ClosePositionMargin`, `PayoutUpdate`.
@@ -2663,5 +2662,5 @@ Each function details its parameters, behavior, internal call flow (including ex
 - **Token Usage**: Long positions use tokenA margins, tokenB payouts; short positions use tokenB margins, tokenA payouts.
 - **Position Lifecycle**: Pending (`status1 == false`, `status2 == 0`) to executable (`status1 == true`, `status2 == 0`) to closed (`status2 == 1`) or cancelled (`status2 == 2`).
 - **Events**: Emitted for mux operations (`MuxAdded`, `MuxRemoved`), position entry (`PositionEntered` with `positionId`, `maker`, `positionType`, `minEntryPrice`, `maxEntryPrice`, `mux`), closure (`PositionClosed`), cancellation (`PositionCancelled`), margin addition (`ExcessMarginAdded`), SL/TP updates (`StopLossUpdated`, `TakeProfitUpdated`), and batch operations (`AllLongsClosed`, `AllLongsCancelled`, `AllShortsClosed`, `AllShortsCancelled`, `PositionsExecuted`).
-- **Mux Integration**: `muxes` mapping (moved to `SSDUtilityPartial`) authorizes external contracts. `drive` creates positions for `maker`, `drift` closes them. `PositionEntered` includes `mux` (`msg.sender` for `drive`, `address(0)` for `enterLong`/`enterShort`).
+- **Mux Integration**: `muxes` mapping (moved to `SSDUtilityPartial`) authorizes external contracts. `drive` creates positions for `maker`, `drift` closes them with payouts to `msg.sender` (mux). `PositionEntered` includes `mux` (`msg.sender` for `drive`, `address(0)` for `enterLong`/`enterShort`).
 - **Safety**: Balance checks, explicit casting (e.g., `uint8`, `uint256`, `address(uint160)`), no inline assembly, and modular helpers (`validateExcessMargin`, `transferExcessMargin`, `updateMarginAndInterest`, `updateLiquidationPrice`, `updateSLInternal`, `updateTPInternal`, `uint2str`) ensure robustness.

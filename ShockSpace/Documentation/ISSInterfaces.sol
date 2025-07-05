@@ -554,6 +554,7 @@ interface ISSRouter {
 }
 
 // Interface for SSCrossDriver contract
+
 interface ISSCrossDriver {
     // Events
     event PositionEntered(uint256 indexed positionId, address indexed maker, uint8 positionType);
@@ -578,7 +579,7 @@ interface ISSCrossDriver {
 
     struct PositionCore2 {
         bool status1;           // True if position is executable
-        uint8 status2;          // 0 = Open, 1 = Closed, 2 = Cancelled
+        uint8 status2;          // 0 = Open, 1 = Closed
     }
 
     struct PriceParams1 {
@@ -673,8 +674,8 @@ interface ISSCrossDriver {
         uint256 takeProfitPrice,
         uint8 positionType
     ) external;
-    // Executes a specific position (mux only)
-    function drift(uint256 positionId) external;
+    // Closes a specific position for a maker, directing payout to the mux (mux only)
+    function drift(uint256 positionId, address maker) external;
     // Enters a long position with specified parameters
     function enterLong(
         address listingAddress,
@@ -1077,8 +1078,8 @@ interface ISSIsolatedDriver {
         uint8 positionType
     ) external returns (uint256);
 
-    // Closes position via mux based on price triggers.
-    function drift(uint256 positionId) external;
+    // Closes position via mux for specified maker based on price triggers, pays to mux.
+    function drift(uint256 positionId, address maker) external;
 
     // Creates pending long position, market order if entryPriceStr is "0" or "0-0".
     function enterLong(
