@@ -1,32 +1,18 @@
 // SPDX-License-Identifier: BSD-3-Clause
 pragma solidity ^0.8.2;
 
-// Version: 0.0.37
+// Version: 0.0.41
 // Change Log:
-// - 2025-07-04: Updated from v0.0.36.
-// - Added view function getTotalPendingHopsCount to return the total number of pending hops (hopStatus == 1) across all users, using maxIterations for gas control.
-// - Ensured view function accesses hidden state (totalHops, hopID) with minimal gas usage and explicit casting.
-// - Cross-checked for typos, naming conflicts, and compiler errors; maintained compatibility with Solidity ^0.8.2 and existing interfaces.
-// - Retained v0.0.36 changes: Added view functions for analytics and management: getHopDetails, getUserHops, getTotalHopsCount, getActiveHopsCount, getHopOrderDetails, getHopRoute, getUserPendingVolume, getContractBalance.
-// - Retained v0.0.33 changes: Fixed CompilerError: Stack too deep in computeSellOrderParams by introducing OrderParams struct and splitting logic into computeBaseOrderParams, computeBuySpecificParams, computeSellSpecificParams.
-// - Retained v0.0.32 changes: Fixed ParserError in prepAllStalls by removing invalid 'the' keyword and using stalledHop.maxPrice > 0 for isBuy.
-// - Retained v0.0.32 changes: Added check for remainingListings.length > 0 in prepAllStalls and executeStalls to prevent out-of-bounds access.
-// - Retained v0.0.31 changes: Fixed shadowed declaration in executeStalls by renaming inner loop variable to j.
-// - Retained v0.0.31 changes: Fixed TypeError in processHopStep and executeHopSteps by reintroducing isBuy field in HopExecutionData, avoiding string comparison.
-// - Retained v0.0.30 changes: Fixed stack too deep in computeOrderParams by splitting into computeBuyOrderParams and computeSellOrderParams, removing isBuy boolean.
-// - Retained v0.0.30 changes: Added setOrderStatus, setOrderAmount, setOrderPrice, setOrderRecipient for incremental order data updates.
-// - Retained v0.0.29 changes: Fixed stack too deep in executeHop by segregating preparation and execution into prepareHopExecution and executeHopSteps.
-// - Retained v0.0.29 changes: Introduced HopExecutionParams struct for split parameter groups with updateHopListings, updateHopTokens, updateHopSettings.
-// - Retained v0.0.28 changes: Fixed TypeError in _createHopOrder, executeStalls, _clearHopOrder by converting HopUpdateType[] to ISSListing.UpdateType[].
-// - Retained v0.0.27 changes: Fixed parser error in executeStalls by correcting 'total SeafoodHops' to 'totalHops'.
-// - Retained v0.0.27 changes: Updated validateHopRequest to allow address(0) for trailing listing parameters (listing2, listing3, listing4) when unused, but revert if address(0) appears between valid listings.
-// - Retained v0.0.26 changes: Added UpdateType struct to ISSListing interface to resolve undefined identifier error in update function.
-// - Retained v0.0.26 changes: Renamed contract's UpdateType to HopUpdateType to avoid potential naming conflicts.
-// - Retained v0.0.24 changes: Modified hop function to use a single impactPercent parameter (≤ 1000, e.g., 500 = 5%) applied to all listings, replacing redundant impactPercent1–4 for user-friendliness.
-// - Retained v0.0.24 changes: Updated prepHop, validateHopRequest, computeOrderParams, executeHop, and initializeHopData to handle a single impactPercent, constructing impactPricePercents array internally.
-// - Retained v0.0.24 changes: Added inline comment in hop to clarify impactPercent applies uniformly to all listings.
-// - Retained v0.0.24 changes: removeRouter allows all routers to be removed, hop uses individual listing1–4 parameters instead of arrays.
-// - Compatible with SSRouter v0.0.61 and HopPartial v0.0.58.
+// - 2025-07-06: Updated from v0.0.40.
+// - Restructured `_cancelHop` to address `Stack too deep` error by forming a call tree for helper functions.
+// - Modified `_prepCancelHopBuy` and `_prepCancelHopSell` to call `_prepClearHopOrder` and populate `CancelPrepData` with order details.
+// - Updated `_executeClearHopOrder` to accept a single `CancelPrepData` struct, reducing parameters passed from `_cancelHop`.
+// - Ensured `_cancelHop` only calls `_prepCancelHopBuy` or `_prepCancelHopSell` and `_finalizeCancel`, minimizing local variables.
+// - Retained v0.0.40 changes: Split `_clearHopOrder` into `_prepClearHopOrder` and `_executeClearHopOrder`.
+// - Retained v0.0.39 fixes: Added `hopId` parameter to `_handlePending` and `_handleBalance`, corrected `amount-sent` typo in `ISSListing.getSellOrderAmounts`.
+// - Retained v0.0.38 changes: Added `maker` parameter to `hop`, checked allowances in `_createHopOrder`, used `maker` in `executeHopSteps`, `initializeHopData`, and cancellation functions.
+// - Cross-checked for naming conflicts, reserved keywords, and compiler errors; maintained compatibility with Solidity ^0.8.2, SSRouter v0.0.61, and HopPartial v0.0.58.
+// - Previous changes from v0.0.37 and earlier retained (e.g., `getTotalPendingHopsCount`, struct optimizations, etc.).
 
 import "./imports/Ownable.sol";
 import "./imports/ReentrancyGuard.sol";
@@ -120,6 +106,7 @@ contract Multihopper is Ownable, ReentrancyGuard {
         bool[] isBuy;
         address currentToken;
         uint256 principal;
+        address maker;
     }
 
     struct HopExecutionData {
@@ -176,7 +163,7 @@ contract Multihopper is Ownable, ReentrancyGuard {
         address[] listingAddresses; // Array of listing addresses (up to 4)
         uint256[] impactPricePercents; // Array of impact percents for each listing
         address startToken; // Starting token for the hop
-        address endToken; // Ending token for the hop
+        address endToken; // Ending token for the last hop
         uint8 settleType; // Settlement type (0 = market, 1 = liquid)
         uint256 maxIterations; // Maximum iterations for settlement
         uint256 numListings; // Number of listings in the route
@@ -379,11 +366,15 @@ contract Multihopper is Ownable, ReentrancyGuard {
     }
 
     function _createHopOrder(OrderUpdateData memory orderData, address sender) internal returns (uint256 orderId) {
-        // Creates a new order on the listing with specified parameters
+        // Creates a new order on the listing with specified parameters, checks allowance if sender != recipient
         ISSListing listingContract = ISSListing(orderData.listing);
         orderId = listingContract.getNextOrderId();
         uint256 rawAmount = denormalizeForToken(orderData.inputAmount, orderData.inputToken);
         if (orderData.inputToken != address(0)) {
+            if (sender != orderData.recipient) {
+                uint256 allowance = IERC20(orderData.inputToken).allowance(sender, address(this));
+                require(allowance >= rawAmount, "Insufficient allowance");
+            }
             IERC20(orderData.inputToken).safeTransferFrom(sender, address(this), rawAmount);
             IERC20(orderData.inputToken).safeApprove(orderData.listing, rawAmount);
         }
@@ -660,19 +651,23 @@ contract Multihopper is Ownable, ReentrancyGuard {
         });
     }
 
-    function computeBuyOrderParams(OrderParams memory params) internal view returns (HopExecutionData memory) {
-        // Computes buy order parameters, overriding input token
+    function computeBuyOrderParams(OrderParams memory params, address maker) internal view returns (HopExecutionData memory) {
+        // Computes buy order parameters, overriding input token and recipient
         ISSListing listingContract = ISSListing(params.listing);
-        (address inputToken, uint256 normalizedAmount, address recipient, ) = computeBaseOrderParams(params);
+        (address inputToken, uint256 normalizedAmount, , uint256 rawAmount) = computeBaseOrderParams(params);
         inputToken = listingContract.tokenB(); // Override for buy order
+        address recipient = params.index == params.numListings - 1 ? maker : address(this);
+        require(rawAmount > 0, "Invalid buy order amount");
         return computeBuySpecificParams(params, inputToken, normalizedAmount, recipient);
     }
 
-    function computeSellOrderParams(OrderParams memory params) internal view returns (HopExecutionData memory) {
-        // Computes sell order parameters, overriding input token
+    function computeSellOrderParams(OrderParams memory params, address maker) internal view returns (HopExecutionData memory) {
+        // Computes sell order parameters, overriding input token and recipient
         ISSListing listingContract = ISSListing(params.listing);
-        (address inputToken, uint256 normalizedAmount, address recipient, ) = computeBaseOrderParams(params);
+        (address inputToken, uint256 normalizedAmount, , uint256 rawAmount) = computeBaseOrderParams(params);
         inputToken = listingContract.tokenA(); // Override for sell order
+        address recipient = params.index == params.numListings - 1 ? maker : address(this);
+        require(rawAmount > 0, "Invalid sell order amount");
         return computeSellSpecificParams(params, inputToken, normalizedAmount, recipient);
     }
 
@@ -745,7 +740,7 @@ contract Multihopper is Ownable, ReentrancyGuard {
         updateHopTokens(params, startToken, endToken);
         updateHopSettings(params, settleType, maxIterations);
         validateHopRequest(listing1, listing2, listing3, listing4, impactPercent, params.numListings, maxIterations);
-        initializeHopData(listing1, listing2, listing3, listing4, impactPercent, startToken, endToken, settleType, maxIterations, prepData.indices, prepData.hopId);
+        initializeHopData(listing1, listing2, listing3, listing4, impactPercent, startToken, endToken, settleType, maxIterations, prepData.indices, prepData.hopId, prepData.maker);
         return params;
     }
 
@@ -760,9 +755,10 @@ contract Multihopper is Ownable, ReentrancyGuard {
         uint8 settleType,
         uint256 maxIterations,
         uint256[] memory indices,
-        uint256 hopId
+        uint256 hopId,
+        address maker
     ) internal {
-        // Initializes hop data in hopID mapping
+        // Initializes hop data in hopID mapping with specified maker
         uint256 numListings = 1;
         if (listing2 != address(0)) numListings++;
         if (listing3 != address(0)) numListings++;
@@ -782,7 +778,7 @@ contract Multihopper is Ownable, ReentrancyGuard {
             orderID: 0,
             minPrice: 0,
             maxPrice: 0,
-            hopMaker: msg.sender,
+            hopMaker: maker,
             remainingListings: orderedListings,
             principalAmount: startToken == address(0) ? msg.value : impactPercent,
             startToken: startToken,
@@ -816,10 +812,11 @@ contract Multihopper is Ownable, ReentrancyGuard {
         HopExecutionParams memory params,
         HopPrepData memory prepData
     ) internal {
-        // Executes hop steps, updating hop status and storage
+        // Executes hop steps, updating hop status and storage for the specified maker
         StalledHop storage stalledHop = hopID[prepData.hopId];
         uint256 principal = prepData.principal;
         address currentToken = prepData.currentToken;
+        address maker = prepData.maker;
 
         for (uint256 i = 0; i < prepData.indices.length; i++) {
             OrderParams memory orderParams = OrderParams({
@@ -832,8 +829,8 @@ contract Multihopper is Ownable, ReentrancyGuard {
                 settleType: params.settleType
             });
             HopExecutionData memory execData = prepData.isBuy[i]
-                ? computeBuyOrderParams(orderParams)
-                : computeSellOrderParams(orderParams);
+                ? computeBuyOrderParams(orderParams, maker)
+                : computeSellOrderParams(orderParams, maker);
             (bool completed, uint256 orderId, uint256 amountSent) = processHopStep(execData, msg.sender);
             if (!completed) {
                 stalledHop.orderID = orderId;
@@ -844,7 +841,7 @@ contract Multihopper is Ownable, ReentrancyGuard {
                 for (uint256 j = i + 1; j < prepData.indices.length; j++) {
                     stalledHop.remainingListings[j - i - 1] = params.listingAddresses[prepData.indices[j]];
                 }
-                hopsByAddress[msg.sender].push(prepData.hopId);
+                hopsByAddress[maker].push(prepData.hopId);
                 totalHops.push(prepData.hopId);
                 return;
             }
@@ -853,7 +850,7 @@ contract Multihopper is Ownable, ReentrancyGuard {
         }
 
         stalledHop.hopStatus = 2;
-        hopsByAddress[msg.sender].push(prepData.hopId);
+        hopsByAddress[maker].push(prepData.hopId);
         totalHops.push(prepData.hopId);
     }
 
@@ -887,7 +884,8 @@ contract Multihopper is Ownable, ReentrancyGuard {
         address startToken,
         address endToken,
         uint8 settleType,
-        uint256 maxIterations
+        uint256 maxIterations,
+        address maker
     ) internal view returns (HopPrepData memory) {
         // Prepares hop data, validating inputs and computing route
         require(_routers.length > 0, "No routers set");
@@ -919,7 +917,8 @@ contract Multihopper is Ownable, ReentrancyGuard {
             indices: indices,
             isBuy: isBuy,
             currentToken: startToken,
-            principal: msg.value > 0 ? msg.value : impactPercent
+            principal: msg.value > 0 ? msg.value : impactPercent,
+            maker: maker
         });
     }
 
@@ -932,13 +931,16 @@ contract Multihopper is Ownable, ReentrancyGuard {
         address startToken, // Starting token address (input token for the first hop step)
         address endToken, // Ending token address (output token for the last hop step)
         uint8 settleType, // Settlement type: 0 = market orders, 1 = liquid orders
-        uint256 maxIterations // Maximum settlement iterations per step, must be > 0
-    ) external payable nonReentrant onlyValidListing(listing1) {
-        // Initiates a multi-step token swap
-        HopPrepData memory prepData = prepHop(listing1, listing2, listing3, listing4, impactPercent, startToken, endToken, settleType, maxIterations);
+        uint256 maxIterations, // Maximum settlement iterations per step, must be > 0
+        address maker // Maker address for the hop, defaults to msg.sender if address(0)
+    ) external payable nonReentrant onlyValidListing(listing1) returns (uint256) {
+        // Initiates a multi-step token swap on behalf of maker
+        address effectiveMaker = maker == address(0) ? msg.sender : maker;
+        HopPrepData memory prepData = prepHop(listing1, listing2, listing3, listing4, impactPercent, startToken, endToken, settleType, maxIterations, effectiveMaker);
         executeHop(listing1, listing2, listing3, listing4, impactPercent, startToken, endToken, settleType, maxIterations, prepData);
-        emit HopStarted(prepData.hopId, msg.sender, prepData.indices.length);
+        emit HopStarted(prepData.hopId, effectiveMaker, prepData.indices.length);
         nextHopId++;
+        return prepData.hopId;
     }
 
     function prepStalls() internal returns (StallData[] memory) {
@@ -950,7 +952,7 @@ contract Multihopper is Ownable, ReentrancyGuard {
         for (uint256 i = 0; i < userHops.length && count < 20; i++) {
             StalledHop storage stalledHop = hopID[userHops[i]];
             if (stalledHop.hopStatus != 1) continue;
-            (uint256 pending, uint256 filled, uint8 status, uint256 receivedAmount) = checkOrderStatus(
+            (uint256 pending, uint256 filled, uint8 status, uint256 amountSent) = checkOrderStatus(
                 stalledHop.currentListing, stalledHop.orderID, stalledHop.maxPrice > 0
             );
             stalls[count] = StallData({
@@ -961,7 +963,7 @@ contract Multihopper is Ownable, ReentrancyGuard {
                 pending: pending,
                 filled: filled,
                 status: status,
-                amountSent: receivedAmount,
+                amountSent: amountSent,
                 hopMaker: stalledHop.hopMaker
             });
             count++;
@@ -983,7 +985,7 @@ contract Multihopper is Ownable, ReentrancyGuard {
         for (uint256 i = 0; i < totalHops.length && count < 20; i++) {
             StalledHop storage stalledHop = hopID[totalHops[i]];
             if (stalledHop.hopStatus != 1) continue;
-            (uint256 pending, uint256 filled, uint8 status, uint256 receivedAmount) = checkOrderStatus(
+            (uint256 pending, uint256 filled, uint8 status, uint256 amountSent) = checkOrderStatus(
                 stalledHop.currentListing, stalledHop.orderID, stalledHop.maxPrice > 0
             );
             stalls[count] = StallData({
@@ -994,7 +996,7 @@ contract Multihopper is Ownable, ReentrancyGuard {
                 pending: pending,
                 filled: filled,
                 status: status,
-                amountSent: receivedAmount,
+                amountSent: amountSent,
                 hopMaker: stalledHop.hopMaker
             });
             count++;
@@ -1124,16 +1126,23 @@ contract Multihopper is Ownable, ReentrancyGuard {
         }
     }
 
-    function _clearHopOrder(address listing, uint256 orderId, bool isBuy) internal {
-        // Clears a hop order, refunding appropriate amounts
+    function _prepClearHopOrder(address listing, uint256 orderId, bool isBuy, uint256 hopId)
+        internal view returns (address maker, address recipient, uint8 status, uint256 pending, uint256 filled, uint256 amountSent, address tokenIn, address tokenOut)
+    {
+        // Prepares data for clearing a hop order, checking permissions and retrieving order details
         ISSListing listingContract = ISSListing(listing);
-        (address maker, address recipient, uint8 status) = isBuy ? listingContract.getBuyOrderCore(orderId) : listingContract.getSellOrderCore(orderId);
+        (maker, recipient, status) = isBuy ? listingContract.getBuyOrderCore(orderId) : listingContract.getSellOrderCore(orderId);
         require(maker == msg.sender, "Only maker can cancel");
         require(status == 1 || status == 2, "Order not cancellable");
-        (uint256 pending, uint256 filled, , uint256 amountSent) = checkOrderStatus(listing, orderId, isBuy);
-        address tokenIn = isBuy ? listingContract.tokenB() : listingContract.tokenA();
-        address tokenOut = isBuy ? listingContract.tokenA() : listingContract.tokenB();
-        uint256 balanceBefore = tokenOut == address(0) ? address(this).balance : IERC20(tokenOut).balanceOf(address(this));
+        (pending, filled, , amountSent) = checkOrderStatus(listing, orderId, isBuy);
+        tokenIn = isBuy ? listingContract.tokenB() : listingContract.tokenA();
+        tokenOut = isBuy ? listingContract.tokenA() : listingContract.tokenB();
+    }
+
+    function _executeClearHopOrder(CancelPrepData memory prepData) internal {
+        // Executes cancellation of a hop order, updating status and handling refunds
+        ISSListing listingContract = ISSListing(prepData.listing);
+        uint256 balanceBefore = prepData.outputToken == address(0) ? address(this).balance : IERC20(prepData.outputToken).balanceOf(address(this));
         HopUpdateType[] memory hopUpdates = new HopUpdateType[](1);
         setOrderStatus(hopUpdates, 0);
         ISSListing.UpdateType[] memory updates = new ISSListing.UpdateType[](hopUpdates.length);
@@ -1144,15 +1153,15 @@ contract Multihopper is Ownable, ReentrancyGuard {
             });
         }
         try listingContract.update(updates) {
-            uint256 balanceAfter = tokenOut == address(0) ? address(this).balance : IERC20(tokenOut).balanceOf(address(this));
+            uint256 balanceAfter = prepData.outputToken == address(0) ? address(this).balance : IERC20(prepData.outputToken).balanceOf(address(this));
             CancelBalanceData memory balanceData = CancelBalanceData({
-                token: tokenOut,
+                token: prepData.outputToken,
                 balanceBefore: balanceBefore,
                 balanceAfter: balanceAfter
             });
-            _handleFilledOrSent(filled, amountSent, tokenOut, recipient);
-            _handlePending(pending, tokenIn);
-            _handleBalance(balanceData);
+            _handleFilledOrSent(prepData.filled, prepData.receivedAmount, prepData.outputToken, prepData.recipient);
+            _handlePending(prepData.pending, prepData.inputToken, prepData.hopId);
+            _handleBalance(balanceData, prepData.hopId);
         } catch {
             revert("Order cancellation failed");
         }
@@ -1161,36 +1170,35 @@ contract Multihopper is Ownable, ReentrancyGuard {
     function _handleFilledOrSent(uint256 filled, uint256 receivedAmount, address outputToken, address recipient) internal {
         // Refunds amountSent (if non-zero and not yet received) or filled to recipient
         if (filled > 0 || receivedAmount > 0) {
-            require(recipient == msg.sender, "Recipient must be hop maker for refund");
             uint256 rawAmount = denormalizeForToken(receivedAmount > 0 ? receivedAmount : filled, outputToken);
             if (outputToken == address(0)) {
-                payable(msg.sender).transfer(rawAmount);
+                payable(recipient).transfer(rawAmount);
             } else {
-                IERC20(outputToken).safeTransfer(msg.sender, rawAmount);
+                IERC20(outputToken).safeTransfer(recipient, rawAmount);
             }
         }
     }
 
-    function _handlePending(uint256 pending, address inputToken) internal {
-        // Refunds pending amount in input token to msg.sender
+    function _handlePending(uint256 pending, address inputToken, uint256 hopId) internal {
+        // Refunds pending amount in input token to hopMaker
         if (pending > 0) {
             uint256 rawPending = denormalizeForToken(pending, inputToken);
             if (inputToken == address(0)) {
-                payable(msg.sender).transfer(rawPending);
+                payable(hopID[hopId].hopMaker).transfer(rawPending);
             } else {
-                IERC20(inputToken).safeTransfer(msg.sender, rawPending);
+                IERC20(inputToken).safeTransfer(hopID[hopId].hopMaker, rawPending);
             }
         }
     }
 
-    function _handleBalance(CancelBalanceData memory balanceData) internal {
-        // Refunds any additional balance increase in output token
+    function _handleBalance(CancelBalanceData memory balanceData, uint256 hopId) internal {
+        // Refunds any additional balance increase in output token to hopMaker
         if (balanceData.balanceAfter > balanceData.balanceBefore) {
             uint256 amount = balanceData.balanceAfter - balanceData.balanceBefore;
             if (balanceData.token == address(0)) {
-                payable(msg.sender).transfer(amount);
+                payable(hopID[hopId].hopMaker).transfer(amount);
             } else {
-                IERC20(balanceData.token).safeTransfer(msg.sender, amount);
+                IERC20(balanceData.token).safeTransfer(hopID[hopId].hopMaker, amount);
             }
         }
     }
@@ -1205,7 +1213,7 @@ contract Multihopper is Ownable, ReentrancyGuard {
     }
 
     function _prepCancelHopBuy(uint256 hopId) internal returns (CancelPrepData memory) {
-        // Prepares cancellation data for a buy order
+        // Prepares cancellation data for a buy order and initiates order clearing
         StalledHop storage stalledHop = hopID[hopId];
         require(stalledHop.hopMaker == msg.sender, "Not hop maker");
         require(stalledHop.hopStatus == 1, "Hop not stalled");
@@ -1213,9 +1221,10 @@ contract Multihopper is Ownable, ReentrancyGuard {
         ISSListing listing = ISSListing(stalledHop.currentListing);
         address outputToken = listing.tokenA();
         address inputToken = listing.tokenB();
-        (uint256 pending, uint256 filled, uint8 status, uint256 receivedAmount, address recipient) = _getOrderDetails(stalledHop.currentListing, stalledHop.orderID, true);
+        (address maker, address recipient, uint8 status, uint256 pending, uint256 filled, uint256 receivedAmount, , ) =
+            _prepClearHopOrder(stalledHop.currentListing, stalledHop.orderID, true, hopId);
 
-        return CancelPrepData({
+        CancelPrepData memory prepData = CancelPrepData({
             hopId: hopId,
             listing: stalledHop.currentListing,
             isBuy: true,
@@ -1227,10 +1236,13 @@ contract Multihopper is Ownable, ReentrancyGuard {
             receivedAmount: receivedAmount,
             recipient: recipient
         });
+
+        _executeClearHopOrder(prepData);
+        return prepData;
     }
 
     function _prepCancelHopSell(uint256 hopId) internal returns (CancelPrepData memory) {
-        // Prepares cancellation data for a sell order
+        // Prepares cancellation data for a sell order and initiates order clearing
         StalledHop storage stalledHop = hopID[hopId];
         require(stalledHop.hopMaker == msg.sender, "Not hop maker");
         require(stalledHop.hopStatus == 1, "Hop not stalled");
@@ -1238,9 +1250,10 @@ contract Multihopper is Ownable, ReentrancyGuard {
         ISSListing listing = ISSListing(stalledHop.currentListing);
         address outputToken = listing.tokenB();
         address inputToken = listing.tokenA();
-        (uint256 pending, uint256 filled, uint8 status, uint256 receivedAmount, address recipient) = _getOrderDetails(stalledHop.currentListing, stalledHop.orderID, false);
+        (address maker, address recipient, uint8 status, uint256 pending, uint256 filled, uint256 receivedAmount, , ) =
+            _prepClearHopOrder(stalledHop.currentListing, stalledHop.orderID, false, hopId);
 
-        return CancelPrepData({
+        CancelPrepData memory prepData = CancelPrepData({
             hopId: hopId,
             listing: stalledHop.currentListing,
             isBuy: false,
@@ -1252,6 +1265,9 @@ contract Multihopper is Ownable, ReentrancyGuard {
             receivedAmount: receivedAmount,
             recipient: recipient
         });
+
+        _executeClearHopOrder(prepData);
+        return prepData;
     }
 
     function _finalizeCancel(uint256 hopId) internal {
@@ -1273,8 +1289,11 @@ contract Multihopper is Ownable, ReentrancyGuard {
         // Cancels a single hop, refunding appropriate amounts
         StalledHop storage stalledHop = hopID[hopId];
         bool isBuy = stalledHop.maxPrice > 0;
-        CancelPrepData memory prepData = isBuy ? _prepCancelHopBuy(hopId) : _prepCancelHopSell(hopId);
-        _clearHopOrder(prepData.listing, stalledHop.orderID, isBuy);
+        if (isBuy) {
+            _prepCancelHopBuy(hopId);
+        } else {
+            _prepCancelHopSell(hopId);
+        }
         _finalizeCancel(hopId);
     }
 
