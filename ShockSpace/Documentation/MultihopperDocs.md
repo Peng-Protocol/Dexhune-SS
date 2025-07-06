@@ -5,7 +5,7 @@ The `Multihopper` contract, implemented in Solidity (^0.8.2), facilitates multi-
 
 **SPDX License:** BSD-3-Clause
 
-**Version:** 0.0.37 (last updated 2025-07-04)
+**Version:** 0.0.41 (last updated 2025-07-06)
 
 **Compatible Contracts:**
 - `SSRouter` v0.0.61
@@ -17,8 +17,10 @@ The `Multihopper` contract, implemented in Solidity (^0.8.2), facilitates multi-
 - **Usage of filled**: The `filled` field in `StallData` tracks the amount of input token settled in a hop step, starting at zero if no settlement occurs, and is refunded in the input token via `_handleFilledOrSent` during cancellation if `amountSent` is zero.
 - **Field Conflicts with SSListingTemplate**: The `SSListingTemplate` contract's order structs (e.g., `BuyOrder`, `SellOrder`) also define `filled` (input token processed) and `amountSent` (output token transferred), but `Multihopper` avoids conflicts by explicitly mapping `ISSListing.getBuyOrderAmounts` or `getSellOrderAmounts` results to `StallData` fields, ensuring distinct usage.
 - **Listing Validation**: The `onlyValidListing` modifier in the `hop` function only validates `listing1`, but `validateHopRequest`, called within `prepHop` before hop initiation, validates all non-zero listings (`listing1` to `listing4`) via `ISSAgent.getListing`, sufficiently preventing attacks from malicious or unverified listing contracts.
-- **Hop Cancellation Refunds**: Hop cancellation accurately refunds any amount pending or partially settled; for intermediate hops, both `pending` (e.g., 25 TokenA) in the input token and `amountSent` (e.g., 100 TokenB) in the output token are refunded to the hop maker via `_clearHopOrder` and `_handleFilledOrSent`, while for end hops, only `pending` is refunded via `_handlePending` if `amountSent` was already received by the hop maker (per `computeBaseOrderParams`), ensuring no duplicate refunds.
+- **Hop Cancellation Refunds**: Hop cancellation accurately refunds any amount pending or partially settled; for intermediate hops, both `pending` (e.g., 25 TokenA) in the input token and `amountSent` (e.g., 100 TokenB) in the output token are refunded to the hop maker via `_executeClearHopOrder` and `_handleFilledOrSent`, while for end hops, only `pending` is refunded via `_handlePending` if `amountSent` was already received by the hop maker (per `computeBaseOrderParams`), ensuring no duplicate refunds.
 - **Balance Checks**: The contract implements pre/post balance checks in `_checkTransfer` to verify token transfers by comparing balances before and after, returning the actual amount transferred (`balanceAfter - balanceBefore`) for use in `_createHopOrder` and `_handleBalance`, ensuring accurate tracking for both native currency and ERC20 tokens with proper normalization via `denormalizeForToken`.
+- **Single Listing Route**: If a route has only one listing specified, with others zeroed, `validateHopRequest` ensures `listing1` is valid, `computeRoute` verifies `startToken` and `endToken` match the listing’s token pair, and the hop executes as a single-step swap.
+- **maxIterations Usage**: The `maxIterations` parameter in `hop` is stored in `StalledHop` and used in `safeSettle` to limit settlement attempts for each order, persisting for `continueHop` to control new order settlements; in `continueHop`, a separate `maxIterations` limits the number of stalled hops processed per call, resetting with each `continueHop` invocation, while `StalledHop.maxIterations` remains fixed unless the hop completes or is cancelled.
 
 ## State Variables
 - **nextHopId** (uint256, private): Tracks the next hop ID for unique identification of hop requests.
@@ -34,7 +36,7 @@ The `Multihopper` contract, implemented in Solidity (^0.8.2), facilitates multi-
 - **HopRequest**: Holds `numListings` (uint256, number of listings), `listingAddresses` (address[], up to 4 listings), `impactPricePercents` (uint256[], price impact percents), `startToken` (address, input token), `endToken` (address, output token), `settleType` (uint8, 0 = market, 1 = liquid), `maxIterations` (uint256, max settlement iterations).
 - **StalledHop**: Tracks `stage` (uint8, current hop stage), `currentListing` (address, active listing), `orderID` (uint256, current order ID), `minPrice` (uint256, min price for sell), `maxPrice` (uint256, max price for buy), `hopMaker` (address, hop initiator), `remainingListings` (address[], remaining listings), `principalAmount` (uint256, current input amount), `startToken` (address, input token), `endToken` (address, output token), `settleType` (uint8, settlement type), `hopStatus` (uint8, 1 = stalled, 2 = completed), `maxIterations` (uint256, max iterations).
 - **StallData**: Stores `hopId` (uint256), `listing` (address), `orderId` (uint256), `isBuy` (bool), `pending` (uint256, pending amount), `filled` (uint256, filled amount), `status` (uint8, order status), `amountSent` (uint256, amount sent), `hopMaker` (address).
-- **HopPrepData**: Includes `hopId` (uint256), `indices` (uint256[], listing indices), `isBuy` (bool[], buy/sell flags), `currentToken` (address, current token), `principal` (uint256, input amount).
+- **HopPrepData**: Includes `hopId` (uint256), `indices` (uint256[], listing indices), `isBuy` (bool[], buy/sell flags), `currentToken` (address, current token), `principal` (uint256, input amount), `maker` (address, hop initiator).
 - **HopExecutionData**: Contains `listing` (address), `isBuy` (bool), `recipient` (address), `priceLimit` (uint256, normalized price limit), `principal` (uint256, denormalized input), `inputToken` (address), `settleType` (uint8), `maxIterations` (uint256), `updates` (HopUpdateType[], order updates).
 - **StallExecutionData**: Mirrors `HopExecutionData` with `listing`, `isBuy`, `recipient`, `priceLimit`, `principal`, `settleType`, `maxIterations`, `updates`.
 - **CancelPrepData**: Includes `hopId` (uint256), `listing` (address), `isBuy` (bool), `outputToken` (address), `inputToken` (address), `pending` (uint256), `filled` (uint256), `status` (uint8), `receivedAmount` (uint256), `recipient` (address).
@@ -43,11 +45,11 @@ The `Multihopper` contract, implemented in Solidity (^0.8.2), facilitates multi-
 - **HopExecutionParams**: Contains `listingAddresses` (address[], up to 4 listings), `impactPricePercents` (uint256[], price impact percents), `startToken` (address, input token), `endToken` (address, output token), `settleType` (uint8, 0 = market, 1 = liquid), `maxIterations` (uint256, max iterations), `numListings` (uint256, number of listings).
 - **OrderParams**: Contains `listing` (address), `principal` (uint256, input amount), `impactPercent` (uint256, scaled to 1000), `index` (uint256, route index), `numListings` (uint256), `maxIterations` (uint256), `settleType` (uint8).
 - **HopRouteData**: Contains `listings` (address[], ordered listing addresses), `isBuy` (bool[], buy/sell flags for each listing).
-- **HopOrderDetails**: Includes `pending` (uint256, pending amount in input token), `filled` (uint256, filled amount in input token), `status` (uint8, order status: 1 = active, 2 = partially filled, 3 = completed), `amountSent` (uint256, amount sent in output token), `recipient` (address,  recipient of output tokens).
+- **HopOrderDetails**: Includes `pending` (uint256, pending amount in input token), `filled` (uint256, filled amount in input token), `status` (uint8, order status: 1 = active, 2 = partially filled, 3 = completed), `amountSent` (uint256, amount sent in output token), `recipient` (address, recipient of output tokens).
 
 ## Formulas
 1. **Price Impact**:
-   - **Formula**: `impactPrice = (newXBalance * 1e18) /城乡 newYBalance`, where `newXBalance = xBalance ± amountOut`, `newYBalance = yBalance ± inputAmount` (based on buy/sell).
+   - **Formula**: `impactPrice = (newXBalance * 1e18) / newYBalance`, where `newXBalance = xBalance ± amountOut`, `newYBalance = yBalance ± inputAmount` (based on buy/sell).
    - **Used in**: `_validatePriceImpact`, `computeBuyOrderParams`, `computeSellOrderParams`.
    - **Description**: Calculates price after trade, ensuring it stays within `currentPrice * (10000 ± impactPercent) / 10000`.
 
@@ -119,25 +121,26 @@ The `Multihopper` contract, implemented in Solidity (^0.8.2), facilitates multi-
   - Reverts if `agent` is zero.
 - **Gas Usage Controls**: Single state write, minimal gas.
 
-### hop(address listing1, address listing2, address listing3, address listing4, uint256 impactPercent, address startToken, address endToken, uint8 settleType, uint256 maxIterations)
+### hop(address listing1, address listing2, address listing3, address listing4, uint256 impactPercent, address startToken, address endToken, uint8 settleType, uint256 maxIterations, address maker)
 - **Parameters**:
   - `listing1`–`listing4` (address): Listing contracts (listing2–4 optional, set to address(0) if unused).
   - `impactPercent` (uint256): Max price impact (scaled to 1000, e.g., 500 = 5%), applied to all listings.
   - `startToken` (address): Input token.
   - `endToken` (address): Output token.
   - `settleType` (uint8): 0 = market, 1 = liquid.
-  - `maxIterations` (uint256): Max settlement iterations.
-- **Behavior**: Initiates a multi-step token swap, creating orders across listings, settling via routers, and tracking progress in `hopID`. Emits `HopStarted`.
+  - `maxIterations` (uint256): Max settlement iterations per order, stored in `StalledHop` and used in `safeSettle` for initial and continued hop steps.
+  - `maker` (address): Hop initiator, defaults to `msg.sender` if `address(0)`.
+- **Behavior**: Initiates a multi-step token swap on behalf of `maker`, creating orders across listings, settling via routers with `maxIterations` limiting settlement attempts, and tracking progress in `hopID`. Emits `HopStarted`.
 - **Internal Call Flow**:
   - Calls `prepHop` to validate inputs and compute route (`computeRoute` returns `indices`, `isBuy`).
-  - `prepareHopExecution` builds `HopExecutionParams`, calls `initializeHopData` to store in `hopID`.
+  - `prepareHopExecution` builds `HopExecutionParams`, calls `initializeHopData` to store in `hopID` with `maxIterations`.
   - `executeHopSteps`:
     - Iterates route, calling `computeBuyOrderParams` or `computeSellOrderParams`.
     - `_createHopOrder` transfers `inputAmount` to listing via `IERC20.safeTransferFrom` (input: `msg.sender`, `listing`, `rawAmount`, returns: `bool`), with balance checks via `_checkTransfer`.
     - `safeSettle` calls `ISSRouter.settleBuyOrders`/`settleSellOrders` or `settleBuyLiquid`/`settleSellLiquid` (input: `listing`, `maxIterations`, returns: none).
     - `checkOrderStatus` retrieves order details via `ISSListing.getBuyOrderCore`, `getSellOrderCore`, `getBuyOrderAmounts`, `getSellOrderAmounts`.
     - Updates `hopID`, `hopsByAddress`, `totalHops` if stalled or completed.
-  - Transfer destinations: Listings for input tokens, `msg.sender` or contract for outputs.
+  - Transfer destinations: Listings for input tokens, `maker` or contract for outputs.
 - **Balance Checks**:
   - **Pre-Balance Check**: `IERC20.balanceOf(listing)` or `address(listing).balance` before transfer.
   - **Post-Balance Check**: `balanceAfter > balanceBefore` confirms transfer.
@@ -151,20 +154,20 @@ The `Multihopper` contract, implemented in Solidity (^0.8.2), facilitates multi-
 
 ### continueHop(uint256 maxIterations)
 - **Parameters**:
-  - `maxIterations` (uint256): Max hops to process.
-- **Behavior**: Continues stalled hops for `msg.sender`, processing up to `maxIterations`. Emits `HopContinued`, `StallsPrepared`, `StallsExecuted`.
+  - `maxIterations` (uint256): Max hops to process, resetting per call, separate from `StalledHop.maxIterations` used for settlement attempts.
+- **Behavior**: Continues stalled hops for `msg.sender`, processing up to `maxIterations` hops, using stored `StalledHop.maxIterations` for settlement attempts in new orders. Emits `HopContinued`, `StallsPrepared`, `StallsExecuted`.
 - **Internal Call Flow**:
   - Iterates `hopsByAddress` via `prepStalls` (up to 20 hops), retrieving `StallData` using `checkOrderStatus`.
   - `executeStalls`:
     - Checks order completion (`status == 3`, `pending == 0`).
-    - Advances `hopID.stage`, creates new orders via `_createHopOrder`, settles via `safeSettle`, updates `hopID.remainingListings`.
-    - Updates `hopsByAddress`, `totalHops` if completed.
+    - Advances `hopID.stage`, creates new orders via `_createHopOrder`, settles via `safeSettle` using `StalledHop.maxIterations`.
+    - Updates `hopID.remainingListings`, `hopsByAddress`, `totalHops` if completed.
   - Transfer destinations: Listings for inputs, `msg.sender` or contract for outputs.
 - **Balance Checks**:
   - **Pre-Balance Check**: `IERC20.balanceOf(listing)` or `address(listing).balance` in `_createHopOrder`.
   - **Post-Balance Check**: `balanceAfter > balanceBefore` in `_checkTransfer`.
 - **Mappings/Structs Used**:
-  1. **Mappings**: `hopID`, `hopsByAddress`, `totalHops`.
+  - **Mappings**: `hopID`, `hopsByAddress`, `totalHops`.
   - **Structs**: `StallData`, `StallExecutionData`, `HopUpdateType`, `OrderUpdateData`, `StalledHop`.
 - **Restrictions**:
   - Protected by `nonReentrant`.
@@ -174,7 +177,7 @@ The `Multihopper` contract, implemented in Solidity (^0.8.2), facilitates multi-
 ### executeHops(uint256 maxIterations)
 - **Parameters**:
   - `maxIterations` (uint256): Max iterations for processing hops.
-- **Behavior**: Processes all stalled hops globally, up to `maxIterations`. Emits `StallsPrepared`, `StallsExecuted`, `HopContinued`.
+- **Behavior**: Processes all stalled hops globally, up to `maxIterations`, using stored `StalledHop.maxIterations` for settlement attempts. Emits `StallsPrepared`, `StallsExecuted`, `HopContinued`.
 - **Internal Call Flow**:
   - Iterates `totalHops` via `prepAllStalls` (up to 20 hops), retrieving `StallData`.
   - `executeStalls` mirrors `continueHop`, processing orders and updating `hopID`, `hopsByAddress`, `totalHops`.
@@ -193,21 +196,30 @@ The `Multihopper` contract, implemented in Solidity (^0.8.2), facilitates multi-
   - `hopId` (uint256): Hop ID to cancel.
 - **Behavior**: Cancels a stalled hop, refunding `amountSent` (if non-zero and not yet received) in the output token or `filled` in the input token via `_handleFilledOrSent`, and `pending` in the input token (e.g., 25 TokenA for 25 TokenA unsettled from 50 TokenA sent) via `_handlePending` to the hop maker; for end hops, only `pending` is refunded if `amountSent` (e.g., 100 TokenB) was already received by the hop maker. Emits `HopCanceled`.
 - **Internal Call Flow**:
-  - Calls `_prepCancelHopBuy` or `_prepCancelHopSell` based on `hopID.maxPrice`.
-  - `_clearHopOrder` updates `ISSListing.update` (input: `HopUpdateType[]` for status, returns: none), checks balances via `IERC20.balanceOf` or `address(this).balance`.
-  - `_handleFilledOrSent` refunds `amountSent` (if non-zero and not yet received) in output token or `filled` in input token, `_handlePending` refunds `pending` in input token to `msg.sender`.
-  - `_finalizeCancel` updates `hopID.hopStatus` - sets to "completed", removes from `hopsByAddress`.
-  - Transfer destinations: `msg.sender` for refunds.
+  - Calls `_cancelHop`, which determines if the hop is a buy (`maxPrice > 0`) or sell order.
+  - `_prepCancelHopBuy` or `_prepCancelHopSell`:
+    - Validates `hopMaker == msg.sender` and `hopStatus == 1`.
+    - Identifies `inputToken` and `outputToken` using `ISSListing.tokenA` and `tokenB`.
+    - Calls `_prepClearHopOrder` to retrieve order details (`maker`, `recipient`, `status`, `pending`, `filled`, `amountSent`, `tokenIn`, `tokenOut`).
+    - Populates `CancelPrepData` struct and calls `_executeClearHopOrder`.
+  - `_executeClearHopOrder`:
+    - Updates order status via `ISSListing.update` (input: `HopUpdateType[]` for status, returns: none).
+    - Checks balances via `IERC20.balanceOf` or `address(this).balance`.
+    - Calls `_handleFilledOrSent` to refund `amountSent` (if non-zero and not yet received) or `filled` in output token.
+    - Calls `_handlePending` to refund `pending` in input token to `hopMaker`.
+    - Calls `_handleBalance` to refund any additional balance increase in output token.
+  - `_finalizeCancel` updates `hopID.hopStatus` to 2 and removes from `hopsByAddress`.
+  - Transfer destinations: `hopMaker` for refunds.
 - **Balance Checks**:
-  - **Pre-Balance Check**: `IERC20.balanceOf(this)` or `address(this).balance` before cancellation.
-  - **Post-Balance Check**: `balanceAfter > balanceBefore` confirms refund transfer.
+  - **Pre-Balance Check**: `IERC20.balanceOf(this)` or `address(this).balance` before cancellation in `_executeClearHopOrder`.
+  - **Post-Balance Check**: `balanceAfter > balanceBefore` confirms refund transfer in `_handleBalance`.
 - **Mappings/Structs Used**:
   - **Mappings**: `hopID`, `hopsByAddress`.
   - **Structs**: `CancelPrepData`, `CancelBalanceData`, `HopUpdateType`, `StalledHop`.
 - **Restrictions**:
   - Protected by `nonReentrant`.
   - Reverts if not hop maker, `hopStatus != 1`, or order not cancellable.
-- **Gas Usage Controls**: Single hop processing, pop-and-swap for arrays.
+- **Gas Usage Controls**: Single hop processing, pop-and-swap for arrays, minimal additional calls due to call tree.
 
 ### cancelAll(uint256 maxIterations)
 - **Parameters**:
@@ -215,7 +227,7 @@ The `Multihopper` contract, implemented in Solidity (^0.8.2), facilitates multi-
 - **Behavior**: Cancels up to `maxIterations` stalled hops for `msg.sender`, refunding `amountSent` (if non-zero and not yet received) in the output token or `filled` in the input token, and `pending` in the input token (e.g., 25 TokenA for 25 TokenA unsettled from 50 TokenA sent) for each hop; for end hops, only `pending` is refunded if `amountSent` (e.g., 100 TokenB) was already received. Emits `AllHopsCanceled`.
 - **Internal Call Flow**:
   - Iterates `hopsByAddress`, calling `_cancelHop` for `hopStatus == 1` hops.
-  - Transfer destinations: `msg.sender` for refunds.
+  - Transfer destinations: `hopMaker` for refunds.
 - **Balance Checks**:
   - Same as `cancelHop`.
 - **Mappings/Structs Used**:
@@ -372,3 +384,4 @@ The `Multihopper` contract, implemented in Solidity (^0.8.2), facilitates multi-
 - **Events**: Emitted for hop start (`HopStarted`), continuation (`HopContinued`), cancellation (`HopCanceled`, `AllHopsCanceled`), stall preparation (`StallsPrepared`), execution (`StallsExecuted`), router changes (`RouterAdded`, `RouterRemoved`), and agent setting (`AgentSet`).
 - **Safety**: Explicit casting, balance checks, no inline assembly, and robust validation ensure secure operation.
 - **Price Impact**: Ensures trades stay within `impactPercent` (≤ 1000) of current price, preventing excessive slippage.
+- **maxIterations Persistence**: `maxIterations` in `hop` is stored in `StalledHop` for settlement attempts in `safeSettle` during initial and continued hops; `continueHop` and `executeHops` use a separate `maxIterations` to limit hop processing, which resets per call without affecting `StalledHop.maxIterations`.
