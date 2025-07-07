@@ -21,6 +21,7 @@ The `ChronoHopper` contract, implemented in Solidity (^0.8.2), facilitates time-
 - **Decimal Handling**: The `normalizeForToken` and `denormalizeForToken` functions handle token decimals (≤ 18) to ensure consistent calculations across native currency and ERC20 tokens.
 - **Gas Optimization**: The contract uses `maxIterations` for bounded loops, pop-and-swap for array resizing, and an internal call tree (`computeListings`, `computeTokens`, `computeHopSettings`) to minimize stack usage and gas costs.
 - **Stack Optimization**: The `prepChronoHop` function is split into `computeListings` (listing addresses and impact percents), `computeTokens` (token-related parameters), and `computeHopSettings` (hop settings), reducing stack pressure in a single transaction.
+- **Hop Finalization**: Once a chronoHop is executed, (hopStatus 2), it cannot be cancelled from the ChronoHopper as the hop is now in the Multihopper. However, each chronoHop stores the `multiHopId` which allows the maker to find their pending multiHop and potentially cancel it from there if not already finalized. 
 
 ## State Variables
 - **nextChronoHopId** (uint256, private): Tracks the next hop ID for unique identification of hop requests.
