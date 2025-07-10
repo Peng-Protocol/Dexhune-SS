@@ -1,8 +1,9 @@
 // SPDX-License-Identifier: BSD-3-Clause
 pragma solidity ^0.8.2;
 
-// Version: 0.0.57 (Updated)
+// Version: 0.0.58 (Updated)
 // Changes:
+// - v0.0.58: Modified settleSingleLongLiquid and settleSingleShortLiquid to set payout status to completed (3) for zero-amount payouts, preventing indefinite pending state and array clogging in SSListingTemplate.sol.
 // - v0.0.57: Fixed stack-too-deep error in executeSellOrders and executeBuyOrders by introducing internal _processSellOrder and _processBuyOrder helper functions to handle loop bodies, reducing stack usage to ~13 variables. Restored _getTokenAndDecimals usage to align with ISSListingTemplate's modular helper design.
 // - v0.0.56: Attempted to fix stack-too-deep error by inlining _getTokenAndDecimals and removing unused filled and amountSent variables, but error persisted.
 // - v0.0.55: Fixed stack-too-deep error by introducing PrepOrderUpdateResult struct to encapsulate _prepSellOrderUpdate and _prepBuyOrderUpdate return values, reducing stack usage. Optimized loop variables and tuple destructuring.
@@ -286,11 +287,31 @@ contract SSSettlementPartial is SSOrderPartial {
         address listingAddress,
         uint256 orderIdentifier
     ) internal returns (ISSListingTemplate.PayoutUpdate[] memory updates) {
-        // Settles single long liquidation payout
+        // Settles single long liquidation payout, marks zero-amount as completed
         ISSListingTemplate listingContract = ISSListingTemplate(listingAddress);
         ISSListingTemplate.LongPayoutStruct memory payout = listingContract.getLongPayout(orderIdentifier);
         if (payout.required == 0) {
-            return new ISSListingTemplate.PayoutUpdate[](0);
+            updates = new ISSListingTemplate.PayoutUpdate[](1);
+            updates[0] = ISSListingTemplate.PayoutUpdate({
+                payoutType: 0,
+                recipient: payout.recipientAddress,
+                required: 0
+            });
+            // Update status to completed (3)
+            ISSListingTemplate.UpdateType[] memory statusUpdate = new ISSListingTemplate.UpdateType[](1);
+            statusUpdate[0] = ISSListingTemplate.UpdateType({
+                updateType: 0, // Balance update type used to modify payout status
+                structId: 0,
+                index: orderIdentifier,
+                value: 3, // Set status to completed
+                addr: payout.makerAddress,
+                recipient: payout.recipientAddress,
+                maxPrice: 0,
+                minPrice: 0,
+                amountSent: 0
+            });
+            listingContract.update(address(this), statusUpdate);
+            return updates;
         }
         PayoutContext memory context = _prepPayoutContext(listingAddress, orderIdentifier, true);
         context.recipientAddress = payout.recipientAddress;
@@ -310,11 +331,31 @@ contract SSSettlementPartial is SSOrderPartial {
         address listingAddress,
         uint256 orderIdentifier
     ) internal returns (ISSListingTemplate.PayoutUpdate[] memory updates) {
-        // Settles single short liquidation payout
+        // Settles single short liquidation payout, marks zero-amount as completed
         ISSListingTemplate listingContract = ISSListingTemplate(listingAddress);
         ISSListingTemplate.ShortPayoutStruct memory payout = listingContract.getShortPayout(orderIdentifier);
         if (payout.amount == 0) {
-            return new ISSListingTemplate.PayoutUpdate[](0);
+            updates = new ISSListingTemplate.PayoutUpdate[](1);
+            updates[0] = ISSListingTemplate.PayoutUpdate({
+                payoutType: 1,
+                recipient: payout.recipientAddress,
+                required: 0
+            });
+            // Update status to completed (3)
+            ISSListingTemplate.UpdateType[] memory statusUpdate = new ISSListingTemplate.UpdateType[](1);
+            statusUpdate[0] = ISSListingTemplate.UpdateType({
+                updateType: 0, // Balance update type used to modify payout status
+                structId: 0,
+                index: orderIdentifier,
+                value: 3, // Set status to completed
+                addr: payout.makerAddress,
+                recipient: payout.recipientAddress,
+                maxPrice: 0,
+                minPrice: 0,
+                amountSent: 0
+            });
+            listingContract.update(address(this), statusUpdate);
+            return updates;
         }
         PayoutContext memory context = _prepPayoutContext(listingAddress, orderIdentifier, false);
         context.recipientAddress = payout.recipientAddress;
