@@ -1,5 +1,3 @@
-
-
 # Multihopper Contract Documentation
 
 ## Overview
@@ -12,15 +10,6 @@ The `Multihopper` contract, implemented in Solidity (^0.8.2), facilitates multi-
 **Compatible Contracts:**
 - `SSRouter` v0.0.61
 - `SSListingTemplate` v0.0.10
-
-## Change Log
-- **2025-07-11**: Split `Multihopper.sol` (v0.0.42) into `MHMain.sol` (structs, interfaces, mappings), `MHInit.sol` (helpers), `MHCtrl.sol` (cancellation, views), and `Multihopper.sol` (core logic) with inheritance to reduce overhead.
-- **2025-07-11**: Removed `SafeERC20` import across files, replaced with `IERC20` import from `../imports/IERC20.sol`, using `IERC20.transferFrom` and `IERC20.approve` for token operations.
-- **2025-07-11**: Added `refundedPending` field to `CancelPrepData` to track actual refunded pending amount after transfer taxes in cancellations.
-- **2025-07-11**: Fixed TypeError in `MHInit.sol` by replacing `IERC20.safeTransferFrom` with `IERC20.transferFrom` in `_checkTransfer`.
-- **2025-07-11**: Updated import paths to `../imports/` for consistency.
-- **2025-07-11**: Confirmed `nonReentrant` modifier inherited correctly via `ReentrancyGuard` from `MHMain.sol`.
-- **2025-07-06 and earlier**: Extended `CancelPrepData`, optimized stack, added `maker` parameter, added view functions, fixed typos.
 
 ## Clarifications
 - **Path-Finding Mechanism**: The `computeRoute` function in `MHInit.sol` precomputes a valid token path by fetching `tokenA` and `tokenB` from each listing, ensuring `startToken` connects to `endToken` via intermediate tokens, reverting early if no valid path exists.
