@@ -1,5 +1,5 @@
 # Shockhopper Contracts Documentation
-The system is made up (2) contracts; `ShockEntry` and `ShockExit`. 
+The system is made up of (2) contracts; `ShockEntry` and `ShockExit`. 
 
 # ShockEntry Contract Documentation
 
