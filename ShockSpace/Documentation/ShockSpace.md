@@ -1,7 +1,10 @@
  # Shock Space Contracts Documentation
-The System comprises of SSAgent, SSListingLogic, and SSLiquidityLogic.
+The System comprises of SSAgent, SSListingLogic, SSLiquidityLogic, SSListingTemplate, SSLiquidityTemplate, SSRouter, SSCrossDriver, and SSIsolatedDriver.
+
+Together they form an AMM Orderbook Hybrid for leverage trading on the EVM. 
 
 ## SSLiquidityLogic Contract
+The liquidity logic inherits liquidity Template and is used by the SSAgent to deploy new liquidity contracts tied to listing contracts for a unique TokeA and B pair. 
 
 ### Mappings and Arrays
 - None defined in this contract.
@@ -21,6 +24,7 @@ The System comprises of SSAgent, SSListingLogic, and SSLiquidityLogic.
   - `address`: Address of the newly deployed SSLiquidityTemplate contract.
 
 ## SSListingLogic Contract
+The listing logic inherits listing Template and is used by the SSAgent to deploy new listing contracts tied to liquidity contracts for a unique TokeA and B pair. 
 
 ### Mappings and Arrays
 - None defined in this contract.
@@ -40,6 +44,7 @@ The System comprises of SSAgent, SSListingLogic, and SSLiquidityLogic.
   - `address`: Address of the newly deployed SSListingTemplate contract.
 
 ## SSAgent Contract
+The agent manages token listings and global data, it enables the creation of unique listings + liquidities for token pairs and is the arbitrator for valid listings - templates and routers. 
 
 ### Mappings and Arrays
 - `getListing` (mapping - address, address, address): Maps tokenA to tokenB to the listing address for a trading pair.
@@ -1122,10 +1127,6 @@ The `SSRouter` contract, implemented in Solidity (`^0.8.2`), facilitates order c
 
 **Version:** 0.0.62 (updated 2025-07-10)
 
-**Changes:**
-- **v0.0.62**: Clarified handling of zero-amount payouts in `settleSingleLongLiquid` and `settleSingleShortLiquid` in `SSSettlementPartial.sol` (v0.0.58). Zero-amount payouts (`required` for long, `amount` for short) are now marked as completed (status 3) with an `UpdateType` struct sent to `listingContract.update`, preventing indefinite pending states and array clogging in `longPayoutByIndexView` and `shortPayoutByIndexView` in `SSListingTemplate.sol`.
-- **v0.0.61**: Updated to align with `SSSettlementPartial.sol` (v0.0.57), which resolved stack-too-deep errors in `executeSellOrders` and `executeBuyOrders` by introducing `_processSellOrder` and `_processBuyOrder` helper functions.
-
 **Inheritance Tree:** `SSRouter` → `SSSettlementPartial` → `SSOrderPartial` → `SSMainPartial`
 
 ## Mappings
@@ -1515,14 +1516,13 @@ The `SSRouter` contract, implemented in Solidity (`^0.8.2`), facilitates order c
 # SSCrossDriver Contract Documentation
 
 ## Overview
-The `SSCrossDriver` contract, implemented in Solidity (^0.8.2), manages trading positions for long and short strategies, inheriting functionality through `CSDExecutionPartial` to `CSDPositionPartial` to `CSDUtilityPartial`. It integrates with external interfaces (`ISSListing`, `ISSLiquidityTemplate`, `ISSAgent`) and uses `IERC20` for token operations, `ReentrancyGuard` for reentrancy protection, and `Ownable` for administrative control. The contract handles position creation (including market orders with zeroed price bounds), closure, cancellation, margin adjustments, stop-loss/take-profit updates, and mux-driven operations, with rigorous gas optimization and safety mechanisms. State variables are hidden, accessed via view functions, and decimal precision is maintained across tokens with varying decimals.
+The `SSCrossDriver` contract, implemented in Solidity (^0.8.2), manages trading positions for long and short isolated margin strategies, inheriting functionality through `CSDExecutionPartial` to `CSDPositionPartial` to `CSDUtilityPartial`. It integrates with external interfaces (`ISSListing`, `ISSLiquidityTemplate`, `ISSAgent`) and uses `IERC20` for token operations, `ReentrancyGuard` for reentrancy protection, and `Ownable` for administrative control. The contract handles position creation (including market orders with zeroed price bounds), closure, cancellation, margin adjustments, stop-loss/take-profit updates, and mux-driven operations, with rigorous gas optimization and safety mechanisms. State variables are hidden, accessed via view functions, and decimal precision is maintained across tokens with varying decimals.
 
 **Inheritance Tree:** `SSCrossDriver` → `CSDExecutionPartial` → `CSDPositionPartial` → `CSDUtilityPartial`
 
 **SPDX License:** BSD-3-Clause
 
 **Version:** 0.0.42 (last updated 2025-07-05)
-- **Changes in 0.0.42**: Corrected `positionToken` mapping descriptions for `drive` and `drift` to reflect long positions using tokenA margins and short positions using tokenB margins; clarified `drift` payout destination as mux (`msg.sender`) only for delegated closures; added balance checks for `drift`.
 
 ## State Variables
 - **DECIMAL_PRECISION** (uint256, constant, public): Set to 1e18 for normalizing amounts and prices across token decimals (defined in `CSDUtilityPartial`).
@@ -2222,7 +2222,7 @@ Each function details its parameters, behavior, internal call flow (including ex
 # SSIsolatedDriver Contract Documentation
 
 ## Overview
-The `SSIsolatedDriver` contract, implemented in Solidity (^0.8.2), manages trading positions for long and short strategies, inheriting functionality through `SSDExecutionPartial` to `SSDPositionPartial` to `SSDUtilityPartial`. It integrates with external interfaces (`ISSListing`, `ISSLiquidityTemplate`, `ISSAgent`) and uses `IERC20` for token operations, `ReentrancyGuard` for reentrancy protection, and `Ownable` for administrative control. The contract supports position creation, closure, cancellation, margin adjustments, stop-loss/take-profit updates, and mux operations for external contract interactions. It handles market-based execution by using the current price when minimum and maximum entry prices are zeroed. State variables are hidden, accessed via view functions, and decimal precision is maintained across tokens.
+The `SSIsolatedDriver` contract, implemented in Solidity (^0.8.2), manages trading positions for long and short isolated margin strategies, inheriting functionality through `SSDExecutionPartial` to `SSDPositionPartial` to `SSDUtilityPartial`. It integrates with external interfaces (`ISSListing`, `ISSLiquidityTemplate`, `ISSAgent`) and uses `IERC20` for token operations, `ReentrancyGuard` for reentrancy protection, and `Ownable` for administrative control. The contract supports position creation, closure, cancellation, margin adjustments, stop-loss/take-profit updates, and mux operations for external contract interactions. It handles market-based execution by using the current price when minimum and maximum entry prices are zeroed. State variables are hidden, accessed via view functions, and decimal precision is maintained across tokens.
 
 **Inheritance Tree:** `SSIsolatedDriver` → `SSDExecutionPartial` → `SSDPositionPartial` → `SSDUtilityPartial`
 
