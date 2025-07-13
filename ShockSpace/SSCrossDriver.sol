@@ -3,6 +3,7 @@
 */
 
 // Recent Changes:
+// - 2025-07-13: Removed `onlyMux` modifier from `drive` function to allow any address to call it, enabling broader position creation. Version incremented to 0.0.42.
 // - 2025-07-05: Adjusted getMuxesView function "positionCount" usage, now uses a max return of 1000. 
 // - 2025-07-05: Modified drift function to set payout recipient as the mux (caller) instead of the position maker, ensuring payouts are directed to the mux for further processing. Version incremented to 0.0.41.
 // - 2025-07-05: Modified drift function to close a specific position for a maker, restricted to onlyMux callers, without additional verification. Version incremented to 0.0.40.
@@ -88,7 +89,7 @@ contract SSCrossDriver is ReentrancyGuard, Ownable, CSDExecutionPartial {
         return result;
     }
 
-    // Allows muxes to create positions on behalf of a maker
+    // Allows any address to create positions on behalf of a maker
     function drive(
         address maker,
         address listingAddress,
@@ -100,7 +101,7 @@ contract SSCrossDriver is ReentrancyGuard, Ownable, CSDExecutionPartial {
         uint256 stopLossPrice,
         uint256 takeProfitPrice,
         uint8 positionType
-    ) external nonReentrant onlyMux {
+    ) external nonReentrant {
         require(maker != address(0), "Invalid maker address");
         require(positionType <= 1, "Invalid position type");
         uint256 positionId = positionCount + 1;

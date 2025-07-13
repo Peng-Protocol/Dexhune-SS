@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: BSD-3-Clause
 pragma solidity ^0.8.2;
 
-// Version 0.0.17:
+// Version 0.0.18:
+// - Removed onlyMux modifier from drive function to allow any address to create positions on behalf of a maker (2025-07-13).
 // - Updated drift function to send payout to mux (msg.sender) instead of maker in finalizeClose, allowing mux to handle payout distribution (2025-07-05).
 // - Updated drift function to allow muxes to close positions on behalf of users by adding maker parameter and validating ownership (2025-07-05).
 // - Fixed TypeError by updating PositionEntered event emissions to include 6 arguments (added mux address).
@@ -104,7 +105,7 @@ contract SSIsolatedDriver is SSDExecutionPartial, ReentrancyGuard, Ownable {
         return result;
     }
 
-    // Create a position on behalf of a maker (mux only)
+    // Create a position on behalf of a maker
     function drive(
         address maker,
         address listingAddress,
@@ -116,7 +117,7 @@ contract SSIsolatedDriver is SSDExecutionPartial, ReentrancyGuard, Ownable {
         uint256 stopLossPrice,
         uint256 takeProfitPrice,
         uint8 positionType
-    ) external nonReentrant onlyMux returns (uint256 positionId) {
+    ) external nonReentrant returns (uint256 positionId) {
         require(maker != address(0), "Invalid maker address");
         require(listingAddress != address(0), "Invalid listing address");
         require(positionType <= 1, "Invalid position type");
@@ -152,7 +153,7 @@ contract SSIsolatedDriver is SSDExecutionPartial, ReentrancyGuard, Ownable {
         // Finalize entry to complete position creation
         finalizeEntry(positionId);
 
-        emit PositionEntered(positionId, maker, positionType, minEntryPrice, maxEntryPrice, msg.sender); // Include mux address
+        emit PositionEntered(positionId, maker, positionType, minEntryPrice, maxEntryPrice, msg.sender); // Include caller address
         return positionId;
     }
 
