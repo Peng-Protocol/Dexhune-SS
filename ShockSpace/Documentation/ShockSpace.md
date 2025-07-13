@@ -1516,13 +1516,13 @@ The `SSRouter` contract, implemented in Solidity (`^0.8.2`), facilitates order c
 # SSCrossDriver Contract Documentation
 
 ## Overview
-The `SSCrossDriver` contract, implemented in Solidity (^0.8.2), manages trading positions for long and short isolated margin strategies, inheriting functionality through `CSDExecutionPartial` to `CSDPositionPartial` to `CSDUtilityPartial`. It integrates with external interfaces (`ISSListing`, `ISSLiquidityTemplate`, `ISSAgent`) and uses `IERC20` for token operations, `ReentrancyGuard` for reentrancy protection, and `Ownable` for administrative control. The contract handles position creation (including market orders with zeroed price bounds), closure, cancellation, margin adjustments, stop-loss/take-profit updates, and mux-driven operations, with rigorous gas optimization and safety mechanisms. State variables are hidden, accessed via view functions, and decimal precision is maintained across tokens with varying decimals.
+The `SSCrossDriver` contract, implemented in Solidity (^0.8.2), manages trading positions for long and short cross margin strategies, inheriting functionality through `CSDExecutionPartial` to `CSDPositionPartial` to `CSDUtilityPartial`. It integrates with external interfaces (`ISSListing`, `ISSLiquidityTemplate`, `ISSAgent`) and uses `IERC20` for token operations, `ReentrancyGuard` for reentrancy protection, and `Ownable` for administrative control. The contract handles position creation (including market orders with zeroed price bounds), closure, cancellation, margin adjustments, stop-loss/take-profit updates, and mux-driven operations, with rigorous gas optimization and safety mechanisms. State variables are hidden, accessed via view functions, and decimal precision is maintained across tokens with varying decimals.
 
 **Inheritance Tree:** `SSCrossDriver` → `CSDExecutionPartial` → `CSDPositionPartial` → `CSDUtilityPartial`
 
 **SPDX License:** BSD-3-Clause
 
-**Version:** 0.0.42 (last updated 2025-07-05)
+**Version:** 0.0.42 (last updated 2025-07-13)
 
 ## State Variables
 - **DECIMAL_PRECISION** (uint256, constant, public): Set to 1e18 for normalizing amounts and prices across token decimals (defined in `CSDUtilityPartial`).
@@ -1546,7 +1546,7 @@ The `SSCrossDriver` contract, implemented in Solidity (^0.8.2), manages trading 
 - **longIOByHeight** (mapping(uint256 => uint256)): Tracks long open interest by block height.
 - **shortIOByHeight** (mapping(uint256 => uint256)): Tracks short open interest by block height.
 - **historicalInterestTimestamps** (mapping(uint256 => uint256)): Stores timestamps for open interest updates.
-- **muxes** (mapping(address => bool)): Tracks authorized mux contracts for delegated position creation and closure (defined in `CSDUtilityPartial`).
+- **muxes** (mapping(address => bool)): Tracks authorized mux contracts for delegated position closure (defined in `CSDUtilityPartial`).
 
 ## Structs
 - **PositionCore1**: Contains `positionId` (uint256), `listingAddress` (address), `makerAddress` (address), `positionType` (uint8: 0 for long, 1 for short).
@@ -1661,7 +1661,7 @@ Each function details its parameters, behavior, internal call flow (including ex
 ### addMux(address mux)
 - **Parameters**:
   - `mux` (address): Address of the mux contract to authorize.
-- **Behavior**: Adds a mux contract to the authorized list, enabling it to call `drive` and `drift`. Emits `MuxAdded`.
+- **Behavior**: Adds a mux contract to the authorized list, enabling it to call `drift`. Emits `MuxAdded`.
 - **Internal Call Flow**: Validates `mux` is non-zero and not already authorized. Sets `muxes[mux] = true`. No external calls, transfers, or balance checks.
 - **Mappings/Structs Used**:
   - **Mappings**: `muxes`.
@@ -1673,7 +1673,7 @@ Each function details its parameters, behavior, internal call flow (including ex
 ### removeMux(address mux)
 - **Parameters**:
   - `mux` (address): Address of the mux contract to remove.
-- **Behavior**: Removes a mux contract from the authorized list, disabling its access to `drive` and `drift`. Emits `MuxRemoved`.
+- **Behavior**: Removes a mux contract from the authorized list, disabling its access to `drift`. Emits `MuxRemoved`.
 - **Internal Call Flow**: Validates `mux` is authorized, sets `muxes[mux] = false`. No external calls, transfers, or balance checks.
 - **Mappings/Structs Used**:
   - **Mappings**: `muxes`.
@@ -1703,7 +1703,7 @@ Each function details its parameters, behavior, internal call flow (including ex
   - `stopLossPrice` (uint256): Stop-loss price (denormalized).
   - `takeProfitPrice` (uint256): Take-profit price (denormalized).
   - `positionType` (uint8): 0 for long, 1 for short.
-- **Behavior**: Allows authorized mux contracts to create a position on behalf of `maker`, transferring margins, computing fees, loans, and liquidation prices, and storing data. Executes instantly as a market order if `minEntryPrice` and `maxEntryPrice` are zero. Emits `PositionEntered`.
+- **Behavior**: Allows any address to create a position on behalf of `maker`, transferring margins, computing fees, loans, and liquidation prices, and storing data. Executes instantly as a market order if `minEntryPrice` and `maxEntryPrice` are zero. Emits `PositionEntered`.
 - **Internal Call Flow**:
   - Validates `maker` and `positionType` (0 or 1).
   - Calls `_initiateEntry` with provided parameters:
@@ -1723,10 +1723,10 @@ Each function details its parameters, behavior, internal call flow (including ex
   - **Pre-Balance Check (Margin)**: `IERC20.balanceOf(listingAddress)` before margin transfer.
   - **Post-Balance Check (Margin)**: `balanceAfter - balanceBefore == denormalizedAmount`.
 - **Mappings/Structs Used**:
-  - **Mappings**: `positionCore1`, `positionCore2`, `priceParams1`, `priceParams2`, `marginParams1`, `marginParams2`, `exitParams`, `openInterest`, `pendingPositions`, `makerTokenMargin`, `makerMarginTokens`, `positionToken`, `longIOByHeight`, `shortIOByHeight`, `historicalInterestTimestamps`, `muxes`.
+  - **Mappings**: `positionCore1`, `positionCore2`, `priceParams1`, `priceParams2`, `marginParams1`, `marginParams2`, `exitParams`, `openInterest`, `pendingPositions`, `makerTokenMargin`, `makerMarginTokens`, `positionToken`, `longIOByHeight`, `shortIOByHeight`, `historicalInterestTimestamps`.
   - **Structs**: `EntryContext`, `PrepPosition`, `PositionCore1`, `PositionCore2`, `PriceParams1`, `PriceParams2`, `MarginParams1`, `MarginParams2`, `ExitParams`, `OpenInterest`.
 - **Restrictions**:
-  - Protected by `nonReentrant` and `onlyMux`.
+  - Protected by `nonReentrant`.
   - Reverts if `maker` is zero, `positionType > 1`, or transfers fail.
 - **Gas Usage Controls**: Single-element updates, no loops in critical paths, pop-and-swap for arrays.
 
@@ -2217,7 +2217,7 @@ Each function details its parameters, behavior, internal call flow (including ex
 - **Events**: Emitted for entry (`PositionEntered`), closure (`PositionClosed`), cancellation (`PositionCancelled`), SL/TP updates (`StopLossUpdated`, `TakeProfitUpdated`), batch operations (`AllLongsClosed`, `AllLongsCancelled`, `AllShortsClosed`, `AllShortsCancelled`), and mux management (`MuxAdded`, `MuxRemoved`).
 - **Safety**: Balance checks, explicit casting, no inline assembly, and liquidation price updates ensure robustness.
 - **Liquidation Price Updates**: `addExcessMargin` and `pullMargin` update liquidation prices for all relevant positions to reflect margin changes, ensuring accurate risk assessment.
-- **Mux Functionality**: Authorized mux contracts can create (`drive`) and close (`drift`) positions, restricted by `onlyMux` modifier, with `muxes` mapping tracking authorization. The `drift` function directs payouts to the mux (`msg.sender`) for delegated closures, ensuring proper fund routing.
+- **Mux Functionality**: Authorized mux contracts can close (`drift`) positions, restricted by `onlyMux` modifier, with `muxes` mapping tracking authorization. The `drift` function directs payouts to the mux (`msg.sender`) for delegated closures, ensuring proper fund routing. The `drive` function is open to any address, enabling flexible position creation while maintaining validation.
 
 # SSIsolatedDriver Contract Documentation
 
@@ -2228,7 +2228,7 @@ The `SSIsolatedDriver` contract, implemented in Solidity (^0.8.2), manages tradi
 
 **SPDX License:** BSD-3-Clause
 
-**Version:** 0.0.17 (last updated 2025-07-05)
+**Version:** 0.0.18 (last updated 2025-07-13)
 
 ## State Variables
 - **DECIMAL_PRECISION** (uint256, constant, public): Set to 1e18 for normalizing amounts and prices across token decimals.
@@ -2353,7 +2353,7 @@ Each function details its parameters, behavior, internal call flow (including ex
 ### addMux(address mux)
 - **Parameters**:
   - `mux` (address): Address of the mux contract to authorize.
-- **Behavior**: Adds a mux contract to the authorized list, enabling it to call `drive` and `drift`. Emits `MuxAdded`.
+- **Behavior**: Adds a mux contract to the authorized list, enabling it to call `drift`. Emits `MuxAdded`.
 - **Internal Call Flow**: Validates `mux != address(0)` and `!muxes[mux]`. Sets `muxes[mux] = true`. Emits `MuxAdded` (defined in `SSDUtilityPartial`). No external calls, transfers, or balance checks.
 - **Mappings/Structs Used**:
   - **Mappings**: `muxes`.
@@ -2395,18 +2395,18 @@ Each function details its parameters, behavior, internal call flow (including ex
   - `stopLossPrice` (uint256): Stop-loss price (normalized).
   - `takeProfitPrice` (uint256): Take-profit price (normalized).
   - `positionType` (uint8): 0 for long, 1 for short.
-- **Behavior**: Creates a position on behalf of `maker` by an authorized mux, transferring margins to `listingAddress`, computing fees, loans, and liquidation prices, and storing position data. Supports market-based execution if `minEntryPrice` and `maxEntryPrice` are zero, using the current price from `ISSListing.prices`. Emits `PositionEntered` with `msg.sender` as mux address.
-- **Internal Call Flow**: Restricted by `onlyMux`. Validates `maker`, `listingAddress`, `positionType <= 1`, `initialMargin > 0`, `leverage` (2–100). Calls `prepareEntryContext` to fetch `tokenA`/`tokenB` via `ISSListing.tokenA`/`tokenB` (input: `listingAddress`, returns: `address`) and normalize margins with `normalizeAmount` (`IERC20.decimals`, input: none, returns: `uint8`). Converts prices to `entryPriceStr` via `uint2str`. Calls `initiateEntry` with `positionType`. `prepareEntryBase` increments `positionIdCounter`, stores `PendingEntry` with `maker` overridden. `prepareEntryRisk`, `prepareEntryToken`, `validateEntryBase` (uses `ISSAgent.getListing`), `validateEntryRisk`, `updateEntryCore`, `updateEntryParams` (calls `parseEntryPriceHelper`, which uses `ISSListing.prices` for market orders if `entryPriceStr` is "0" or "0-0", `computeParams`, `validateLeverageLimit` with `ISSLiquidityTemplate.liquidityDetailsView`, `prepareCoreParams`, `prepareExtParams`, `updateLiquidityFees`), and `updateEntryIndexes` process the position. `finalizeEntry` transfers fee to `liquidityAddress` via `IERC20.transferFrom` (input: `maker`, `liquidityAddress`, `denormFee`, returns: `bool`) with pre/post balance checks (`IERC20.balanceOf(liquidityAddress)`), calls `ISSLiquidityTemplate.addFees` (input: `this`, `isX`, `actualFee`), transfers margins to `listingAddress` via `IERC20.transferFrom` (input: `maker`, `listingAddress`, `expectedAmount`, returns: `bool`) with pre/post balance checks (`IERC20.balanceOf(listingAddress)`), and calls `ISSListing.update`. Updates `positionToken`, `pendingPositions`, `longIOByHeight`/`shortIOByHeight` via `updateHistoricalInterest`. Emits `PositionEntered` with `msg.sender`. Returns `positionId`.
+- **Behavior**: Creates a position on behalf of `maker` by any caller, transferring margins to `listingAddress`, computing fees, loans, and liquidation prices, and storing position data. Supports market-based execution if `minEntryPrice` and `maxEntryPrice` are zero, using the current price from `ISSListing.prices`. Emits `PositionEntered` with `msg.sender` as the caller address.
+- **Internal Call Flow**: Validates `maker`, `listingAddress`, `positionType <= 1`, `initialMargin > 0`, `leverage` (2–100). Calls `prepareEntryContext` to fetch `tokenA`/`tokenB` via `ISSListing.tokenA`/`tokenB` (input: `listingAddress`, returns: `address`) and normalize margins with `normalizeAmount` (`IERC20.decimals`, input: none, returns: `uint8`). Converts prices to `entryPriceStr` via `uint2str`. Calls `initiateEntry` with `positionType`. `prepareEntryBase` increments `positionIdCounter`, stores `PendingEntry` with `maker` overridden. `prepareEntryRisk`, `prepareEntryToken`, `validateEntryBase` (uses `ISSAgent.getListing`), `validateEntryRisk`, `updateEntryCore`, `updateEntryParams` (calls `parseEntryPriceHelper`, which uses `ISSListing.prices` for market orders if `entryPriceStr` is "0" or "0-0", `computeParams`, `validateLeverageLimit` with `ISSLiquidityTemplate.liquidityDetailsView`, `prepareCoreParams`, `prepareExtParams`, `updateLiquidityFees`), and `updateEntryIndexes` process the position. `finalizeEntry` transfers fee to `liquidityAddress` via `IERC20.transferFrom` (input: `maker`, `liquidityAddress`, `denormFee`, returns: `bool`) with pre/post balance checks (`IERC20.balanceOf(liquidityAddress)`), calls `ISSLiquidityTemplate.addFees` (input: `this`, `isX`, `actualFee`), transfers margins to `listingAddress` via `IERC20.transferFrom` (input: `maker`, `listingAddress`, `expectedAmount`, returns: `bool`) with pre/post balance checks (`IERC20.balanceOf(listingAddress)`), and calls `ISSListing.update`. Updates `positionToken`, `pendingPositions`, `longIOByHeight`/`shortIOByHeight` via `updateHistoricalInterest`. Emits `PositionEntered` with `msg.sender`. Returns `positionId`.
 - **Balance Checks**:
   - **Pre-Balance Check (Fee)**: `IERC20.balanceOf(liquidityAddress)` before fee transfer.
   - **Post-Balance Check (Fee)**: `checkTransferAmount` confirms fee transfer.
   - **Pre-Balance Check (Margin)**: `IERC20.balanceOf(listingAddress)` before margin transfer.
   - **Post-Balance Check (Margin)**: `checkTransferAmount` confirms margin transfer.
 - **Mappings/Structs Used**:
-  - **Mappings**: `muxes`, `positionCoreBase`, `positionCoreStatus`, `priceParams`, `marginParams`, `leverageParams`, `riskParams`, `pendingPositions`, `positionToken`, `longIOByHeight`, `shortIOByHeight`, `historicalInterestTimestamps`, `pendingEntries`.
+  - **Mappings**: `positionCoreBase`, `positionCoreStatus`, `priceParams`, `marginParams`, `leverageParams`, `riskParams`, `pendingPositions`, `positionToken`, `longIOByHeight`, `shortIOByHeight`, `historicalInterestTimestamps`, `pendingEntries`.
   - **Structs**: `EntryContext`, `PendingEntry`, `PositionCoreBase`, `PositionCoreStatus`, `PriceParams`, `MarginParams`, `LeverageParams`, `RiskParams`, `PosParamsCore`, `PosParamsExt`, `EntryParamsBase`, `EntryParamsRisk`, `EntryParamsToken`, `UpdateType`.
 - **Restrictions**:
-  - Protected by `nonReentrant` and `onlyMux`.
+  - Protected by `nonReentrant`.
   - Reverts if `maker` is zero (`"Invalid maker address"`), `listingAddress` is zero (`"Invalid listing address"`), `positionType > 1` (`"Invalid position type"`), `initialMargin == 0` (`"Invalid initial margin"`), `leverage` is out of range (`"Invalid leverage"`), or transfers fail.
 - **Gas Usage Controls**: Single-element array updates, balance checks, and pop-and-swap minimize gas.
 
@@ -2678,5 +2678,5 @@ Each function details its parameters, behavior, internal call flow (including ex
 - **Token Usage**: Long positions use tokenA margins, tokenB payouts; short positions use tokenB margins, tokenA payouts.
 - **Position Lifecycle**: Pending (`status1 == false`, `status2 == 0`) to executable (`status1 == true`, `status2 == 0`) to closed (`status2 == 1`) or cancelled (`status2 == 2`).
 - **Events**: Emitted for mux operations (`MuxAdded`, `MuxRemoved`), position entry (`PositionEntered` with `positionId`, `maker`, `positionType`, `minEntryPrice`, `maxEntryPrice`, `mux`), closure (`PositionClosed`), cancellation (`PositionCancelled`), margin addition (`ExcessMarginAdded`), SL/TP updates (`StopLossUpdated`, `TakeProfitUpdated`), and batch operations (`AllLongsClosed`, `AllLongsCancelled`, `AllShortsClosed`, `AllShortsCancelled`, `PositionsExecuted`).
-- **Mux Integration**: `muxes` mapping (moved to `SSDUtilityPartial`) authorizes external contracts. `drive` creates positions for `maker`, `drift` closes them with payouts to `msg.sender` (mux). `PositionEntered` includes `mux` (`msg.sender` for `drive`, `address(0)` for `enterLong`/`enterShort`).
+- **Mux Integration**: `muxes` mapping (moved to `SSDUtilityPartial`) authorizes external contracts. `drive` creates positions for `maker` by any caller, `drift` closes them with payouts to `msg.sender` (mux) for authorized muxes. `PositionEntered` includes `mux` (`msg.sender` for `drive`, `address(0)` for `enterLong`/`enterShort`).
 - **Safety**: Balance checks, explicit casting (e.g., `uint8`, `uint256`, `address(uint160)`), no inline assembly, and modular helpers (`validateExcessMargin`, `transferExcessMargin`, `updateMarginAndInterest`, `updateLiquidationPrice`, `updateSLInternal`, `updateTPInternal`, `uint2str`) ensure robustness.

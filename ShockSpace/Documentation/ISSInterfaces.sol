@@ -661,7 +661,7 @@ interface ISSCrossDriver {
     function removeMux(address mux) external;
     // Returns a list of all authorized muxes
     function getMuxesView() external view returns (address[] memory);
-    // Creates a position on behalf of a maker (mux only)
+    // Creates a position on behalf of a maker
     function drive(
         address maker,
         address listingAddress,
@@ -1064,7 +1064,7 @@ interface ISSIsolatedDriver {
     // Returns authorized mux addresses.
     function getMuxesView() external view returns (address[] memory);
 
-    // Creates position for maker via mux, market order if min/max prices zero.
+    // Creates position for maker, market order if min/max prices zero.
     function drive(
         address maker,
         address listingAddress,
