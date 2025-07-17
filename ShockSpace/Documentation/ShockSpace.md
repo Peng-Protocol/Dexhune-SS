@@ -872,6 +872,22 @@ The `SSLiquidityTemplate`, implemented in Solidity (^0.8.2), forms part of a dec
    - **Used in**: `_claimFeeShare`
    - **Description**: Computes fee share for a liquidity slot based on accumulated fees since deposit or last claim (`feesAcc` is `yFeesAcc` for xSlots, `xFeesAcc` for ySlots) and liquidity proportion, capped at available fees (`yFees` for xSlots, `xFees` for ySlots).
 
+2. **Deficit and Compensation**:
+   - **Formula for xPrepOut**:
+     ```
+     withdrawAmountA = min(amount, xLiquid)
+     deficit = amount > withdrawAmountA ? amount - withdrawAmountA : 0
+     withdrawAmountB = deficit > 0 ? min((deficit * 1e18) / getPrice(), yLiquid) : 0
+     ```
+   - **Formula for yPrepOut**:
+     ```
+     withdrawAmountB = min(amount, yLiquid)
+     deficit = amount > withdrawAmountB ? amount - withdrawAmountB : 0
+     withdrawAmountA = deficit > 0 ? min((deficit * getPrice()) / 1e18, xLiquid) : 0
+     ```
+   - **Used in**: `xPrepOut`, `yPrepOut`
+   - **Description**: Calculates withdrawal amounts for token A (`xPrepOut`) or token B (`yPrepOut`), compensating any shortfall (`deficit`) in requested liquidity (`amount`) against available liquidity (`xLiquid` or `yLiquid`) by converting the deficit to the opposite token using the current price from `ISSListing.getPrice`, ensuring amounts are normalized and capped by available liquidity.
+
 ### External Functions
 #### setRouters(address[] memory _routers)
 - **Parameters**: `_routers` - Array of router addresses.
@@ -967,10 +983,12 @@ The `SSLiquidityTemplate`, implemented in Solidity (^0.8.2), forms part of a dec
   - `caller` - User address.
   - `amount` - Normalized amount.
   - `index` - Slot index.
-- **Behavior**: Prepares token A withdrawal, calculates compensation in token B.
+- **Behavior**: Prepares token A withdrawal, calculates compensation in token B if there is a shortfall in available token A liquidity.
 - **Internal Call Flow**:
   - Checks `xLiquid` and slot `allocation` in `xLiquiditySlots`.
-  - Fetches `ISSListing.getPrice` to compute `withdrawAmountB` if liquidity deficit.
+  - Calculates `withdrawAmountA` as the minimum of requested `amount` and available `xLiquid`.
+  - Computes `deficit` as any shortfall (`amount - withdrawAmountA`).
+  - If `deficit` exists, fetches `ISSListing.getPrice` to convert `deficit` to token B (`withdrawAmountB = (deficit * 1e18) / getPrice()`), capped by `yLiquid`.
   - Returns `PreparedWithdrawal` with `amountA` and `amountB`.
 - **Balance Checks**: Verifies `xLiquid`, `yLiquid` sufficiency.
 - **Mappings/Structs Used**:
@@ -998,8 +1016,13 @@ The `SSLiquidityTemplate`, implemented in Solidity (^0.8.2), forms part of a dec
 
 #### yPrepOut(address caller, uint256 amount, uint256 index) returns (PreparedWithdrawal memory)
 - **Parameters**: Same as `xPrepOut`.
-- **Behavior**: Prepares token B withdrawal, calculates compensation in token A.
-- **Internal Call Flow**: Checks `yLiquid`, `xLiquid`, uses `ISSListing.getPrice` for `withdrawAmountA`.
+- **Behavior**: Prepares token B withdrawal, calculates compensation in token A if there is a shortfall in available token B liquidity.
+- **Internal Call Flow**:
+  - Checks `yLiquid` and slot `allocation` in `yLiquiditySlots`.
+  - Calculates `withdrawAmountB` as the minimum of requested `amount` and available `yLiquid`.
+  - Computes `deficit` as any shortfall (`amount - withdrawAmountB`).
+  - If `deficit` exists, fetches `ISSListing.getPrice` to convert `deficit` to token A (`withdrawAmountA = (deficit * getPrice()) / 1e18`), capped by `xLiquid`.
+  - Returns `PreparedWithdrawal` with `amountA` and `amountB`.
 - **Balance Checks**: Verifies `yLiquid`, `xLiquid` sufficiency.
 - **Mappings/Structs Used**: `yLiquiditySlots`, `liquidityDetail`, `PreparedWithdrawal`, `Slot`.
 - **Restrictions**: Same as `xPrepOut`.
@@ -1088,14 +1111,56 @@ The `SSLiquidityTemplate`, implemented in Solidity (^0.8.2), forms part of a dec
 - **Mappings/Structs Used**:
   - **Mappings**: `liquidityDetail`.
   - **Structs**: `LiquidityDetails`.
-- **Restrictions**: `nonReentrant`, requires `routersเ**Behavior**: Resets `dFeesAcc` to the latest `xFeesAcc` (for ySlots) or `yFeesAcc` (for xSlots) after a successful fee claim in `_processFeeClaim` to prevent double-counting of fees in subsequent claims.
-- **Internal Call Flow**: Updates slot's `dFeesAcc` within the `if (feeShare > 0)` block in `_processFeeClaim`, ensuring it reflects the current cumulative fees post-claim.
-- **Balance Checks**: None specific to this change, as it relies on existing fee and liquidity checks.
-- **Mappings/Structs Used**:
-  - **Mappings**: `xLiquiditySlots`, `yLiquiditySlots`, `liquidityDetail`.
-  - **Structs**: `Slot`, `LiquidityDetails`.
-- **Restrictions**: No additional restrictions beyond existing `claimFees` checks.
-- **Gas Usage Controls**: Minimal additional gas cost for single state write to `dFeesAcc`.
+- **Restrictions**: `nonReentrant`, requires `routers[msg.sender]`.
+- **Gas Usage Controls**: Minimal, single state update.
+
+#### getListingAddress(uint256) returns (address)
+- **Behavior**: Returns `listingAddress`.
+- **Internal Call Flow**: Direct read from state.
+- **Restrictions**: None (view function).
+- **Gas Usage Controls**: Minimal, single state read.
+
+#### liquidityAmounts() returns (uint256 xAmount, uint256 yAmount)
+- **Behavior**: Returns `xLiquid` and `yLiquid` from `liquidityDetail`.
+- **Internal Call Flow**: Reads `liquidityDetail`.
+- **Restrictions**: None (view function).
+- **Gas Usage Controls**: Minimal, single struct read.
+
+#### liquidityDetailsView() returns (uint256 xLiquid, uint256 yLiquid, uint256 xFees, uint256 yFees, uint256 xFeesAcc, uint256 yFeesAcc)
+- **Behavior**: Returns all fields of `liquidityDetail`.
+- **Internal Call Flow**: Reads `liquidityDetail`.
+- **Restrictions**: None (view function).
+- **Gas Usage Controls**: Minimal, single struct read.
+
+#### activeXLiquiditySlotsView() returns (uint256[] memory)
+- **Behavior**: Returns `activeXLiquiditySlots` array.
+- **Internal Call Flow**: Direct read from state.
+- **Restrictions**: None (view function).
+- **Gas Usage Controls**: Minimal, array read.
+
+#### activeYLiquiditySlotsView() returns (uint256[] memory)
+- **Behavior**: Returns `activeYLiquiditySlots` array.
+- **Internal Call Flow**: Direct read from state.
+- **Restrictions**: None (view function).
+- **Gas Usage Controls**: Minimal, array read.
+
+#### userIndexView(address user) returns (uint256[] memory)
+- **Behavior**: Returns `userIndex[user]` array of slot indices.
+- **Internal Call Flow**: Direct read from `userIndex` mapping.
+- **Restrictions**: None (view function).
+- **Gas Usage Controls**: Minimal, mapping read.
+
+#### getXSlotView(uint256 index) returns (Slot memory)
+- **Behavior**: Returns `xLiquiditySlots[index]`.
+- **Internal Call Flow**: Reads `xLiquiditySlots` mapping.
+- **Restrictions**: None (view function).
+- **Gas Usage Controls**: Minimal, mapping read.
+
+#### getYSlotView(uint256 index) returns (Slot memory)
+- **Behavior**: Returns `yLiquiditySlots[index]`.
+- **Internal Call Flow**: Reads `yLiquiditySlots` mapping.
+- **Restrictions**: None (view function).
+- **Gas Usage Controls**: Minimal, mapping read.
 
 ### Additional Details
 - **Decimal Handling**: Uses `normalize` and `denormalize` (1e18) for amounts, fetched via `IERC20.decimals`.
@@ -1112,7 +1177,7 @@ The `SSLiquidityTemplate`, implemented in Solidity (^0.8.2), forms part of a dec
   - Hidden state variables accessed via view functions (e.g., `getXSlotView`, `liquidityDetailsView`).
   - Avoids reserved keywords and unnecessary virtual/override modifiers.
 - **Fee System**:
-  - Cumulative fees_signed char tf8;fees (`xFeesAcc`, `yFeesAcc`) track total fees added, never decrease.
+  - Cumulative fees (`xFeesAcc`, `yFeesAcc`) track total fees added, never decrease.
   - `dFeesAcc` stores `yFeesAcc` (xSlots) or `xFeesAcc` (ySlots) at deposit or last claim, reset after claim to track fees since last claim.
   - Fee share based on `contributedFees = feesAcc - dFeesAcc`, proportional to liquidity contribution, capped at available fees.
 - **Compatibility**: Aligned with `SSRouter` (v0.0.44), `SSAgent` (v0.0.2), `SSListingTemplate` (v0.0.10), `SSOrderPartial` (v0.0.18).
