@@ -1,4 +1,4 @@
- # Shock Space Contracts Documentation
+# Shock Space Contracts Documentation
 The System comprises of SSAgent, SSListingLogic, SSLiquidityLogic, SSListingTemplate, SSLiquidityTemplate, SSRouter, SSCrossDriver, and SSIsolatedDriver.
 
 Together they form an AMM Orderbook Hybrid for leverage trading on the EVM. 
@@ -45,6 +45,34 @@ The listing logic inherits listing Template and is used by the SSAgent to deploy
 
 ## SSAgent Contract
 The agent manages token listings and global data, it enables the creation of unique listings + liquidities for token pairs and is the arbitrator for valid listings - templates and routers. 
+
+### Structs
+- **GlobalOrder**: Stores order details for a token pair.
+  - `orderId` (uint256): Unique order identifier.
+  - `isBuy` (bool): True for buy order, false for sell.
+  - `maker` (address): Address creating the order.
+  - `recipient` (address): Address receiving the order outcome.
+  - `amount` (uint256): Order amount.
+  - `status` (uint8): Order status (0 = cancelled, 1 = pending, 2 = partially filled, 3 = filled).
+  - `timestamp` (uint256): Timestamp of order creation or update.
+- **TrendData**: Used for sorting liquidity or volume data.
+  - `token` (address): Token or user address for sorting.
+  - `timestamp` (uint256): Timestamp of data point.
+  - `amount` (uint256): Amount for liquidity or volume.
+- **OrderData**: Details of an order for reporting.
+  - `orderId` (uint256): Order identifier.
+  - `isBuy` (bool): True for buy order, false for sell.
+  - `maker` (address): Order creator.
+  - `recipient` (address): Order recipient.
+  - `amount` (uint256): Order amount.
+  - `status` (uint8): Order status.
+  - `timestamp` (uint256): Order timestamp.
+- **ListingDetails**: Details of a listing contract.
+  - `listingAddress` (address): Listing contract address.
+  - `liquidityAddress` (address): Associated liquidity contract address.
+  - `tokenA` (address): First token in pair.
+  - `tokenB` (address): Second token in pair.
+  - `listingId` (uint256): Listing ID.
 
 ### Mappings and Arrays
 - `getListing` (mapping - address, address, address): Maps tokenA to tokenB to the listing address for a trading pair.
