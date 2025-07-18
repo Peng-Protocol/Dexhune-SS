@@ -1580,13 +1580,13 @@ System: **Balance Checks**: Same as `createBuyOrder`.
 # SSCrossDriver Contract Documentation
 
 ## Overview
-The `SSCrossDriver` contract, implemented in Solidity (^0.8.2), manages trading positions for long and short cross margin strategies, inheriting functionality through `CSDExecutionPartial` to `CSDPositionPartial` to `CSDUtilityPartial`. It integrates with external interfaces (`ISSListing`, `ISSLiquidityTemplate`, `ISSAgent`) and uses `IERC20` for token operations, `ReentrancyGuard` for reentrancy protection, and `Ownable` for administrative control. The contract handles position creation (including market orders with zeroed price bounds), closure, cancellation, margin adjustments, stop-loss/take-profit updates, and mux-driven operations, with rigorous gas optimization and safety mechanisms. State variables are hidden, accessed via view functions, and decimal precision is maintained across tokens with varying decimals.
+The `SSCrossDriver` contract, implemented in Solidity (^0.8.2), manages trading positions for long and short cross margin strategies, inheriting functionality through `CSDExecutionPartial` to `CSDPositionPartial` to `CSDUtilityPartial`. It integrates with external interfaces (`ISSListing`, `ISSLiquidityTemplate`, `ISSAgent`) and uses `IERC20` for token operations, `ReentrancyGuard` for reentrancy protection, and `Ownable` for administrative control. The contract handles position creation (including market orders with zeroed price bounds), closure, cancellation, margin adjustments, stop-loss/take-profit updates, and mux-driven operations, with rigorous gas optimization and safety mechanisms. State variables are hidden, accessed via view functions, and decimal precision is maintained across tokens with varying decimals. All transfers to or from the listing in `SSCrossDriver.sol` and `CSDPositionPartial.sol` correctly call the `update` function afterwards to reflect changes in the listing contract, as seen in `_transferMarginToListing` and `_updateListingMargin`.
 
 **Inheritance Tree:** `SSCrossDriver` → `CSDExecutionPartial` → `CSDPositionPartial` → `CSDUtilityPartial`
 
 **SPDX License:** BSD-3-Clause
 
-**Version:** 0.0.42 (last updated 2025-07-13)
+**Version:** 0.0.43 (last updated 2025-07-18)
 
 ## State Variables
 - **DECIMAL_PRECISION** (uint256, constant, public): Set to 1e18 for normalizing amounts and prices across token decimals (defined in `CSDUtilityPartial`).
@@ -1777,8 +1777,7 @@ Each function details its parameters, behavior, internal call flow (including ex
       - `_parseEntryPriceInternal` fetches `currentPrice` via `ISSListing.prices`. If `minEntryPrice` and `maxEntryPrice` are zero, sets `priceAtEntry = currentPrice` for instant execution as a market order.
       - Computes fee, taxed margin, leverage amount, and loan.
       - `_checkLiquidityLimitLong` or `_checkLiquidityLimitShort` verifies liquidity via `ISSLiquidityTemplate.liquidityDetailsView`.
-      - `_transferMarginToListing` transfers fee to `liquidityAddress` and margins to `listingAddress` with pre/post balance checks.
-      - Calls `ISSLiquidityTemplate.addFees`.
+      - `_transferMarginToListing` transfers fee to `liquidityAddress` and margins to `listingAddress` with pre/post balance checks, followed by `_updateListingMargin` to call `ISSListing.update`.
     - `_storeEntryData` updates `positionCore1`, `positionCore2`, `priceParams1`, `priceParams2`, `marginParams1`, `marginParams2`, `exitParams`, `openInterest`, `pendingPositions`, `positionToken`, and `longIOByHeight` or `shortIOByHeight`.
   - Transfer destinations: `liquidityAddress` (fee), `listingAddress` (margins).
 - **Balance Checks**:
@@ -1847,7 +1846,7 @@ Each function details its parameters, behavior, internal call flow (including ex
       - `_transferLiquidityFee` transfers fee in `tokenA` to `liquidityAddress` using `IERC20.transfer` (input: `liquidityAddress`, `denormalizedFee`, returns: `bool success`), with pre/post balance checks via `IERC20.balanceOf(liquidityAddr)`.
       - Transfers `taxedMargin + excessMargin` in `tokenA` to `listingAddress` using `IERC20.transferFrom` (input: `msg.sender`, `listingAddress`, `denormalizedAmount`, returns: `bool success`), with pre/post balance checks via `IERC20.balanceOf(listingAddress)`.
       - Calls `ISSLiquidityTemplate.addFees` (input: `this`, `true`, `denormalizedFee`, returns: none).
-  - Updates `ISSListing.update` (input: `UpdateType[]` with type 0, `denormalizedAmount`, returns: none).
+      - Calls `_updateListingMargin` to invoke `ISSListing.update` (input: `UpdateType[]` with type 0, `denormalizedAmount`, returns: none).
   - `_storeEntryData` calls `_setCoreData`, `_setPriceData`, `_setMarginData`, `_setExitData`, updating `pendingPositions`, `positionToken` (`tokenA`), and `longIOByHeight` via `updateHistoricalInterest`.
   - Transfer destinations: `liquidityAddress` (fee), `listingAddress` (margins).
 - **Balance Checks**:
@@ -1874,9 +1873,9 @@ Each function details its parameters, behavior, internal call flow (including ex
     - Updates `makerTokenMargin` and `makerMarginTokens` for `tokenB`.
     - `_computeLoanAndLiquidationShort` calculates loan and liquidation price using updated margin.
     - `_checkLiquidityLimitShort` verifies liquidity limit formula (`initialLoan <= xLiquid * (101 - leverage) / 100`) using `ISSLiquidityTemplate.liquidityDetailsView` (input: `this`, returns: `xLiquid`).
-    - `_transferMarginToListing` transfers fee in `tokenB` to `liquidityAddress` via `IERC20.transfer` and margins to `listingAddress` via `IERC20.transferFrom`, with pre/post balance checks.
+    - `_transferMarginToListing` transfers fee in `tokenB` to `liquidityAddress` via `IERC20.transfer` and margins to `listingAddress` via `IERC20.transferFrom`, with pre/post balance checks, followed by `_updateListingMargin` to call `ISSListing.update`.
     - Calls `ISSLiquidityTemplate.addFees` (input: `this`, `false`, `denormalizedFee`).
-  - Updates `ISSListing.update` and stores data in same mappings/structs as `enterLong`, with `positionToken` as `tokenB` and `shortIOByHeight` updated.
+  - `_storeEntryData` updates same mappings/structs as `enterLong`, with `positionToken` as `tokenB` and `shortIOByHeight` updated.
 - **Balance Checks**:
   - **Pre-Balance Check (Fee)**: `IERC20.balanceOf(liquidityAddr)` captures balance before fee transfer.
   - **Post-Balance Check (Fee)**: `balanceAfter - balanceBefore == denormalizedFee` confirms fee transfer.
@@ -1897,8 +1896,7 @@ Each function details its parameters, behavior, internal call flow (including ex
   - Validates inputs (`amount > 0`, `maker` and `listingAddress` non-zero).
   - Calls `ISSAgent.isValidListing` (input: `listingAddress`, returns: `bool isValid`) to validate listing.
   - Selects token via `ISSListing.tokenA()` or `tokenB()`.
-  - `_transferMarginToListing` transfers `amount` in selected token from `msg.sender` to `listingAddress` using `IERC20.transferFrom` (input: `msg.sender`, `listingAddress`, `amount`, returns: `bool success`), with pre/post balance checks via `IERC20.balanceOf(listingAddress)`.
-  - `_updateListingMargin` calls `ISSListing.update` (input: `UpdateType[]` with type 0, `denormalizedAmount`, returns: none).
+  - `_transferMarginToListing` transfers `amount` in selected token from `msg.sender` to `listingAddress` using `IERC20.transferFrom` (input: `msg.sender`, `listingAddress`, `amount`, returns: `bool success`), with pre/post balance checks via `IERC20.balanceOf(listingAddress)`, followed by `_updateListingMargin` to call `ISSListing.update`.
   - `_updateMakerMargin` updates `makerTokenMargin` and `makerMarginTokens`.
   - `_updatePositionLiquidationPrices` iterates `positionCount`, updating `priceParams2.liquidationPrice` for matching positions using `_computeLoanAndLiquidationLong` or `_computeLoanAndLiquidationShort` based on `positionType`.
   - `updateHistoricalInterest` updates `longIOByHeight` (positionType = 0).
@@ -2282,6 +2280,7 @@ Each function details its parameters, behavior, internal call flow (including ex
 - **Safety**: Balance checks, explicit casting, no inline assembly, and liquidation price updates ensure robustness.
 - **Liquidation Price Updates**: `addExcessMargin` and `pullMargin` update liquidation prices for all relevant positions to reflect margin changes, ensuring accurate risk assessment.
 - **Mux Functionality**: Authorized mux contracts can close (`drift`) positions, restricted by `onlyMux` modifier, with `muxes` mapping tracking authorization. The `drift` function directs payouts to the mux (`msg.sender`) for delegated closures, ensuring proper fund routing. The `drive` function is open to any address, enabling flexible position creation while maintaining validation.
+- **Proper Listing Updates**: - All transfers to or from the listing in `SSCrossDriver.sol` and `CSDPositionPartial.sol` call the `update` function to reflect changes, as seen in `_transferMarginToListing` and `_updateListingMargin`.
 
 # SSIsolatedDriver Contract Documentation
 
@@ -2744,3 +2743,4 @@ Each function details its parameters, behavior, internal call flow (including ex
 - **Events**: Emitted for mux operations (`MuxAdded`, `MuxRemoved`), position entry (`PositionEntered` with `positionId`, `maker`, `positionType`, `minEntryPrice`, `maxEntryPrice`, `mux`), closure (`PositionClosed`), cancellation (`PositionCancelled`), margin addition (`ExcessMarginAdded`), SL/TP updates (`StopLossUpdated`, `TakeProfitUpdated`), and batch operations (`AllLongsClosed`, `AllLongsCancelled`, `AllShortsClosed`, `AllShortsCancelled`, `PositionsExecuted`).
 - **Mux Integration**: `muxes` mapping (moved to `SSDUtilityPartial`) authorizes external contracts. `drive` creates positions for `maker` by any caller, `drift` closes them with payouts to `msg.sender` (mux) for authorized muxes. `PositionEntered` includes `mux` (`msg.sender` for `drive`, `address(0)` for `enterLong`/`enterShort`).
 - **Safety**: Balance checks, explicit casting (e.g., `uint8`, `uint256`, `address(uint160)`), no inline assembly, and modular helpers (`validateExcessMargin`, `transferExcessMargin`, `updateMarginAndInterest`, `updateLiquidationPrice`, `updateSLInternal`, `updateTPInternal`, `uint2str`) ensure robustness.
+- **Proper Listing Updates**: All transfers to or from the listing in `SSIsolatedDriver.sol` and `SSDPositionPartial.sol` call the `update` function to reflect changes, as seen in `_transferMarginToListing`. 
