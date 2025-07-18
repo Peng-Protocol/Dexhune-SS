@@ -1186,7 +1186,7 @@ The `SSLiquidityTemplate`, implemented in Solidity (^0.8.2), forms part of a dec
 # SSRouter Contract Documentation
 
 ## Overview
-The `SSRouter` contract, implemented in Solidity (`^0.8.2`), facilitates order creation, settlement, liquidity management, and order cancellation for a decentralized trading platform. It inherits functionality from `SSSettlementPartial`, which extends `SSOrderPartial` and `SSMainPartial`, integrating with external interfaces (`ISSListingTemplate`, `ISSLiquidityTemplate`, `IERC20`) for token operations, `ReentrancyGuard` for reentrancy protection, and `Ownable` for administrative control. The contract handles buy/sell order creation, settlement, liquidity deposits, withdrawals, fee claims, depositor changes, and order cancellations, with rigorous gas optimization and safety mechanisms. State variables are hidden, accessed via view functions with unique names, and decimal precision is maintained across tokens. The contract avoids reserved keywords, uses explicit casting, and ensures graceful degradation. Zero-amount payouts are explicitly handled to prevent indefinite pending states, ensuring system efficiency.
+The `SSRouter` contract, implemented in Solidity (`^0.8.2`), facilitates order creation, settlement, liquidity management, and order cancellation for a decentralized trading platform. It inherits functionality from `SSSettlementPartial`, which extends `SSOrderPartial` and `SSMainPartial`, integrating with external interfaces (`ISSListingTemplate`, `ISSLiquidityTemplate`, `IERC20`) for token operations, `ReentrancyGuard` for reentrancy protection, and `Ownable` for administrative control. The contract handles buy/sell order creation, settlement, liquidity deposits, withdrawals, fee claims, depositor changes, and order cancellations, with rigorous gas optimization and safety mechanisms. State variables are hidden, accessed via view functions with unique names, and decimal precision is maintained across tokens. The contract avoids reserved keywords, uses explicit casting, and ensures graceful degradation. Zero-amount payouts are explicitly handled to prevent indefinite pending states, ensuring system efficiency. All transfers to or from the listing template correctly call `update` or `ssUpdate` afterwards to reflect state changes, ensuring consistency in order and payout processing.
 
 **SPDX License:** BSL-1.1
 
@@ -1267,11 +1267,8 @@ The `SSRouter` contract, implemented in Solidity (`^0.8.2`), facilitates order c
 - **Mappings/Structs Used**:
   - **Structs**: `OrderPrep`, `UpdateType`.
 - **Restrictions**:
-  - Protected琢
-
-System: **Balance Checks**: Same as `createBuyOrder`.
-- **Mappings/Structs Used**: Same as `createBuyOrder`.
-- **Restrictions**: Same as `createBuyOrder`.
+  - Protected by `nonReentrant` and `onlyValidListing`.
+  - Reverts if `maker`, `recipient`, or `inputAmount` is zero, or transfer fails.
 - **Gas Usage Controls**: Single transfer, minimal array updates (3 `UpdateType` elements).
 
 ### createSellOrder(address listingAddress, address recipientAddress, uint256 inputAmount, uint256 maxPrice, uint256 minPrice)
