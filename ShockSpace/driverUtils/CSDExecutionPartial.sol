@@ -3,7 +3,6 @@
 */
 
 // Recent Changes:
-// - 2025-07-23: Removed _validateAndNormalizePullMargin, _executeMarginPayout, and _reduceMakerMargin functions, as they were exclusively used by pullMargin in SSCrossDriver.sol, which was removed. Version incremented to 0.0.23.
 // - 2025-07-23: Added positionToken mapping declaration, moved from SSCrossDriver.sol, to resolve DeclarationError in _updatePositionLiquidationPrices. Version incremented to 0.0.22.
 // - 2025-07-23: Added internal helpers (_transferMarginToListing, _updateListingMargin, _updatePositionLiquidationPrices, _updateMakerMargin, _validateAndNormalizePullMargin, _executeMarginPayout, _reduceMakerMargin) from SSCrossDriver.sol to reduce contract size. Cleared change log except for 2025-07-23 entries. Version incremented to 0.0.21.
 
@@ -61,6 +60,36 @@ contract CSDExecutionPartial is CSDPositionPartial {
         makerTokenMargin[maker][token] += normalizedAmount;
         if (makerTokenMargin[maker][token] == normalizedAmount) {
             makerMarginTokens[maker].push(token);
+        }
+    }
+
+    // Validates and normalizes pull margin request
+    function _validateAndNormalizePullMargin(address listingAddress, bool tokenA, uint256 amount) internal view returns (address token, uint256 normalizedAmount) {
+        require(amount > 0, "Invalid amount");
+        require(listingAddress != address(0), "Invalid listing");
+        (bool isValid, ) = ISSAgent(agentAddress).isValidListing(listingAddress);
+        require(isValid, "Invalid listing");
+        token = tokenA ? ISSListing(listingAddress).tokenA() : ISSListing(listingAddress).tokenB();
+        normalizedAmount = normalizeAmount(token, amount);
+        require(normalizedAmount <= makerTokenMargin[msg.sender][token], "Insufficient margin");
+    }
+
+    // Executes payout for margin withdrawal
+    function _executeMarginPayout(address listingAddress, address recipient, uint256 amount) internal {
+        ISSListing.PayoutUpdate[] memory updates = new ISSListing.PayoutUpdate[](1);
+        updates[0] = ISSListing.PayoutUpdate({
+            payoutType: 0,
+            recipient: recipient,
+            required: amount
+        });
+        ISSListing(listingAddress).ssUpdate(address(this), updates);
+    }
+
+    // Reduces maker's margin balance and updates token list
+    function _reduceMakerMargin(address maker, address token, uint256 normalizedAmount) internal {
+        makerTokenMargin[maker][token] -= normalizedAmount;
+        if (makerTokenMargin[maker][token] == 0) {
+            _removeToken(maker, token);
         }
     }
 
