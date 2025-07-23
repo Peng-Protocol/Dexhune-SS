@@ -1611,10 +1611,7 @@ The `SSCrossDriver` contract, implemented in Solidity (^0.8.2), manages trading 
 
 **SPDX License:** BSL-1.1-Peng-Protocol-2025
 
-**Version:** 0.0.46 (last updated 2025-07-23)
-
-## Recent Changes
-- **2025-07-23**: Moved `positionToken` mapping declaration from `SSCrossDriver.sol` to `CSDExecutionPartial.sol` to resolve `DeclarationError` in `_updatePositionLiquidationPrices`. Updated `closeLongPosition`, `closeShortPosition`, and `_executePositions` to include `_updatePositionLiquidationPrices` calls for maker's remaining positions after closure. Incremented `SSCrossDriver.sol` to 0.0.46 and `CSDExecutionPartial.sol` to 0.0.22.
+**Version:** 0.0.47 (last updated 2025-07-23)
 
 ## State Variables
 - **DECIMAL_PRECISION** (uint256, constant, public): Set to 1e18 for normalizing amounts and prices across token decimals (defined in `CSDUtilityPartial`).
@@ -1945,9 +1942,10 @@ Each function details its parameters, behavior, internal call flow (including ex
   - `listingAddress` (address): Listing contract address.
   - `tokenA` (bool): True for tokenA, false for tokenB.
   - `amount` (uint256): Margin to withdraw (denormalized).
-- **Behavior**: Withdraws margin from `msg.sender`’s balance, updating liquidation prices for all relevant positions, transferring to `msg.sender`, and recording interest. No event emitted.
+- **Behavior**: Withdraws margin from `msg.sender`’s balance if no open or pending positions exist for the maker in the specified token and listing, updating liquidation prices for all relevant positions, transferring to `msg.sender`, and recording interest. No event emitted.
 - **Internal Call Flow**: 
   - `_validateAndNormalizePullMargin` validates inputs (`amount > 0`, `listingAddress` non-zero), checks listing via `ISSAgent.isValidListing`, selects token, normalizes `amount`, and verifies `normalizedAmount <= makerTokenMargin`.
+  - Iterates `positionCount` to ensure no open or pending positions (`status2 == 0`) exist for `msg.sender` with matching `listingAddress` and `token`, reverting if any are found (`"Cannot pull margin with open positions"`).
   - `_updatePositionLiquidationPrices` updates `priceParams2.liquidationPrice` for matching positions (same `maker`, `token`, `listingAddress`, and open `status2 == 0`) before margin deduction.
   - `_reduceMakerMargin` deducts `normalizedAmount` from `makerTokenMargin`, calling `_removeToken` if balance is zero.
   - `_executeMarginPayout` calls `ISSListing.ssUpdate` (input: `PayoutUpdate[]` with `msg.sender`, `amount`, returns: none) to transfer `amount` in selected token to `msg.sender`.
@@ -1961,8 +1959,8 @@ Each function details its parameters, behavior, internal call flow (including ex
   - **Structs**: `PositionCore1`, `PositionCore2`, `PriceParams1`, `PriceParams2`.
 - **Restrictions**:
   - Protected by `nonReentrant`.
-  - Reverts if `amount == 0`, listing is invalid, or margin is insufficient.
-- **Gas Usage Controls**: Minimal updates, pop-and-swap for arrays, full iteration for liquidation prices.
+  - Reverts if `amount == 0`, listing is invalid, margin is insufficient, or open/pending positions exist for the maker.
+- **Gas Usage Controls**: Minimal updates, pop-and-swap for arrays, full iteration for position checks and liquidation prices.
 
 ### closeLongPosition(uint256 positionId)
 - **Parameters**:
@@ -2002,7 +2000,7 @@ Each function details its parameters, behavior, internal call flow (including ex
   - Payout destination: `msg.sender`.
 - **Balance Checks**:
   - **Pre-Balance Check**: `makerTokenMargin[maker][tokenB] >= taxedMargin + excessMargin` ensures sufficient margin.
-  - **Post-Balance Check**: None, as payout is handled by `ISSListing`.
+  - **Post-Balance Check**: None, as payouts are handled by `ISSListing`.
 - **Mappings/Structs Used**: Same as `closeLongPosition`, with tokenB margins and tokenA payouts.
 - **Restrictions**: Same as `closeLongPosition`.
 - **Gas Usage Controls**: Identical to `closeLongPosition`.
