@@ -1,30 +1,12 @@
 /*
- SPDX-License-Identifier: BSD-3-Clause
+ SPDX-License-Identifier: BSL-1.1-Peng-Protocol-2025
 */
 
 // Recent Changes:
-// - 2025-07-13: Removed `onlyMux` modifier from `drive` function to allow any address to call it, enabling broader position creation. Version incremented to 0.0.42.
-// - 2025-07-05: Adjusted getMuxesView function "positionCount" usage, now uses a max return of 1000. 
-// - 2025-07-05: Modified drift function to set payout recipient as the mux (caller) instead of the position maker, ensuring payouts are directed to the mux for further processing. Version incremented to 0.0.41.
-// - 2025-07-05: Modified drift function to close a specific position for a maker, restricted to onlyMux callers, without additional verification. Version incremented to 0.0.40.
-// - 2025-07-04: Fixed DeclarationError in _setCoreData by replacing undeclared Position2 with PositionCore2. Version incremented to 0.0.39.
-// - 2025-07-04: Fixed ParserError in _updatePositionLiquidationPrices by replacing invalid identifier MCMiD0x5B4e8A92B81EF68aA3c1c22dA0aDA7803aA29A6f with i. Version incremented to 0.0.38.
-// - 2025-07-04: Added muxes management functions (addMux, removeMux, getMuxesView), drive function for mux position creation, drift function for mux position execution, and onlyMux modifier. Version incremented to 0.0.37.
-// - 2025-06-17: Refactored addExcessMargin and pullMargin to resolve stack too deep error by extracting internal helpers (_transferMarginToListing, _updateListingMargin, _updatePositionLiquidationPrices, _updateMakerMargin, _validateAndNormalizePullMargin, _executeMarginPayout, _reduceMakerMargin). Version incremented to 0.0.36.
-// - 2025-06-17: Fixed TypeError by passing core1.positionType instead of token to _updateLiquidationPrices in addExcessMargin and pullMargin. Version incremented to 0.0.35.
-// - 2025-06-17: Updated addExcessMargin and pullMargin to call _updateLiquidationPrices for each relevant position after/before margin updates. Removed maxIterations from liquidation price updates. Version incremented to 0.0.34.
-// - 2025-06-16: Updated addExcessMargin and pullMargin to use ISSAgent.isValidListing for listing validation instead of ISSAgent.getListing. Version incremented to 0.0.33.
-// - 2025-06-16: Updated pullMargin to take listingAddress and tokenA (bool) instead of tokenA and tokenB, using tokenA to select tokenA or tokenB from listingAddress. Added listing validation in addExcessMargin and pullMargin using ISSAgent.getListing. Version incremented to 0.0.32.
-// - 2025-06-16: Updated addExcessMargin to take listingAddress and tokenA (bool) instead of tokenA and tokenB, using tokenA to select tokenA or tokenB from listingAddress. Version incremented to 0.0.31.
-// - 2025-06-16: Removed uint256 return type from _setCoreData to match CSDPositionPartial.sol, resolving TypeError. Version incremented to 0.0.30.
-// - 2025-06-16: Replaced PrepPositionCore with PrepPosition in _initiateEntry, replaced parseEntryPrice with _parseEntryPriceInternal in _setPriceData, fixed _setCoreData parameters (makerAddress to maker, tokenType to token) to resolve DeclarationErrors at lines 185, 108, 95, 91. Version incremented to 0.0.29.
-// - 2025-06-17: Updated closeLongPosition and closeShortPosition to use tokenB for long payouts and tokenA for short payouts, aligning with prepExitLong/Short in CSDPositionPartial.sol. Version incremented to 0.0.28.
-// - 2025-06-16: Removed positionId parameter from enterLong/enterShort, generated positionId using positionCount, corrected token usage in _validateAndInit (longs: tokenA, shorts: tokenB), added TotalActivePositionsView. Version incremented to 0.0.27.
-// - 2025-06-15: Updated closeLongPosition and closeShortPosition to use normalized amounts in ssUpdate instead of denormalized amounts. Version incremented to 0.0.26.
-// - 2025-06-14: Added updateHistoricalInterest from CSDPositionPartial.sol to resolve DeclarationError at lines 505, 507, 509. Updated _setExitData to call updateHistoricalInterest. Version incremented to 0.0.25.
-// - 2025-06-14: Refactored _processPositionEntry into _initiateEntry, moving helpers (_prepareEntryContext, _validateEntry, _computeEntryParams, _storeEntryData) to CSDPositionPartial.sol to resolve stack too deep error at line 212:94, aligning with isolatedDriver's call tree. Removed _preparePosition. Version incremented to 0.0.24.
-// - 2025-06-14: Fixed ParserError in _setMarginData. Version incremented to 0.0.23.
-// - 2025-06-14: Optimized positionByIndex. Version incremented to 0.0.22.
+// - 2025-07-23: Removed positionToken mapping declaration, as it was moved to CSDExecutionPartial.sol to resolve DeclarationError in _updatePositionLiquidationPrices. Version incremented to 0.0.46.
+// - 2025-07-23: Moved internal helpers (_transferMarginToListing, _updateListingMargin, _updatePositionLiquidationPrices, _updateMakerMargin, _validateAndNormalizePullMargin, _executeMarginPayout, _reduceMakerMargin) to CSDExecutionPartial.sol to unload SSCrossDriver.sol. Cleared change log except for 2025-07-23 entries. Version incremented to 0.0.45.
+// - 2025-07-23: Removed unnecessary `override` from _executePositions to resolve TypeError, as base function in CSDExecutionPartial.sol is not virtual. Version incremented to 0.0.44.
+// - 2025-07-23: Added _updatePositionLiquidationPrices calls to closeLongPosition, closeShortPosition, and _executePositions to update liquidation prices for maker's remaining positions after closure. Version incremented to 0.0.43.
 
 pragma solidity ^0.8.2;
 
@@ -42,7 +24,6 @@ contract SSCrossDriver is ReentrancyGuard, Ownable, CSDExecutionPartial {
     event MuxAdded(address indexed mux);
     event MuxRemoved(address indexed mux);
 
-    mapping(uint256 => address) public positionToken;
     mapping(uint256 => uint256) public longIOByHeight;
     mapping(uint256 => uint256) public shortIOByHeight;
     mapping(uint256 => uint256) public historicalInterestTimestamps;
@@ -155,84 +136,6 @@ contract SSCrossDriver is ReentrancyGuard, Ownable, CSDExecutionPartial {
         ISSListing(core1.listingAddress).ssUpdate(address(this), updates);
         
         emit PositionClosed(positionId, maker, payout);
-    }
-
-    // Transfers margin to listing contract and verifies balance
-    function _transferMarginToListing(address token, uint256 amount, address listingAddress) internal returns (uint256 normalizedAmount) {
-        normalizedAmount = normalizeAmount(token, amount);
-        uint256 balanceBefore = IERC20(token).balanceOf(listingAddress);
-        bool success = IERC20(token).transferFrom(msg.sender, listingAddress, amount);
-        require(success, "TransferFrom failed");
-        uint256 balanceAfter = IERC20(token).balanceOf(listingAddress);
-        require(balanceAfter - balanceBefore == amount, "Balance update failed");
-    }
-
-    // Updates listing contract with new margin
-    function _updateListingMargin(address listingAddress, uint256 amount) internal {
-        ISSListing.UpdateType[] memory updates = new ISSListing.UpdateType[](1);
-        updates[0] = ISSListing.UpdateType({
-            updateType: 0,
-            index: 0,
-            value: amount,
-            addr: address(0),
-            recipient: address(0)
-        });
-        ISSListing(listingAddress).update(address(this), updates);
-    }
-
-    // Updates liquidation prices for positions matching maker, token, and listing
-    function _updatePositionLiquidationPrices(address maker, address token, address listingAddress) internal {
-        for (uint256 i = 1; i <= positionCount; i++) {
-            PositionCore1 storage core1 = positionCore1[i];
-            PositionCore2 storage core2 = positionCore2[i];
-            if (
-                core1.positionId == i &&
-                core2.status2 == 0 &&
-                core1.makerAddress == maker &&
-                positionToken[i] == token &&
-                core1.listingAddress == listingAddress
-            ) {
-                _updateLiquidationPrices(i, maker, core1.positionType, listingAddress);
-            }
-        }
-    }
-
-    // Updates maker's margin balance and token list
-    function _updateMakerMargin(address maker, address token, uint256 normalizedAmount) internal {
-        makerTokenMargin[maker][token] += normalizedAmount;
-        if (makerTokenMargin[maker][token] == normalizedAmount) {
-            makerMarginTokens[maker].push(token);
-        }
-    }
-
-    // Validates and normalizes pull margin request
-    function _validateAndNormalizePullMargin(address listingAddress, bool tokenA, uint256 amount) internal view returns (address token, uint256 normalizedAmount) {
-        require(amount > 0, "Invalid amount");
-        require(listingAddress != address(0), "Invalid listing");
-        (bool isValid, ) = ISSAgent(agentAddress).isValidListing(listingAddress);
-        require(isValid, "Invalid listing");
-        token = tokenA ? ISSListing(listingAddress).tokenA() : ISSListing(listingAddress).tokenB();
-        normalizedAmount = normalizeAmount(token, amount);
-        require(normalizedAmount <= makerTokenMargin[msg.sender][token], "Insufficient margin");
-    }
-
-    // Executes payout for margin withdrawal
-    function _executeMarginPayout(address listingAddress, address recipient, uint256 amount) internal {
-        ISSListing.PayoutUpdate[] memory updates = new ISSListing.PayoutUpdate[](1);
-        updates[0] = ISSListing.PayoutUpdate({
-            payoutType: 0,
-            recipient: recipient,
-            required: amount
-        });
-        ISSListing(listingAddress).ssUpdate(address(this), updates);
-    }
-
-    // Reduces maker's margin balance and updates token list
-    function _reduceMakerMargin(address maker, address token, uint256 normalizedAmount) internal {
-        makerTokenMargin[maker][token] -= normalizedAmount;
-        if (makerTokenMargin[maker][token] == 0) {
-            _removeToken(maker, token);
-        }
     }
 
     function normalizePrice(address token, uint256 price) internal view override returns (uint256) {
@@ -491,6 +394,8 @@ contract SSCrossDriver is ReentrancyGuard, Ownable, CSDExecutionPartial {
         address tokenB = ISSListing(core1.listingAddress).tokenB();
         uint256 payout = prepCloseLong(positionId, core1.listingAddress);
         removePositionIndex(positionId, core1.positionType, core1.listingAddress);
+        // Update liquidation prices for maker's remaining positions
+        _updatePositionLiquidationPrices(msg.sender, ISSListing(core1.listingAddress).tokenA(), core1.listingAddress);
         ISSListing.PayoutUpdate[] memory updates = new ISSListing.PayoutUpdate[](1);
         updates[0] = ISSListing.PayoutUpdate({
             payoutType: core1.positionType,
@@ -510,6 +415,8 @@ contract SSCrossDriver is ReentrancyGuard, Ownable, CSDExecutionPartial {
         address tokenA = ISSListing(core1.listingAddress).tokenA();
         uint256 payout = prepCloseShort(positionId, core1.listingAddress);
         removePositionIndex(positionId, core1.positionType, core1.listingAddress);
+        // Update liquidation prices for maker's remaining positions
+        _updatePositionLiquidationPrices(msg.sender, ISSListing(core1.listingAddress).tokenB(), core1.listingAddress);
         ISSListing.PayoutUpdate[] memory updates = new ISSListing.PayoutUpdate[](1);
         updates[0] = ISSListing.PayoutUpdate({
             payoutType: core1.positionType,
@@ -604,6 +511,8 @@ contract SSCrossDriver is ReentrancyGuard, Ownable, CSDExecutionPartial {
             address tokenB = ISSListing(core1.listingAddress).tokenB();
             uint256 payout = prepCloseLong(positionId, core1.listingAddress);
             removePositionIndex(positionId, core1.positionType, core1.listingAddress);
+            // Update liquidation prices for maker's remaining positions
+            _updatePositionLiquidationPrices(maker, ISSListing(core1.listingAddress).tokenA(), core1.listingAddress);
             ISSListing.PayoutUpdate[] memory updates = new ISSListing.PayoutUpdate[](1);
             updates[0] = ISSListing.PayoutUpdate({
                 payoutType: core1.positionType,
@@ -629,7 +538,7 @@ contract SSCrossDriver is ReentrancyGuard, Ownable, CSDExecutionPartial {
             MarginParams1 storage margin1 = marginParams1[positionId];
             makerTokenMargin[msg.sender][token] -= (margin1.taxedMargin + margin1.excessMargin);
             if (makerTokenMargin[msg.sender][token] == 0) {
-                _removeToken(maker, token);
+                _removeToken(msg.sender, token);
             }
             core2.status2 = 1;
             exitParams[positionId].exitPrice = 0;
@@ -650,6 +559,8 @@ contract SSCrossDriver is ReentrancyGuard, Ownable, CSDExecutionPartial {
             address tokenA = ISSListing(core1.listingAddress).tokenA();
             uint256 payout = prepCloseShort(positionId, core1.listingAddress);
             removePositionIndex(positionId, 1, core1.listingAddress);
+            // Update liquidation prices for maker's remaining positions
+            _updatePositionLiquidationPrices(maker, ISSListing(core1.listingAddress).tokenB(), core1.listingAddress);
             ISSListing.PayoutUpdate[] memory updates = new ISSListing.PayoutUpdate[](1);
             updates[0] = ISSListing.PayoutUpdate({
                 payoutType: core1.positionType,
