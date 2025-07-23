@@ -3,7 +3,7 @@
 */
 
 // Recent Changes:
-// - 2025-07-23: Removed pullMargin function, as it was deemed detrimental to the protocol. Version incremented to 0.0.47.
+// - 2025-07-23: Modified pullMargin to only allow margin withdrawal if the maker has no open or pending positions, preventing misuse while allowing leftover margin withdrawal. Version incremented to 0.0.47.
 // - 2025-07-23: Removed positionToken mapping declaration, as it was moved to CSDExecutionPartial.sol to resolve DeclarationError in _updatePositionLiquidationPrices. Version incremented to 0.0.46.
 // - 2025-07-23: Moved internal helpers (_transferMarginToListing, _updateListingMargin, _updatePositionLiquidationPrices, _updateMakerMargin, _validateAndNormalizePullMargin, _executeMarginPayout, _reduceMakerMargin) to CSDExecutionPartial.sol to unload SSCrossDriver.sol. Cleared change log except for 2025-07-23 entries. Version incremented to 0.0.45.
 // - 2025-07-23: Removed unnecessary `override` from _executePositions to resolve TypeError, as base function in CSDExecutionPartial.sol is not virtual. Version incremented to 0.0.44.
@@ -367,6 +367,37 @@ contract SSCrossDriver is ReentrancyGuard, Ownable, CSDExecutionPartial {
 
         // Record historical interest
         updateHistoricalInterest(normalizedAmount, 0, listingAddress);
+    }
+
+    function pullMargin(address listingAddress, bool tokenA, uint256 amount) external nonReentrant {
+        // Validate and normalize pull request
+        (address token, uint256 normalizedAmount) = _validateAndNormalizePullMargin(listingAddress, tokenA, amount);
+
+        // Check for open or pending positions
+        for (uint256 i = 1; i <= positionCount; i++) {
+            PositionCore1 storage core1 = positionCore1[i];
+            PositionCore2 storage core2 = positionCore2[i];
+            if (
+                core1.makerAddress == msg.sender &&
+                core1.listingAddress == listingAddress &&
+                positionToken[i] == token &&
+                core2.status2 == 0 // Position is not closed
+            ) {
+                revert("Cannot pull margin with open positions");
+            }
+        }
+
+        // Update liquidation prices
+        _updatePositionLiquidationPrices(msg.sender, token, listingAddress);
+
+        // Reduce maker's margin
+        _reduceMakerMargin(msg.sender, token, normalizedAmount);
+
+        // Execute payout
+        _executeMarginPayout(listingAddress, msg.sender, amount);
+
+        // Record historical interest
+        updateHistoricalInterest(normalizedAmount, 1, listingAddress);
     }
 
     function closeLongPosition(uint256 positionId) external nonReentrant {
