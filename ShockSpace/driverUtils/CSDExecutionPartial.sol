@@ -3,13 +3,8 @@
 */
 
 // Recent Changes:
-// - 2025-06-17: Fixed TypeError by accessing initialMargin from marginParams1 instead of price1 in _updateLiquidationPrices. Version incremented to 0.0.20.
-// - 2025-06-17: Modified _updateLiquidationPrices to derive margin token using positionType and listingAddress, removing positionToken dependency. Updated _processPendingPosition and _processActivePosition calls accordingly. Version incremented to 0.0.19.
-// - 2025-06-17: Added _updateLiquidationPrices to recalculate liquidation price for a single position. Modified _processPendingPosition and _processActivePosition to call _updateLiquidationPrices before liquidation checks. Version incremented to 0.0.18.
-// - 2025-06-16: Replaced parseEntryPrice with _parseEntryPriceInternal at lines 87 and 102 to resolve DeclarationError. Updated Solidity version to ^0.8.2. Version incremented to 0.0.17.
-// - 2025-06-13: Renamed executePositions to _executePositions as internal helper, added external executePositions wrapper. Version incremented to 0.0.16.
-// - 2025-06-13: Changed executePositions visibility to external virtual. Version incremented to 0.0.15.
-// - 2025-06-13: Confirmed PositionClosed emission via CSDUtilityPartial.sol. Version incremented to 0.0.14.
+// - 2025-07-23: Added positionToken mapping declaration, moved from SSCrossDriver.sol, to resolve DeclarationError in _updatePositionLiquidationPrices. Version incremented to 0.0.22.
+// - 2025-07-23: Added internal helpers (_transferMarginToListing, _updateListingMargin, _updatePositionLiquidationPrices, _updateMakerMargin, _validateAndNormalizePullMargin, _executeMarginPayout, _reduceMakerMargin) from SSCrossDriver.sol to reduce contract size. Cleared change log except for 2025-07-23 entries. Version incremented to 0.0.21.
 
 pragma solidity ^0.8.2;
 
@@ -17,6 +12,86 @@ import "./CSDPositionPartial.sol";
 
 contract CSDExecutionPartial is CSDPositionPartial {
     using SafeERC20 for IERC20;
+
+    mapping(uint256 => address) public positionToken; // Maps position IDs to their associated token
+
+    // Transfers margin to listing contract and verifies balance
+    function _transferMarginToListing(address token, uint256 amount, address listingAddress) internal returns (uint256 normalizedAmount) {
+        normalizedAmount = normalizeAmount(token, amount);
+        uint256 balanceBefore = IERC20(token).balanceOf(listingAddress);
+        bool success = IERC20(token).transferFrom(msg.sender, listingAddress, amount);
+        require(success, "TransferFrom failed");
+        uint256 balanceAfter = IERC20(token).balanceOf(listingAddress);
+        require(balanceAfter - balanceBefore == amount, "Balance update failed");
+    }
+
+    // Updates listing contract with new margin
+    function _updateListingMargin(address listingAddress, uint256 amount) internal {
+        ISSListing.UpdateType[] memory updates = new ISSListing.UpdateType[](1);
+        updates[0] = ISSListing.UpdateType({
+            updateType: 0,
+            index: 0,
+            value: amount,
+            addr: address(0),
+            recipient: address(0)
+        });
+        ISSListing(listingAddress).update(address(this), updates);
+    }
+
+    // Updates liquidation prices for positions matching maker, token, and listing
+    function _updatePositionLiquidationPrices(address maker, address token, address listingAddress) internal {
+        for (uint256 i = 1; i <= positionCount; i++) {
+            PositionCore1 storage core1 = positionCore1[i];
+            PositionCore2 storage core2 = positionCore2[i];
+            if (
+                core1.positionId == i &&
+                core2.status2 == 0 &&
+                core1.makerAddress == maker &&
+                positionToken[i] == token &&
+                core1.listingAddress == listingAddress
+            ) {
+                _updateLiquidationPrices(i, maker, core1.positionType, listingAddress);
+            }
+        }
+    }
+
+    // Updates maker's margin balance and token list
+    function _updateMakerMargin(address maker, address token, uint256 normalizedAmount) internal {
+        makerTokenMargin[maker][token] += normalizedAmount;
+        if (makerTokenMargin[maker][token] == normalizedAmount) {
+            makerMarginTokens[maker].push(token);
+        }
+    }
+
+    // Validates and normalizes pull margin request
+    function _validateAndNormalizePullMargin(address listingAddress, bool tokenA, uint256 amount) internal view returns (address token, uint256 normalizedAmount) {
+        require(amount > 0, "Invalid amount");
+        require(listingAddress != address(0), "Invalid listing");
+        (bool isValid, ) = ISSAgent(agentAddress).isValidListing(listingAddress);
+        require(isValid, "Invalid listing");
+        token = tokenA ? ISSListing(listingAddress).tokenA() : ISSListing(listingAddress).tokenB();
+        normalizedAmount = normalizeAmount(token, amount);
+        require(normalizedAmount <= makerTokenMargin[msg.sender][token], "Insufficient margin");
+    }
+
+    // Executes payout for margin withdrawal
+    function _executeMarginPayout(address listingAddress, address recipient, uint256 amount) internal {
+        ISSListing.PayoutUpdate[] memory updates = new ISSListing.PayoutUpdate[](1);
+        updates[0] = ISSListing.PayoutUpdate({
+            payoutType: 0,
+            recipient: recipient,
+            required: amount
+        });
+        ISSListing(listingAddress).ssUpdate(address(this), updates);
+    }
+
+    // Reduces maker's margin balance and updates token list
+    function _reduceMakerMargin(address maker, address token, uint256 normalizedAmount) internal {
+        makerTokenMargin[maker][token] -= normalizedAmount;
+        if (makerTokenMargin[maker][token] == 0) {
+            _removeToken(maker, token);
+        }
+    }
 
     // Updates liquidation price for a specific position based on current margin
     function _updateLiquidationPrices(
@@ -35,7 +110,7 @@ contract CSDExecutionPartial is CSDPositionPartial {
 
         PriceParams1 storage price1 = priceParams1[positionId];
         PriceParams2 storage price2 = priceParams2[positionId];
-        MarginParams1 storage margin1 = marginParams1[positionId]; // Access MarginParams1 for initialMargin
+        MarginParams1 storage margin1 = marginParams1[positionId];
 
         // Compute new liquidation price based on position type
         uint256 newLiquidationPrice;
@@ -43,7 +118,7 @@ contract CSDExecutionPartial is CSDPositionPartial {
             // Long position: use tokenA for margin, compute liquidation price
             address tokenA = ISSListing(listingAddress).tokenA();
             (, newLiquidationPrice) = _computeLoanAndLiquidationLong(
-                uint256(price1.leverage) * margin1.initialMargin, // Use margin1.initialMargin
+                uint256(price1.leverage) * margin1.initialMargin,
                 price1.minEntryPrice,
                 maker,
                 tokenA
@@ -52,7 +127,7 @@ contract CSDExecutionPartial is CSDPositionPartial {
             // Short position: use tokenB for margin, compute liquidation price
             address tokenB = ISSListing(listingAddress).tokenB();
             (, newLiquidationPrice) = _computeLoanAndLiquidationShort(
-                uint256(price1.leverage) * margin1.initialMargin, // Use margin1.initialMargin
+                uint256(price1.leverage) * margin1.initialMargin,
                 price1.minEntryPrice,
                 maker,
                 tokenB
