@@ -1,28 +1,3 @@
-## **LUSD (Outdated)**
-A highly scalable and accurately price stable synthetic stablecoin making use of "LP Rebase".
-The token achieves a price of $1 by fetching the POL/USD price from a Chainlink oracle and rebases a target QuickSwap liquidity pool (that holds wPOL/LUSD) based on the LP Rebase formula. 
-
-$LUSD does not require collateral to remain stable, however, users may encounter slippage depending on how much they intend to trade and how much liquidity is available. 
-
-Users may profit by providing liquidity.  This is because the rebase function increases or reduces the balance of all Liquidity Providers depending on demand. 
-
-$LUSD takes a 0.05% fee on every transfer, fees are distributed to Peng NFT holders via Marker DAO. 
-
-LUSD can be acquired without slippage at the dispenser contract.
-
-"Freebaser" contract incentivizes calling "rebase". 
-
-$LUSD is tradable on CFAMM DEXs like Uniswap. 
-
-**Deployment**
-- **[LUSD](https://polygonscan.com/address/0xF0FD398Ca09444F771eC968d9cbF073a744A544c#readContract)**
-- **[Dispenser](https://polygonscan.com/address/0xB709FafF4f731bfD767354738cB8A38D08a92920#writeContract)**
-- **[Freebaser](https://polygonscan.com/address/0x3bA341ea464ae63372Bfe60B572E677CE0d9a3Ba#writeContract)**
-
-- **[Dispenser Frontend](https://link.dexhune.eth.limo)**
-
-- **Succession**; the system is currently outdated, new version can be found [here](https://github.com/Peng-Protocol/Dexhune-P/tree/main/LUSD-V2) and relies on OMF for price peg, solves the collateral issue somewhat. 
-
 ## **Shock Space**
 
 A permissionless leverage trading platform based on Dexhune-P, allows any token on Polygon POS to be listed. Integrates scalable synthetic RWA (real world assets) primitives for fiat currencies and commodities via Chainlink data feeds. Shock Space has (7) distinguishing qualities; 
@@ -64,3 +39,28 @@ Positions can be opened with as little as $1e-6 or lower!"
 **Deployment**
 
 ***Pending...***
+
+## **LUSD (Outdated)**
+A highly scalable and accurately price stable synthetic stablecoin making use of "LP Rebase".
+The token achieves a price of $1 by fetching the POL/USD price from a Chainlink oracle and rebases a target QuickSwap liquidity pool (that holds wPOL/LUSD) based on the LP Rebase formula. 
+
+$LUSD does not require collateral to remain stable, however, users may encounter slippage depending on how much they intend to trade and how much liquidity is available. 
+
+Users may profit by providing liquidity.  This is because the rebase function increases or reduces the balance of all Liquidity Providers depending on demand. 
+
+$LUSD takes a 0.05% fee on every transfer, fees are distributed to Peng NFT holders via Marker DAO. 
+
+LUSD can be acquired without slippage at the dispenser contract.
+
+"Freebaser" contract incentivizes calling "rebase". 
+
+$LUSD is tradable on CFAMM DEXs like Uniswap. 
+
+**Deployment**
+- **[LUSD](https://polygonscan.com/address/0xF0FD398Ca09444F771eC968d9cbF073a744A544c#readContract)**
+- **[Dispenser](https://polygonscan.com/address/0xB709FafF4f731bfD767354738cB8A38D08a92920#writeContract)**
+- **[Freebaser](https://polygonscan.com/address/0x3bA341ea464ae63372Bfe60B572E677CE0d9a3Ba#writeContract)**
+
+- **[Dispenser Frontend](https://link.dexhune.eth.limo)**
+
+- **Succession**; the system is currently outdated, new version can be found [here](https://github.com/Peng-Protocol/Dexhune-P/tree/main/LUSD-V2) and relies on OMF for price peg, solves the collateral issue somewhat. 
