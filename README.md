@@ -1,4 +1,4 @@
-## **LUSD**
+## **LUSD (Outdated)**
 A highly scalable and accurately price stable synthetic stablecoin making use of "LP Rebase".
 The token achieves a price of $1 by fetching the POL/USD price from a Chainlink oracle and rebases a target QuickSwap liquidity pool (that holds wPOL/LUSD) based on the LP Rebase formula. 
 
@@ -21,6 +21,8 @@ $LUSD is tradable on CFAMM DEXs like Uniswap.
 
 - **[Dispenser Frontend](https://link.dexhune.eth.limo)**
 
+- **Succession**; the system is currently outdated, new version can be found [here](https://github.com/Peng-Protocol/Dexhune-P/tree/main/LUSD-V2) and relies on OMF for price peg, solves the collateral issue somewhat. 
+
 ## **Shock Space**
 
 A permissionless leverage trading platform based on Dexhune-P, allows any token on Polygon POS to be listed. Integrates scalable synthetic RWA (real world assets) primitives for fiat currencies and commodities via Chainlink data feeds. Shock Space has (7) distinguishing qualities; 
@@ -32,11 +34,11 @@ This is because the user's margin is added to the listing's market liquidity whe
 Positions only have as much impact as the user's margin relative to the Listing contract's balance. 
 Longs overall still increase price because the user has to buy the token in order to long it.
 
-**B. Paper Leverage**:
+**B. Synthetic Leverage**:
 
-Positions are created using "Paper Leverage" that is issued by the exchange rather than borrowed from a lender. With limitations based on how much leverage is used relative to the available liquidity. 
+Positions are created using "Synthetic Leverage" that is issued by the exchange rather than borrowed from a lender. With limitations based on how much leverage is used relative to the available liquidity. 
 
-When a position closes; the leveraged amount is erased and the user is owed their excess margin - initial margin after fees and any profit or loss they may have made, payable in the opposing asset type (longs receive USD / Token-0, while shorts receive Token-1). 
+When a position closes; the leveraged amount is erased and the user is owed their excess margin - initial margin after fees and any profit or loss they may have made, payable in the opposing asset type (longs receive USD / Token-1, while shorts receive Token-0). 
 
 Position closures create a unique order that is filled by opposing liquidity types either in the market liquidity or staked liquidity. 
 
@@ -47,14 +49,14 @@ Users can customize how much is used as initial margin or excess margin in isola
 **D. Progressive Fees**:
 
 Fees are billed once with no funding or maintainence fees. Entry fees are billed based on leverage used, with a maximum of 99% fees at 100x leverage and minimum of 1% at 2x. 
-Fees are paid to liquidity providers of the opposing side; longs pay fees to USD or [TOKEN-0] LPs, while shorts pay fees to [TOKEN-1] LPs. 
+Fees are paid to liquidity providers of the opposing side; longs pay fees to USD or [TOKEN-1] LPs, while shorts pay fees to [TOKEN-0] LPs. 
 
 **E. Cross Pairing and Cross Margin**:
 
 Shock Space allows cross paired listings between any (2) tokens while also providing a comprehensive cross margin experience on cross pairings.
 
 **F. Asset Types**
-Tokens on Polygon POS are directly listed, creating markets that respond to demand and arbitrage.
+Tokens on the EVM are directly listed, creating markets that respond to demand and arbitrage.
 
 **G. Micro-positions**
 Positions can be opened with as little as $1e-6 or lower!" 
