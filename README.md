@@ -63,4 +63,4 @@ $LUSD is tradable on CFAMM DEXs like Uniswap.
 
 - **[Dispenser Frontend](https://link.dexhune.eth.limo)**
 
-- **Succession**; the system is currently outdated, new version can be found [here](https://github.com/Peng-Protocol/Dexhune-P/tree/main/LUSD-V2) and relies on OMF for price peg, solves the collateral issue somewhat. 
+- **Succession**; the system is currently outdated, new version can be found [here](https://github.com/Peng-Protocol/Dexhune-P/tree/main/LAU) and relies on OMF for price peg. 
