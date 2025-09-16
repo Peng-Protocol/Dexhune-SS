@@ -576,11 +576,12 @@ The `CCLiquidityTemplate`, implemented in Solidity (^0.8.2), manages liquidity p
 ## Overview
 The `MFPListingTemplate` contract (Solidity ^0.8.2) supports decentralized trading for a token pair, with price discovery via `IERC20.balanceOf`. It manages buy/sell orders and normalized (1e18 precision) balances. Volumes are tracked in `_historicalData` during order settlement/cancellation, with auto-generated historical data if not provided by routers. Licensed under BSL 1.1 - Peng Protocol 2025, it uses explicit casting, avoids inline assembly, and ensures graceful degradation with try-catch for external calls.
 
-**Version**: 0.3.9 (Updated 2025-09-11)
+**Version**: 0.3.11 (Updated 2025-09-16)
 
 **Changes**:
-- v0.3.9: Replaced `UpdateType` struct with `BuyOrderUpdate`, `SellOrderUpdate`, `BalanceUpdate`, `HistoricalUpdate` structs. Updated `ccUpdate` to accept new struct arrays, removing `updateType`, `updateSort`, `updateData` arrays. Modified `_processBuyOrderUpdate` and `_processSellOrderUpdate` to handle new structs directly without encoding/decoding. Ensured direct struct field assignments for clarity and gas efficiency.
-- Updated `_processHistoricalUpdate` to handle full `HistoricalUpdate` struct, using helper functions `_updateHistoricalData` and `_updateDayStartIndex` for clarity and reduced complexity.
+- v0.3.11: Integrated `CCListingTemplate` v0.3.11 changes. Updated `_processHistoricalUpdate` to use full `HistoricalUpdate` struct, removing `structId` and `value` parameters. Added `_updateHistoricalData` and `_updateDayStartIndex` helper functions for modularity. Removed `uint2str` in error messages. Preserved MFP-specific price calculation in `prices` and `ccUpdate` balance updates using contract balances.
+- v0.3.10: Updated `ccUpdate` to accept `BuyOrderUpdate`, `SellOrderUpdate`, `BalanceUpdate`, `HistoricalUpdate` arrays, removing `updateType`, `updateSort`, `updateData`. Modified `_processBuyOrderUpdate` and `_processSellOrderUpdate` for direct struct handling. Removed `uint2str` in error messages.
+- v0.3.9: Replaced `UpdateType` with `BuyOrderUpdate`, `SellOrderUpdate`, `BalanceUpdate`, `HistoricalUpdate` structs. Updated `_processBuyOrderUpdate`, `_processSellOrderUpdate`, and `_processHistoricalUpdate` for direct struct assignments. Ensured MFP price calculation in `prices`.
 - v0.3.8: Added minimum price "1" in `prices`.
 - v0.3.7: Derived "MFP" from "CC".
 
@@ -717,14 +718,14 @@ The `MFPListingTemplate` contract (Solidity ^0.8.2) supports decentralized tradi
      - Invalid `structId` emits `UpdateFailed`.
   3. Processes `sellUpdates` via `_processSellOrderUpdate` (similar, updates `sellOrder*`, `_pendingSellOrders`, `_historicalData.xVolume`, `_historicalData.yVolume`).
   4. Processes `balanceUpdates`: Pushes `HistoricalData` with current price (`(balanceB * 1e18) / balanceA` or 1), `xBalance`, `yBalance`. Emits `BalancesUpdated`.
-  5. Processes `historicalUpdates` via `_processHistoricalUpdate`: Creates `HistoricalData` with `price`, balances, timestamp, updates `_dayStartIndices`. Emits `UpdateFailed` if `price=0`.
+  5. Processes `historicalUpdates` via `_processHistoricalUpdate`: Creates new `HistoricalData` entry with `price`, balances, timestamp using `_updateHistoricalData`, updates `_dayStartIndices` via `_updateDayStartIndex`. Emits `UpdateFailed` if `price=0`.
   6. Checks `orderStatus` for completeness, emits `OrderUpdatesComplete` or `OrderUpdateIncomplete`.
   7. Updates `dayStartFee` if not same day, fetching fees via `ICCLiquidityTemplate.liquidityDetail`.
   8. Calls `globalizeUpdate`.
 - **State Changes**: `buyOrderCore`, `buyOrderPricing`, `buyOrderAmounts`, `sellOrderCore`, `sellOrderPricing`, `sellOrderAmounts`, `_pendingBuyOrders`, `_pendingSellOrders`, `makerPendingOrders`, `orderStatus`, `_historicalData`, `_dayStartIndices`, `dayStartFee`, `nextOrderId`.
-- **External Interactions**: `IERC20.balanceOf` (`ccUpdate`, `prices`), `ICCLiquidityTemplate.liquidityDetail` (`ccUpdate`), `ITokenRegistry.initializeTokens` (`_updateRegistry`), `ICCGlobalizer.globalizeOrders` (`globalizeUpdate`).
-- **Internal Call Tree**: `_processBuyOrderUpdate` (`removePendingOrder`, `_updateRegistry`), `_processSellOrderUpdate` (`removePendingOrder`, `_updateRegistry`), `_processHistoricalUpdate` (`_updateHistoricalData`, `_updateDayStartIndex`, `_floorToMidnight`), `_updateRegistry` (`ITokenRegistry.initializeTokens`), `globalizeUpdate` (`ICCGlobalizer.globalizeOrders`), `_floorToMidnight`, `_isSameDay`, `removePendingOrder`, `normalize`.
-- **Errors**: Emits `UpdateFailed`, `OrderUpdateIncomplete`, `OrderUpdatesComplete`, `ExternalCallFailed`, `RegistryUpdateFailed`, `GlobalUpdateFailed`.
+- **External Interactions**: `IERC20.balanceOf` (`ccUpdate`, `prices`, `_updateHistoricalData`), `ICCLiquidityTemplate.liquidityDetail` (`ccUpdate`), `ITokenRegistry.initializeTokens` (`_updateRegistry`), `ICCGlobalizer.globalizeOrders` (`globalizeUpdate`).
+- **Internal Call Tree**: `_processBuyOrderUpdate` (`removePendingOrder`, `_updateRegistry`), `_processSellOrderUpdate` (`removePendingOrder`, `_updateRegistry`), `_processHistoricalUpdate` (`_updateHistoricalData`, `_updateDayStartIndex`, `_floorToMidnight`), `_updateHistoricalData` (`normalize`, `_floorToMidnight`), `_updateDayStartIndex` (`_floorToMidnight`), `_updateRegistry` (`ITokenRegistry.initializeTokens`), `globalizeUpdate` (`ICCGlobalizer.globalizeOrders`), `_floorToMidnight`, `_isSameDay`, `removePendingOrder`, `normalize`.
+- **Errors**: Emits `UpdateFailed`, `OrderUpdateIncomplete`, `OrderUpdatesComplete`, `ExternalCallFailed`, `RegistryUpdateFailed`, `GlobalUpdateFailed`, `BalancesUpdated`, `OrderUpdated`.
 
 ### Internal Functions
 #### normalize(uint256 amount, uint8 decimals) returns (uint256 normalized)
@@ -782,22 +783,22 @@ The `MFPListingTemplate` contract (Solidity ^0.8.2) supports decentralized tradi
 - **Parameters/Interactions**: Updates `sellOrderCore`, `sellOrderPricing`, `sellOrderAmounts`, `_historicalData.xVolume`, `_historicalData.yVolume`, `orderStatus`, `nextOrderId`. Emits `OrderUpdated`, `UpdateFailed`.
 
 #### _processHistoricalUpdate(HistoricalUpdate memory update) returns (bool historicalUpdated)
-- **Purpose**: Creates `HistoricalData` entry.
+- **Purpose**: Creates new `HistoricalData` entry with full `HistoricalUpdate` struct.
 - **Callers**: `ccUpdate`.
 - **Internal Call Tree**: `_updateHistoricalData`, `_updateDayStartIndex`, `_floorToMidnight`.
-- **Parameters/Interactions**: Uses `price`, balances, timestamp. Updates `_historicalData`, `_dayStartIndices`. Emits `UpdateFailed`.
+- **Parameters/Interactions**: Uses `price`, balances, timestamp. Updates `_historicalData`, `_dayStartIndices`. Emits `UpdateFailed` if `price=0`.
 
 #### _updateHistoricalData(HistoricalUpdate memory update)
-- **Purpose**: Pushes new `HistoricalData` entry.
+- **Purpose**: Pushes new `HistoricalData` entry with `price`, `xBalance`, `yBalance`, `xVolume`, `yVolume`, `timestamp`.
 - **Callers**: `_processHistoricalUpdate`.
 - **Internal Call Tree**: `normalize`, `_floorToMidnight`.
-- **Parameters/Interactions**: Uses `tokenA`, `tokenB`, `decimalsA`, `decimalsB`, `IERC20.balanceOf`.
+- **Parameters/Interactions**: Uses `tokenA`, `tokenB`, `decimalsA`, `decimalsB`, `IERC20.balanceOf`. Defaults to contract balances if `xBalance` or `yBalance` is zero.
 
 #### _updateDayStartIndex(uint256 timestamp)
 - **Purpose**: Updates `_dayStartIndices` for midnight timestamp.
 - **Callers**: `_processHistoricalUpdate`.
 - **Internal Call Tree**: `_floorToMidnight`.
-- **Parameters/Interactions**: Updates `_dayStartIndices`.
+- **Parameters/Interactions**: Updates `_dayStartIndices` with `_historicalData.length - 1` if unset.
 
 #### uint2str(uint256 _i) returns (string str)
 - **Purpose**: Converts uint to string for error messages.
@@ -913,7 +914,7 @@ The `MFPListingTemplate` contract (Solidity ^0.8.2) supports decentralized tradi
 - **Registry**: Updated via `_updateRegistry` in `ccUpdate` with `tokenA`, `tokenB`.
 - **Globalizer**: Updated via `globalizeUpdate` in `ccUpdate` with `maker`, `tokenA` or `tokenB`.
 - **Liquidity**: `ICCLiquidityTemplate.liquidityDetail` for fees in `ccUpdate`, stored in `dayStartFee`.
-- **Historical Data**: Stored in `_historicalData` via `ccUpdate` (`historicalUpdates`) or auto-generated in `balanceUpdates`, using `prices`.
-- **External Calls**: `IERC20.balanceOf` (`prices`, `volumeBalances`, `transactToken`, `ccUpdate`), `IERC20.transfer` (`transactToken`), `IERC20.decimals` (`setTokens`), `ICCLiquidityTemplate.liquidityDetail` (`ccUpdate`), `ITokenRegistry.initializeTokens` (`_updateRegistry`), `ICCGlobalizer.globalizeOrders` (`globalizeUpdate`), `ICCAgent.getLister` (`resetRouters`), `ICCAgent.getRouters` (`resetRouters`), low-level `call` (`transactNative`).
+- **Historical Data**: Stored in `_historicalData` via `ccUpdate` (`historicalUpdates`) or auto-generated in `balanceUpdates`, using `prices`. Each `historicalUpdates` entry creates a new `HistoricalData` record.
+- **External Calls**: `IERC20.balanceOf` (`prices`, `volumeBalances`, `transactToken`, `ccUpdate`, `_updateHistoricalData`), `IERC20.transfer` (`transactToken`), `IERC20.decimals` (`setTokens`), `ICCLiquidityTemplate.liquidityDetail` (`ccUpdate`), `ITokenRegistry.initializeTokens` (`_updateRegistry`), `ICCGlobalizer.globalizeOrders` (`globalizeUpdate`), `ICCAgent.getLister` (`resetRouters`), `ICCAgent.getRouters` (`resetRouters`), low-level `call` (`transactNative`).
 - **Security**: Router checks, try-catch, explicit casting, relaxed validation, emits `UpdateFailed`, `TransactionFailed`, `ExternalCallFailed`, `RegistryUpdateFailed`, `GlobalUpdateFailed`, `OrderUpdated`, `BalancesUpdated`, `OrderUpdatesComplete`, `OrderUpdateIncomplete`.
-- **Optimization**: Normalized amounts, `maxIterations` in view functions, auto-generated historical data, direct struct assignments in `ccUpdate`.
+- **Optimization**: Normalized amounts, `maxIterations` in view functions, auto-generated historical data, direct struct assignments in `ccUpdate`, modular `_processHistoricalUpdate` with helper functions.
